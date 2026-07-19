@@ -91,8 +91,13 @@ def market_text(market):
 def is_etf(market):
     name = str(market.get("instrumentName") or market.get("name") or "").lower()
     epic = str(market.get("epic") or "").lower()
-    fund_terms = (" etf", "etf ", "exchange traded", " fund", " trust", " ucits")
-    return any(term in f" {name} " for term in fund_terms) or epic.endswith("etf")
+    padded_name = f" {name} "
+    if " etf" in padded_name or "exchange traded" in name or " ucits" in padded_name or epic.endswith("etf"):
+        return True
+    company_terms = (" inc", " plc", " ltd", " limited", " corp", " corporation", " bancorp")
+    if any(term in padded_name for term in company_terms):
+        return False
+    return " fund" in padded_name or " trust" in padded_name
 
 
 def discover_etfs(client):
