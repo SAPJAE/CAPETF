@@ -269,7 +269,21 @@
 
     function investmentSortValue(item) {
       if (Number.isFinite(item.investmentScore)) return item.investmentScore;
-      if (Number.isFinite(item.returnTotal)) return item.returnTotal;
+
+      const distance = Number.isFinite(item.distanceFromPreviousYearLowPct) ? item.distanceFromPreviousYearLowPct : 999;
+      const nearLowScore = Math.max(0, 100 - Math.abs(distance) * 3);
+      const dipBonus = distance < 0 ? Math.max(0, 20 + distance) : 0;
+      const recoveryScore =
+        Math.max(0, Math.min(35, (item.return1m || 0) * 2.5)) +
+        Math.max(0, Math.min(35, (item.return3m || 0) * 1.5)) +
+        Math.max(0, Math.min(30, (item.return6m || 0)));
+      const trendFactor =
+        0.35 +
+        ((item.return1m || 0) > 0 ? 0.12 : 0) +
+        ((item.return3m || 0) > 0 ? 0.23 : 0) +
+        ((item.return6m || 0) > 0 ? 0.30 : 0);
+      if (Number.isFinite(item.distanceFromPreviousYearLowPct)) return (nearLowScore + dipBonus) * trendFactor + recoveryScore * 0.35;
+
       if (Number.isFinite(item.investmentRank)) return -item.investmentRank;
       return -999999;
     }
