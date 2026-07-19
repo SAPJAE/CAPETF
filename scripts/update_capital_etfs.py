@@ -200,6 +200,104 @@ def previous_year_low(rows, end):
     return min(candidates, key=lambda row: row["low"])
 
 
+def moving_average(rows, period, offset=0):
+    end = len(rows) - offset
+    start = end - period
+    if start < 0 or end <= 0:
+        return None
+    values = [row["close"] for row in rows[start:end] if row.get("close")]
+    if len(values) != period:
+        return None
+    return sum(values) / period
+
+
+def pct_change(current, previous):
+    if current is None or previous in (None, 0):
+        return None
+    return (current / previous - 1) * 100
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def scale(value, low, high, points):
+    if value is None:
+        return 0
+    return clamp((value - low) / (high - low), 0, 1) * points
+
+
+def investment_signal(trend_score, dip_score, recovery_score, distance):
+    if trend_score >= 45 and distance is not None and distance <= 5 and recovery_score >= 8:
+        return "Uptrend dip"
+    if trend_score >= 45 and distance is not None and distance <= 5:
+        return "Uptrend near low"
+    if trend_score >= 35 and recovery_score >= 10:
+        return "Recovering trend"
+    if distance is not None and distance < -20:
+        return "Deep break"
+    return "Watch"
+
+
+def investment_metrics(rows, end, low, returns):
+    ma50 = moving_average(rows, 50)
+    ma200 = moving_average(rows, 200)
+    prev_ma50 = moving_average(rows, 50, offset=30)
+    prev_ma200 = moving_average(rows, 200, offset=60)
+    ma50_slope = pct_change(ma50, prev_ma50)
+    ma200_slope = pct_change(ma200, prev_ma200)
+    distance = (end["close"] / low["low"] - 1) * 100 if low else None
+
+    trend_score = 0
+    if ma50 and ma200 and ma50 > ma200:
+        trend_score += 25
+    trend_score += scale(ma50_slope, -3, 8, 18)
+    trend_score += scale(ma200_slope, -2, 5, 22)
+    if ma200 and end["close"] > ma200:
+        trend_score += 10
+    trend_score = round(trend_score, 2)
+
+    if distance is None:
+        dip_score = 0
+    elif distance < -25:
+        dip_score = 8
+    elif distance < -5:
+        dip_score = 32
+    elif distance <= 5:
+        dip_score = 35
+    elif distance <= 20:
+        dip_score = 28 - ((distance - 5) / 15) * 8
+    elif distance <= 50:
+        dip_score = 18 - ((distance - 20) / 30) * 12
+    else:
+        dip_score = 0
+    dip_score = round(max(0, dip_score), 2)
+
+    recovery_score = 0
+    if returns.get("return1w") is not None:
+        recovery_score += scale(returns["return1w"], -2, 4, 8)
+    if returns.get("return1m") is not None:
+        recovery_score += scale(returns["return1m"], -5, 8, 9)
+    if returns.get("return3m") is not None:
+        recovery_score += scale(returns["return3m"], -10, 12, 8)
+    recovery_score = round(recovery_score, 2)
+
+    score = trend_score * 0.45 + dip_score * 0.35 + recovery_score * 0.20
+    if trend_score < 25:
+        score *= 0.55
+    return {
+        "ma50": round(ma50, 6) if ma50 is not None else None,
+        "ma200": round(ma200, 6) if ma200 is not None else None,
+        "ma50SlopePct": round(ma50_slope, 2) if ma50_slope is not None else None,
+        "ma200SlopePct": round(ma200_slope, 2) if ma200_slope is not None else None,
+        "trendScore": trend_score,
+        "dipScore": dip_score,
+        "recoveryScore": recovery_score,
+        "investmentScore": round(score, 2),
+        "investmentSignal": investment_signal(trend_score, dip_score, recovery_score, distance),
+    }
+
+
 def aggregate_points(rows, period):
     if period == "daily":
         selected = rows
@@ -245,8 +343,8 @@ def classify(items):
             item["band"] = "Mediocre"
 
     investment = sorted(
-        [item for item in items if item.get("distanceFromPreviousYearLowPct") is not None],
-        key=lambda item: (item["distanceFromPreviousYearLowPct"], item["name"]),
+        [item for item in items if item.get("investmentScore") is not None],
+        key=lambda item: (-item["investmentScore"], item["name"]),
     )
     for index, item in enumerate(investment, start=1):
         item["investmentRank"] = index
@@ -286,16 +384,24 @@ def build_item(market, rows):
     end = rows[-1]
     old_1y = closest_on_or_before(rows, date.fromisoformat(end["date"]) - timedelta(days=365))
     low = previous_year_low(rows, end)
+    returns = {
+        "return1w": period_return(rows, end, 7),
+        "return1m": period_return(rows, end, 30),
+        "return3m": period_return(rows, end, 91),
+        "return6m": period_return(rows, end, 182),
+        "return1y": period_return(rows, end, 365),
+    }
+    investing = investment_metrics(rows, end, low, returns)
     item.update(
         {
             "price": round(end["close"], 6),
             "priceDate": end["date"],
             "returnTotal": round((end["close"] / start["close"] - 1) * 100, 2) if start["close"] else None,
-            "return1w": round(period_return(rows, end, 7), 2) if period_return(rows, end, 7) is not None else None,
-            "return1m": round(period_return(rows, end, 30), 2) if period_return(rows, end, 30) is not None else None,
-            "return3m": round(period_return(rows, end, 91), 2) if period_return(rows, end, 91) is not None else None,
-            "return6m": round(period_return(rows, end, 182), 2) if period_return(rows, end, 182) is not None else None,
-            "return1y": round(period_return(rows, end, 365), 2) if period_return(rows, end, 365) is not None else None,
+            "return1w": round(returns["return1w"], 2) if returns["return1w"] is not None else None,
+            "return1m": round(returns["return1m"], 2) if returns["return1m"] is not None else None,
+            "return3m": round(returns["return3m"], 2) if returns["return3m"] is not None else None,
+            "return6m": round(returns["return6m"], 2) if returns["return6m"] is not None else None,
+            "return1y": round(returns["return1y"], 2) if returns["return1y"] is not None else None,
             "oneYearAgoPrice": round(old_1y["close"], 6) if old_1y else None,
             "oneYearAgoDate": old_1y["date"] if old_1y else None,
             "previousYearLowPrice": round(low["low"], 6) if low else None,
@@ -307,6 +413,7 @@ def build_item(market, rows):
             "dailyPoints": aggregate_points(rows, "daily"),
         }
     )
+    item.update(investing)
     return item
 
 
