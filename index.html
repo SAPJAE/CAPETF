@@ -267,6 +267,13 @@
       </article>`;
     }
 
+    function investmentSortValue(item) {
+      if (Number.isFinite(item.investmentScore)) return item.investmentScore;
+      if (Number.isFinite(item.returnTotal)) return item.returnTotal;
+      if (Number.isFinite(item.investmentRank)) return -item.investmentRank;
+      return -999999;
+    }
+
     function render() {
       if (!payload) return;
       const query = search.value.trim().toLowerCase();
@@ -276,7 +283,7 @@
       ));
       items.sort((a, b) => {
         if (sort.value === 'name') return a.name.localeCompare(b.name);
-        if (sort.value === 'investmentRank') return (a.investmentRank ?? 999999) - (b.investmentRank ?? 999999);
+        if (sort.value === 'investmentRank') return investmentSortValue(b) - investmentSortValue(a);
         if (sort.value.startsWith('return')) return (b[sort.value] ?? -999999) - (a[sort.value] ?? -999999);
         return (a.performanceRank ?? 999999) - (b.performanceRank ?? 999999);
       });
