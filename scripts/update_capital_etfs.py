@@ -97,7 +97,7 @@ def is_etf(market):
     company_terms = (" inc", " plc", " ltd", " limited", " corp", " corporation", " bancorp")
     if any(term in padded_name for term in company_terms):
         return False
-    return " fund" in padded_name or " trust" in padded_name
+    return " fund" in padded_name
 
 
 def discover_etfs(client):
