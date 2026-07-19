@@ -257,13 +257,13 @@
         : '<div class="no-chart">No chart</div>';
       return `<article class="card ${cls}">
         <div class="head"><div><div class="name">${escapeHtml(item.name)}</div><div class="code">${escapeHtml(item.epic || item.symbol || '')}</div></div><span class="badge">${cls}</span></div>
-        <div class="metrics"><div><span>Perf rank</span><strong>${item.performanceRank || 'n/a'}</strong></div><div><span>Inv rank</span><strong>${item.investmentRank || 'n/a'}</strong></div><div><span>Price</span><strong>${fmtPrice(item.price)}</strong></div></div>
+        <div class="metrics"><div><span>Perf rank</span><strong>${item.performanceRank || 'n/a'}</strong></div><div><span>Inv rank</span><strong>${item.displayInvestmentRank || item.investmentRank || 'n/a'}</strong></div><div><span>Price</span><strong>${fmtPrice(item.price)}</strong></div></div>
         <div class="invest"><div><span>Invest score</span><strong>${fmtScore(item.investmentScore)}</strong></div><div><span>Signal</span><strong>${escapeHtml(item.investmentSignal || 'Watch')}</strong></div><div><span>MA trend</span><strong>${fmtPct(item.ma200SlopePct)}</strong></div></div>
         <div class="periods"><div><span>1W</span><strong>${fmtPct(item.return1w)}</strong></div><div><span>1M</span><strong>${fmtPct(item.return1m)}</strong></div><div><span>3M</span><strong>${fmtPct(item.return3m)}</strong></div><div><span>6M</span><strong>${fmtPct(item.return6m)}</strong></div><div><span>1Y</span><strong>${fmtPct(item.return1y)}</strong></div></div>
         <div class="refs"><div><span>1Y ago ${item.oneYearAgoDate || ''}</span><strong>${fmtPrice(item.oneYearAgoPrice)}</strong></div><div><span>Prev-year low ${item.previousYearLowDate || ''}</span><strong>${fmtPrice(item.previousYearLowPrice)} · ${fmtDistance(item.distanceFromPreviousYearLowPct)}</strong></div></div>
         <div class="code">Trend ${fmtScore(item.trendScore)} / dip ${fmtScore(item.dipScore)} / recovery ${fmtScore(item.recoveryScore)}</div>
         ${chart}
-        <div class="code">Performance ${item.performanceRank || 'n/a'} · Investment ${item.investmentRank || 'n/a'} · ${chartMode.value} chart · ${item.priceDate || 'n/a'}</div>
+        <div class="code">Performance ${item.performanceRank || 'n/a'} · Investment ${item.displayInvestmentRank || item.investmentRank || 'n/a'} · ${chartMode.value} chart · ${item.priceDate || 'n/a'}</div>
       </article>`;
     }
 
@@ -272,6 +272,14 @@
       if (Number.isFinite(item.returnTotal)) return item.returnTotal;
       if (Number.isFinite(item.investmentRank)) return -item.investmentRank;
       return -999999;
+    }
+
+    function prepareDisplayRanks() {
+      const ranked = [...(payload.items || [])].sort((a, b) => {
+        const diff = investmentSortValue(b) - investmentSortValue(a);
+        return diff || a.name.localeCompare(b.name);
+      });
+      ranked.forEach((item, index) => { item.displayInvestmentRank = index + 1; });
     }
 
     function render() {
@@ -297,6 +305,7 @@
         authNote.textContent = 'Decrypting...';
         const response = await fetch('data/etfs.enc.json', { cache: 'no-store' });
         payload = await decrypt(await response.json(), password.value);
+        prepareDisplayRanks();
         const summary = payload.summary || {};
         document.getElementById('instrument-count').textContent = summary.instrumentCount ?? 0;
         document.getElementById('validated-count').textContent = summary.validatedChartCount ?? 0;
