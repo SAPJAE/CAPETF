@@ -34,6 +34,7 @@ jobs:
           python -m pip install cryptography
 
       - name: Refresh Capital.com ETF data
+        if: github.event_name != 'push'
         env:
           CAPITAL_DEMO: "true"
           CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
@@ -42,6 +43,7 @@ jobs:
         run: python scripts/update_capital_etfs.py --output data/etfs.raw.json
 
       - name: Encrypt ETF data
+        if: github.event_name != 'push'
         env:
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
         run: |
