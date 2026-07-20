@@ -220,6 +220,15 @@ def discover_instruments(client, kind):
     deduped = {}
     for market in instruments:
         deduped[market["epic"]] = market
+    if kind == "stock":
+        for term in ALWAYS_INCLUDE_STOCK_TERMS:
+            try:
+                payload = client.get(f"/markets?searchTerm={urllib.parse.quote(term)}")
+                for market in extract_markets(payload):
+                    if instrument_matches(market, kind):
+                        deduped[market["epic"]] = market
+            except Exception as exc:
+                print(f"GET /markets?searchTerm={term} failed: {exc}")
     return sorted(deduped.values(), key=lambda market: market.get("instrumentName") or market["epic"])
 
 
@@ -279,6 +288,19 @@ def fetch_prices(client, epic):
     rows = [row for row in rows if row]
     deduped = {row["date"]: row for row in rows}
     return [deduped[key] for key in sorted(deduped)]
+
+
+def fetch_market_details(client, market):
+    try:
+        payload = client.get(f"/markets/{urllib.parse.quote(market['epic'])}")
+        details = extract_markets(payload)
+        if details:
+            enriched = dict(market)
+            enriched.update(details[0])
+            return enriched
+    except Exception as exc:
+        print(f"GET /markets/{market.get('epic')} failed: {exc}")
+    return market
 
 
 def closest_on_or_before(rows, target):
@@ -544,6 +566,8 @@ def run(output_path, kind="etf", label="ETF", limit=None):
     for index, market in enumerate(instruments, start=1):
         print(f"[{index}/{len(instruments)}] {market.get('epic')} {market.get('instrumentName')}", flush=True)
         try:
+            if kind == "stock":
+                market = fetch_market_details(client, market)
             rows = fetch_prices(client, market["epic"])
             items.append(build_item(market, rows))
         except Exception as exc:
