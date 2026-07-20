@@ -360,9 +360,13 @@
 
     function regionOf(item) {
       const currency = String(item.currency || '').toUpperCase();
-      if (item.region) return item.region;
+      const country = String(item.country || '').toLowerCase();
+      if (item.region && item.region !== 'Other') return item.region;
+      if (['united states', 'united states of america', 'usa', 'us'].includes(country)) return 'US';
+      if (country === 'canada') return 'Canada';
+      if (country === 'japan') return 'Japan';
       if (['EUR', 'GBP', 'CHF', 'SEK', 'NOK', 'DKK', 'PLN'].includes(currency)) return 'Europe';
-      return 'Unmapped region';
+      return item.region || 'Unmapped region';
     }
 
     function currencyOf(item) {

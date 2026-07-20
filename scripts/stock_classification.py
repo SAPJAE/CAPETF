@@ -63,7 +63,7 @@ def normalize_sector(value):
 def region_for(country, currency):
     country_key = clean(country).lower()
     currency_key = clean(currency).upper()
-    if country_key in {"united states", "usa", "us"}:
+    if country_key in {"united states", "united states of america", "usa", "us"}:
         return "US"
     if country_key == "canada":
         return "Canada"
@@ -291,10 +291,10 @@ def enrich_classification(markets):
             updated["region"] = region_for(updated.get("country"), updated.get("currency"))
             stats["mapped"] += 1
         else:
-            updated.setdefault("country", "")
-            updated.setdefault("currency", "")
+            updated["country"] = normalize_country(updated.get("country"))
+            updated["currency"] = clean(updated.get("currency")).upper()
             updated.setdefault("exchange", "")
-            updated.setdefault("region", "")
+            updated["region"] = region_for(updated.get("country"), updated.get("currency"))
             updated.setdefault("classificationSource", "Capital.com")
             updated.setdefault("classificationConfidence", 0)
             stats["unmapped"] += 1
