@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: refresh-capital-market-data
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   refresh:
@@ -54,7 +54,7 @@ jobs:
           CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
           CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
           CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}
-        run: python scripts/update_capital_stocks.py --output data/stocks.raw.json
+        run: python scripts/update_capital_stocks.py --output data/stocks.raw.json --limit 250
 
       - name: Encrypt stock data
         env:

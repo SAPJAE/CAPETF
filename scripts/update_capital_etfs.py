@@ -510,10 +510,12 @@ def build_item(market, rows):
     return item
 
 
-def run(output_path, kind="etf", label="ETF"):
+def run(output_path, kind="etf", label="ETF", limit=None):
     client = CapitalClient()
     client.login()
     instruments = discover_instruments(client, kind)
+    if limit is not None:
+        instruments = instruments[:limit]
     if not instruments:
         raise RuntimeError(f"No {label} instruments found in Capital.com market discovery.")
 
@@ -545,8 +547,9 @@ def run(output_path, kind="etf", label="ETF"):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="data/etfs.raw.json")
+    parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
-    run(args.output, kind="etf", label="ETF")
+    run(args.output, kind="etf", label="ETF", limit=args.limit)
 
 
 if __name__ == "__main__":
