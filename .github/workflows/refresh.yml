@@ -1,4 +1,4 @@
-name: Refresh ETF data
+name: Refresh market data
 
 on:
   schedule:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: refresh-capital-etf-data
+  group: refresh-capital-market-data
   cancel-in-progress: false
 
 jobs:
@@ -44,8 +44,23 @@ jobs:
           python scripts/encrypt_data.py --input data/etfs.raw.json --output data/etfs.enc.json
           rm data/etfs.raw.json
 
+      - name: Refresh Capital.com stock data
+        env:
+          CAPITAL_DEMO: "true"
+          CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
+          CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
+          CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}
+        run: python scripts/update_capital_stocks.py --output data/stocks.raw.json
+
+      - name: Encrypt stock data
+        env:
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+        run: |
+          python scripts/encrypt_data.py --input data/stocks.raw.json --output data/stocks.enc.json
+          rm data/stocks.raw.json
+
       - name: Commit refreshed data
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "data: refresh ETF data"
-          file_pattern: data/etfs.enc.json
+          commit_message: "data: refresh market data"
+          file_pattern: data/*.enc.json

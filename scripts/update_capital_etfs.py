@@ -100,7 +100,41 @@ def is_etf(market):
     return " fund" in padded_name
 
 
-def discover_etfs(client):
+def is_stock(market):
+    if is_etf(market):
+        return False
+    text = market_text(market)
+    name = str(market.get("instrumentName") or market.get("name") or "").lower()
+    padded_name = f" {name} "
+    excluded_terms = (
+        " index",
+        "indices",
+        "commodity",
+        "forex",
+        "currency",
+        "crypto",
+        "future",
+        "fund",
+        "bond",
+        "treasury",
+        "rate",
+    )
+    if any(term in text for term in excluded_terms):
+        return False
+    stock_terms = (" share", " shares", " stock", " equity", " equities")
+    company_terms = (" inc", " plc", " ltd", " limited", " corp", " corporation", " nv", " sa", " ag", " adr")
+    return any(term in text for term in stock_terms) or any(term in padded_name for term in company_terms)
+
+
+def instrument_matches(market, kind):
+    if kind == "etf":
+        return is_etf(market)
+    if kind == "stock":
+        return is_stock(market)
+    raise ValueError(f"Unsupported instrument kind: {kind}")
+
+
+def discover_instruments(client, kind):
     markets = []
 
     try:
@@ -109,7 +143,7 @@ def discover_etfs(client):
     except Exception as exc:
         print(f"GET /markets failed: {exc}")
 
-    if not any(is_etf(market) for market in markets):
+    if not any(instrument_matches(market, kind) for market in markets):
         roots = client.get("/marketnavigation")
         nodes = roots.get("nodes") or roots.get("marketNavigation") or []
         queue = list(nodes)
@@ -126,11 +160,15 @@ def discover_etfs(client):
                 queue.append(child)
             time.sleep(0.15)
 
-    etfs = [market for market in markets if is_etf(market)]
+    instruments = [market for market in markets if instrument_matches(market, kind)]
     deduped = {}
-    for market in etfs:
+    for market in instruments:
         deduped[market["epic"]] = market
     return sorted(deduped.values(), key=lambda market: market.get("instrumentName") or market["epic"])
+
+
+def discover_etfs(client):
+    return discover_instruments(client, "etf")
 
 
 def price_value(price_obj):
@@ -417,20 +455,16 @@ def build_item(market, rows):
     return item
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default="data/etfs.raw.json")
-    args = parser.parse_args()
-
+def run(output_path, kind="etf", label="ETF"):
     client = CapitalClient()
     client.login()
-    etfs = discover_etfs(client)
-    if not etfs:
-        raise RuntimeError("No ETF instruments found in Capital.com market discovery.")
+    instruments = discover_instruments(client, kind)
+    if not instruments:
+        raise RuntimeError(f"No {label} instruments found in Capital.com market discovery.")
 
     items = []
-    for index, market in enumerate(etfs, start=1):
-        print(f"[{index}/{len(etfs)}] {market.get('epic')} {market.get('instrumentName')}", flush=True)
+    for index, market in enumerate(instruments, start=1):
+        print(f"[{index}/{len(instruments)}] {market.get('epic')} {market.get('instrumentName')}", flush=True)
         try:
             rows = fetch_prices(client, market["epic"])
             items.append(build_item(market, rows))
@@ -447,10 +481,17 @@ def main():
             )
         time.sleep(0.15)
 
-    output = Path(args.output)
+    output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(classify(items), indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Wrote {output}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", default="data/etfs.raw.json")
+    args = parser.parse_args()
+    run(args.output, kind="etf", label="ETF")
 
 
 if __name__ == "__main__":

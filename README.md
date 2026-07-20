@@ -1,6 +1,6 @@
 # CAPETF
 
-Password-gated ETF dashboard using Capital.com demo market data.
+Password-gated ETF and stock dashboard using Capital.com demo market data.
 
 Required repository secrets:
 

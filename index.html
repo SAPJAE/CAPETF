@@ -48,6 +48,15 @@
       color: var(--paper);
       cursor: pointer;
     }
+    .tabs { display: flex; gap: 8px; margin: 14px 0 4px; }
+    .tab {
+      background: var(--paper);
+      color: var(--ink);
+    }
+    .tab.active {
+      background: var(--ink);
+      color: var(--paper);
+    }
     .locked .content { display: none; }
     .summary {
       display: grid;
@@ -100,7 +109,7 @@
 <body class="locked">
   <main>
     <h1>CAPETF</h1>
-    <div class="note">Capital.com ETF dashboard</div>
+    <div class="note">Capital.com ETF and stock dashboard</div>
 
     <section class="auth" id="auth-panel">
       <h2>Enter password</h2>
@@ -112,6 +121,11 @@
     </section>
 
     <div class="content">
+      <section class="tabs" aria-label="Dataset">
+        <button class="tab active" type="button" data-dataset="etfs">ETFs</button>
+        <button class="tab" type="button" data-dataset="stocks">Stocks</button>
+      </section>
+
       <section class="summary">
         <div><strong id="instrument-count">...</strong><span class="note">instruments</span></div>
         <div><strong id="validated-count">...</strong><span class="note">validated charts</span></div>
@@ -169,6 +183,12 @@
     const password = document.getElementById('password');
     const authNote = document.getElementById('auth-note');
     const authPanel = document.getElementById('auth-panel');
+    const tabButtons = [...document.querySelectorAll('.tab')];
+    const datasetFiles = { etfs: 'data/etfs.enc.json', stocks: 'data/stocks.enc.json' };
+    const datasetLabels = { etfs: 'ETF', stocks: 'stock' };
+    const datasets = {};
+    let activeDataset = 'etfs';
+    let dashboardPassword = '';
     let payload = null;
 
     const fmtPct = value => value == null ? 'n/a' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
@@ -308,6 +328,41 @@
       ranked.forEach((item, index) => { item.displayInvestmentRank = index + 1; });
     }
 
+    async function loadDataset(key) {
+      if (datasets[key]) return datasets[key];
+      const response = await fetch(datasetFiles[key], { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`${datasetLabels[key]} data is not ready yet. Run the GitHub refresh once, or wait for the next daily refresh.`);
+      }
+      const loaded = await decrypt(await response.json(), dashboardPassword);
+      datasets[key] = loaded;
+      return loaded;
+    }
+
+    function updateSummary() {
+      const summary = payload.summary || {};
+      document.getElementById('instrument-count').textContent = summary.instrumentCount ?? 0;
+      document.getElementById('validated-count').textContent = summary.validatedChartCount ?? 0;
+      document.getElementById('source-date').textContent = summary.sourceAsOf || 'n/a';
+      document.getElementById('source-name').textContent = summary.source || 'Demo';
+    }
+
+    async function selectDataset(key) {
+      activeDataset = key;
+      tabButtons.forEach(button => button.classList.toggle('active', button.dataset.dataset === key));
+      grid.innerHTML = '';
+      note.textContent = key === 'stocks' ? 'Loading stocks...' : 'Loading ETFs...';
+      try {
+        payload = await loadDataset(key);
+        prepareDisplayRanks();
+        updateSummary();
+        render();
+      } catch (error) {
+        note.textContent = error.message || 'Data could not be loaded.';
+        grid.innerHTML = '';
+      }
+    }
+
     function render() {
       if (!payload) return;
       const query = search.value.trim().toLowerCase();
@@ -334,17 +389,11 @@
       const unlockButton = document.getElementById('unlock');
       unlockButton.disabled = true;
       try {
-        authNote.textContent = 'Downloading encrypted data. First load can take up to a minute.';
-        const response = await fetch('data/etfs.enc.json', { cache: 'no-store' });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        authNote.textContent = 'Decrypting data. Please keep this tab open.';
-        payload = await decrypt(await response.json(), password.value);
+        dashboardPassword = password.value;
+        authNote.textContent = 'Downloading ETF data. First load can take up to a minute.';
+        payload = await loadDataset('etfs');
         prepareDisplayRanks();
-        const summary = payload.summary || {};
-        document.getElementById('instrument-count').textContent = summary.instrumentCount ?? 0;
-        document.getElementById('validated-count').textContent = summary.validatedChartCount ?? 0;
-        document.getElementById('source-date').textContent = summary.sourceAsOf || 'n/a';
-        document.getElementById('source-name').textContent = summary.source || 'Demo';
+        updateSummary();
         document.body.classList.remove('locked');
         authNote.textContent = 'Unlocked.';
         authPanel.style.display = 'none';
@@ -361,6 +410,7 @@
     band.addEventListener('change', render);
     sort.addEventListener('change', render);
     chartMode.addEventListener('change', render);
+    tabButtons.forEach(button => button.addEventListener('click', () => selectDataset(button.dataset.dataset)));
   </script>
 </body>
 </html>
