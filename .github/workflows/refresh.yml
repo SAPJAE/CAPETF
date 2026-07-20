@@ -60,7 +60,9 @@ jobs:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
-        run: python scripts/update_capital_stocks.py --output data/stocks.raw.json --limit 625 --chunks 4 --manifest data/stocks-manifest.raw.json
+        run: |
+          rm -f data/stocks-*.raw.json data/stocks-*.enc.json data/stocks-manifest.raw.json data/stocks-manifest.enc.json
+          python scripts/update_capital_stocks.py --output data/stocks.raw.json --limit 4 --chunks 625 --manifest data/stocks-manifest.raw.json
 
       - name: Encrypt stock data
         env:

@@ -506,7 +506,7 @@
     }
 
     function card(item) {
-      const cls = item.band || 'Unvalidated';
+      const cls = item.displayBand || item.band || 'Unvalidated';
       const points = chartPoints(item);
       const ep = endPoint(points);
       const hasInvestmentScore = Number.isFinite(item.investmentScore);
@@ -541,14 +541,14 @@
       return `<article class="card ${cls}">
         <div class="head"><div><div class="name">${escapeHtml(item.name)}</div><div class="code">${escapeHtml(item.epic || item.symbol || '')}</div></div><span class="badge">${cls}</span></div>
         ${sectorLine}
-        <div class="metrics"><div><span>Perf rank</span><strong>${item.performanceRank || 'n/a'}</strong></div><div><span>${investmentRankLabel}</span><strong>${investmentRank}</strong></div><div><span>Price</span><strong>${fmtPrice(item.price)}</strong></div></div>
+        <div class="metrics"><div><span>Perf rank</span><strong>${item.displayPerformanceRank || item.performanceRank || 'n/a'}</strong></div><div><span>${investmentRankLabel}</span><strong>${investmentRank}</strong></div><div><span>Price</span><strong>${fmtPrice(item.price)}</strong></div></div>
         ${investmentPanel}
         <div class="periods"><div><span>1W</span><strong>${fmtPct(item.return1w)}</strong></div><div><span>1M</span><strong>${fmtPct(item.return1m)}</strong></div><div><span>3M</span><strong>${fmtPct(item.return3m)}</strong></div><div><span>6M</span><strong>${fmtPct(item.return6m)}</strong></div><div><span>1Y</span><strong>${fmtPct(item.return1y)}</strong></div></div>
         <div class="refs"><div><span>1Y ago ${item.oneYearAgoDate || ''}</span><strong>${fmtPrice(item.oneYearAgoPrice)}</strong></div><div><span>Prev-year low ${item.previousYearLowDate || ''}</span><strong>${fmtPrice(item.previousYearLowPrice)} · ${fmtDistance(item.distanceFromPreviousYearLowPct)}</strong></div></div>
         ${trendPanel}
         ${chart}
         ${sectorOpen}
-        <div class="code">Performance ${item.performanceRank || 'n/a'} · Investment ${investmentRank} (${investmentBasis}) · ${chartMode.value} chart · ${item.priceDate || 'n/a'}</div>
+        <div class="code">Performance ${item.displayPerformanceRank || item.performanceRank || 'n/a'} · Investment ${investmentRank} (${investmentBasis}) · ${chartMode.value} chart · ${item.priceDate || 'n/a'}</div>
       </article>`;
     }
 
@@ -579,8 +579,18 @@
     }
 
     function prepareDisplayRanks() {
-      const ranked = [...(payload.items || [])].sort(compareInvestment);
-      ranked.forEach((item, index) => { item.displayInvestmentRank = index + 1; });
+      const items = payload.items || [];
+      const performance = [...items]
+        .filter(item => item.validated && Number.isFinite(item.returnTotal))
+        .sort((a, b) => (b.returnTotal ?? -999999) - (a.returnTotal ?? -999999) || a.name.localeCompare(b.name));
+      const quartile = Math.ceil(performance.length * 0.25);
+      const bottomStart = performance.length - quartile;
+      performance.forEach((item, index) => {
+        item.displayPerformanceRank = index + 1;
+        item.displayBand = index < quartile ? 'Best' : index >= bottomStart ? 'Worst' : 'Mediocre';
+      });
+      const investment = [...items].sort(compareInvestment);
+      investment.forEach((item, index) => { item.displayInvestmentRank = index + 1; });
     }
 
     function mergePayloads(parts) {
@@ -598,6 +608,7 @@
           validatedChartCount: Object.values(itemsByEpic).filter(item => item.validated).length,
           source: 'Capital.com demo API chunks',
           chunkCount: parts.length,
+          totalChunks: summaries[summaries.length - 1]?.chunkCount || parts.length,
         },
         items: Object.values(itemsByEpic),
       };
@@ -617,12 +628,13 @@
           const manifest = await loadEncryptedFile(stockManifestFile);
           const files = manifest.chunkFiles || [];
           const loadedParts = [];
-          for (let index = 0; index < files.length; index += 4) {
-            const group = files.slice(index, index + 4);
-            const parts = await Promise.all(group.map(file => loadEncryptedFile(file)));
-            loadedParts.push(...parts);
+          for (let index = 0; index < files.length; index += 1) {
+            const part = await loadEncryptedFile(files[index]);
+            loadedParts.push(part);
             datasets.stocks = mergePayloads(loadedParts);
-            note.textContent = `Loaded ${Math.min(index + 4, files.length)} of ${files.length} stock chunks.`;
+            const loadedStocks = datasets.stocks.summary?.instrumentCount || 0;
+            const totalStocks = manifest.instrumentCount || files.length * (manifest.chunkSize || 4);
+            note.textContent = `Loaded ${loadedStocks} of ${totalStocks} stocks.`;
             if (activeDataset === 'stocks') {
               payload = datasets.stocks;
               prepareDisplayRanks();
@@ -691,17 +703,20 @@
       if (!payload) return;
       const query = search.value.trim().toLowerCase();
       let items = (payload.items || []).filter(item => (
-        (band.value === 'all' || item.band === band.value) &&
+        (band.value === 'all' || (item.displayBand || item.band) === band.value) &&
         matchesSearch(item, query)
       ));
       items.sort((a, b) => {
         if (sort.value === 'name') return a.name.localeCompare(b.name);
         if (sort.value === 'investmentRank') return compareInvestment(a, b);
         if (sort.value.startsWith('return')) return (b[sort.value] ?? -999999) - (a[sort.value] ?? -999999);
-        return (a.performanceRank ?? 999999) - (b.performanceRank ?? 999999);
+        return (a.displayPerformanceRank ?? a.performanceRank ?? 999999) - (b.displayPerformanceRank ?? b.performanceRank ?? 999999);
       });
       const summary = payload.summary || {};
-      note.textContent = `${items.length} shown. Refreshed ${fmtTimestamp(summary.refreshedAtUtc)}; source date ${summary.sourceAsOf || 'n/a'}.`;
+      const loadedText = summary.totalChunks && summary.chunkCount < summary.totalChunks
+        ? ` Loaded ${summary.instrumentCount || 0} stocks from ${summary.chunkCount} of ${summary.totalChunks} batches.`
+        : '';
+      note.textContent = `${items.length} shown. Refreshed ${fmtTimestamp(summary.refreshedAtUtc)}; source date ${summary.sourceAsOf || 'n/a'}.${loadedText}`;
       grid.innerHTML = activeDataset === 'sectors' ? renderSectorGroups(items) : items.map(card).join('');
     }
 
