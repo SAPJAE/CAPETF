@@ -8,6 +8,11 @@ import urllib.request
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 
+try:
+    from stock_classification import enrich_classification, region_for
+except ImportError:
+    from scripts.stock_classification import enrich_classification, region_for
+
 
 DEMO_BASE_URL = "https://demo-api-capital.backend-capital.com/api/v1"
 LIVE_BASE_URL = "https://api-capital.backend-capital.com/api/v1"
@@ -243,6 +248,10 @@ def first_market_value(market, keys):
         if value:
             return str(value)
     return ""
+
+
+def first_upper_market_value(market, keys):
+    return first_market_value(market, keys).upper()
 
 
 def discover_etfs(client):
@@ -506,6 +515,11 @@ def classify(items):
             "instrumentCount": len(items),
             "validatedChartCount": len([item for item in items if item.get("validated")]),
             "source": "Capital.com demo API",
+            "classification": {
+                "mappedCount": len([item for item in items if item.get("country") and item.get("sector")]),
+                "unmappedCount": len([item for item in items if not item.get("country") or not item.get("sector")]),
+                "providerStats": getattr(classify, "provider_stats", {}),
+            },
         },
         "items": items,
     }
@@ -520,6 +534,12 @@ def build_item(market, rows):
         "instrumentType": market.get("instrumentType") or market.get("type") or "",
         "sector": first_market_value(market, ("sector", "sectorName", "industrySector", "marketSector")),
         "industry": first_market_value(market, ("industry", "industryName", "subsector", "subSector", "sectorSubType")),
+        "country": first_market_value(market, ("country", "countryName", "countryOfOrigin")),
+        "currency": first_upper_market_value(market, ("currency", "currencyCode", "quoteCurrency", "priceCurrency")),
+        "exchange": first_market_value(market, ("exchange", "exchangeName", "exchangeShortName")),
+        "region": first_market_value(market, ("region",)),
+        "classificationSource": market.get("classificationSource") or "Capital.com",
+        "classificationConfidence": market.get("classificationConfidence") or 0,
         "status": market.get("marketStatus") or market.get("status") or "",
         "validated": len(rows) > 1,
         "band": "Unvalidated",
@@ -582,6 +602,13 @@ def run(output_path, kind="etf", label="ETF", limit=None):
 
     if kind == "stock":
         instruments = enrich_market_details(client, instruments)
+        instruments, provider_stats = enrich_classification(instruments)
+        classify.provider_stats = provider_stats
+        for market in instruments:
+            if not market.get("region"):
+                market["region"] = region_for(market.get("country"), market.get("currency"))
+    else:
+        classify.provider_stats = {}
 
     items = []
     for index, market in enumerate(instruments, start=1):
