@@ -11,6 +11,7 @@ from pathlib import Path
 
 DEMO_BASE_URL = "https://demo-api-capital.backend-capital.com/api/v1"
 LIVE_BASE_URL = "https://api-capital.backend-capital.com/api/v1"
+ALWAYS_INCLUDE_STOCK_TERMS = ("sap",)
 
 
 class CapitalClient:
@@ -220,6 +221,19 @@ def discover_instruments(client, kind):
     for market in instruments:
         deduped[market["epic"]] = market
     return sorted(deduped.values(), key=lambda market: market.get("instrumentName") or market["epic"])
+
+
+def is_always_include_stock(market):
+    text = market_text(market)
+    return any(term in text for term in ALWAYS_INCLUDE_STOCK_TERMS)
+
+
+def first_market_value(market, keys):
+    for key in keys:
+        value = market.get(key)
+        if value:
+            return str(value)
+    return ""
 
 
 def discover_etfs(client):
@@ -464,6 +478,8 @@ def build_item(market, rows):
         "name": name,
         "symbol": market.get("symbol", ""),
         "instrumentType": market.get("instrumentType") or market.get("type") or "",
+        "sector": first_market_value(market, ("sector", "sectorName", "industrySector", "marketSector")),
+        "industry": first_market_value(market, ("industry", "industryName", "subsector", "subSector", "sectorSubType")),
         "status": market.get("marketStatus") or market.get("status") or "",
         "validated": len(rows) > 1,
         "band": "Unvalidated",
@@ -515,7 +531,12 @@ def run(output_path, kind="etf", label="ETF", limit=None):
     client.login()
     instruments = discover_instruments(client, kind)
     if limit is not None:
-        instruments = instruments[:limit]
+        selected = instruments[:limit]
+        if kind == "stock":
+            selected_epics = {market["epic"] for market in selected}
+            extras = [market for market in instruments[limit:] if is_always_include_stock(market) and market["epic"] not in selected_epics]
+            selected.extend(extras)
+        instruments = selected
     if not instruments:
         raise RuntimeError(f"No {label} instruments found in Capital.com market discovery.")
 

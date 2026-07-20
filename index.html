@@ -75,7 +75,35 @@
     .controls, .status { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin: 10px 0; }
     .status { justify-content: space-between; }
     .status a { color: var(--accent); font-size: 13px; }
+    .dashboard-layout { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 12px; align-items: start; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 10px; }
+    .sector-panel {
+      background: var(--paper);
+      border: 1px solid #e4e7ec;
+      border-radius: 8px;
+      padding: 10px;
+      position: sticky;
+      top: 10px;
+    }
+    .sector-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .sector-head strong { font-weight: 600; }
+    .sector-list { display: grid; gap: 8px; }
+    .sector-item {
+      width: 100%;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 96px;
+      gap: 8px;
+      align-items: center;
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid #e4e7ec;
+      text-align: left;
+    }
+    .sector-item.active { border-color: var(--ink); }
+    .sector-name { display: block; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+    .sector-meta { display: block; color: var(--muted); font-size: 11px; }
+    .sector-spark { height: 42px; }
+    .sector-spark .spark { stroke: var(--accent); }
     .head { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
     .name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
     .badge { border: 1px solid currentColor; border-radius: 999px; padding: 2px 7px; font-size: 12px; white-space: nowrap; }
@@ -103,6 +131,8 @@
       .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       label, input, select { min-width: 0; width: 100%; }
       .auth-row { align-items: stretch; flex-direction: column; }
+      .dashboard-layout { grid-template-columns: 1fr; }
+      .sector-panel { position: static; }
     }
   </style>
 </head>
@@ -169,7 +199,13 @@
         <div class="note" id="note">Waiting for password...</div>
         <a href="https://github.com/SAPJAE/CAPETF/actions/workflows/refresh.yml">Manual refresh</a>
       </div>
-      <section class="grid" id="grid"></section>
+      <section class="dashboard-layout">
+        <section class="grid" id="grid"></section>
+        <aside class="sector-panel" id="sector-panel" hidden>
+          <div class="sector-head"><strong>Sectors</strong><button type="button" class="tab active" id="sector-all">All</button></div>
+          <div class="sector-list" id="sector-list"></div>
+        </aside>
+      </section>
     </div>
   </main>
 
@@ -180,6 +216,9 @@
     const sort = document.getElementById('sort');
     const chartMode = document.getElementById('chart-mode');
     const note = document.getElementById('note');
+    const sectorPanel = document.getElementById('sector-panel');
+    const sectorList = document.getElementById('sector-list');
+    const sectorAll = document.getElementById('sector-all');
     const password = document.getElementById('password');
     const authNote = document.getElementById('auth-note');
     const authPanel = document.getElementById('auth-panel');
@@ -188,6 +227,7 @@
     const datasetLabels = { etfs: 'ETF', stocks: 'stock' };
     const datasets = {};
     let activeDataset = 'etfs';
+    let activeSector = 'all';
     let dashboardPassword = '';
     let payload = null;
 
@@ -260,6 +300,72 @@
       const index = points.length - 1;
       const point = points[index];
       return { x: pad + (index / (points.length - 1)) * (width - pad * 2), y: pad + (1 - (point.v - min) / (max - min)) * (height - pad * 2) };
+    }
+
+    function fallbackSector(item) {
+      const text = `${item.name || ''} ${item.symbol || ''}`.toLowerCase();
+      if (/bank|bancorp|financial|capital|insurance|asset|managers|credit|loan|mortgage|exchange/.test(text)) return 'Financials';
+      if (/bio|pharma|health|medical|therapeutics|genomics|surgery|well|care|diagnostics/.test(text)) return 'Healthcare';
+      if (/software|semiconductor|systems|digital|cyber|tech|data|network|communications|apple|sap/.test(text)) return 'Technology';
+      if (/energy|oil|gas|solar|power|electric|resources|mining|metals/.test(text)) return 'Energy & Materials';
+      if (/air|auto|industrial|aerospace|logistics|shipping|rail|construction|test systems/.test(text)) return 'Industrials';
+      if (/retail|consumer|restaurants|foods|beverage|apparel|travel|hotel|entertainment|media|networks/.test(text)) return 'Consumer';
+      if (/realty|reit|property|properties/.test(text)) return 'Real Estate';
+      return 'Other';
+    }
+
+    function sectorOf(item) {
+      return item.sector || item.industry || fallbackSector(item);
+    }
+
+    function sectorPoints(items) {
+      const series = items.map(item => chartPoints(item)).filter(points => points.length > 1);
+      if (!series.length) return [];
+      const minLength = Math.min(...series.map(points => points.length));
+      const trimmed = series.map(points => points.slice(points.length - minLength));
+      return trimmed[0].map((point, index) => ({
+        d: point.d,
+        v: Number((trimmed.reduce((sum, points) => sum + points[index].v, 0) / trimmed.length).toFixed(2)),
+      }));
+    }
+
+    function renderSectorPanel(items) {
+      if (activeDataset !== 'stocks') {
+        activeSector = 'all';
+        sectorPanel.hidden = true;
+        return;
+      }
+      const groups = {};
+      items.forEach(item => {
+        const sector = sectorOf(item);
+        if (!groups[sector]) groups[sector] = [];
+        groups[sector].push(item);
+      });
+      const sectors = Object.entries(groups)
+        .map(([name, sectorItems]) => ({ name, items: sectorItems, points: sectorPoints(sectorItems) }))
+        .sort((a, b) => b.items.length - a.items.length || a.name.localeCompare(b.name));
+      sectorPanel.hidden = false;
+      sectorAll.classList.toggle('active', activeSector === 'all');
+      sectorList.innerHTML = sectors.map(sector => `
+        <button type="button" class="sector-item ${activeSector === sector.name ? 'active' : ''}" data-sector="${escapeHtml(sector.name)}">
+          <span><span class="sector-name">${escapeHtml(sector.name)}</span><span class="sector-meta">${sector.items.length} stocks</span></span>
+          <svg class="sector-spark" viewBox="0 0 96 42" aria-label="${escapeHtml(sector.name)} sector index">
+            <path class="spark" d="${pathForSmall(sector.points)}"></path>
+          </svg>
+        </button>`).join('');
+    }
+
+    function pathForSmall(points) {
+      if (!points || points.length < 2) return '';
+      const width = 96, height = 42, pad = 4;
+      const values = points.map(point => point.v);
+      let min = Math.min(...values), max = Math.max(...values);
+      if (min === max) { min -= 1; max += 1; }
+      return points.map((point, index) => {
+        const x = pad + (index / (points.length - 1)) * (width - pad * 2);
+        const y = pad + (1 - (point.v - min) / (max - min)) * (height - pad * 2);
+        return `${index ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`;
+      }).join(' ');
     }
 
     function card(item) {
@@ -356,6 +462,7 @@
       note.textContent = key === 'stocks' ? 'Loading stocks...' : 'Loading ETFs...';
       try {
         payload = await loadDataset(key);
+        activeSector = 'all';
         prepareDisplayRanks();
         updateSummary();
         render();
@@ -372,6 +479,10 @@
         (band.value === 'all' || item.band === band.value) &&
         (!query || `${item.name} ${item.symbol} ${item.epic}`.toLowerCase().includes(query))
       ));
+      renderSectorPanel(items);
+      if (activeDataset === 'stocks' && activeSector !== 'all') {
+        items = items.filter(item => sectorOf(item) === activeSector);
+      }
       items.sort((a, b) => {
         if (sort.value === 'name') return a.name.localeCompare(b.name);
         if (sort.value === 'investmentRank') return compareInvestment(a, b);
@@ -413,6 +524,13 @@
     sort.addEventListener('change', render);
     chartMode.addEventListener('change', render);
     tabButtons.forEach(button => button.addEventListener('click', () => selectDataset(button.dataset.dataset)));
+    sectorAll.addEventListener('click', () => { activeSector = 'all'; render(); });
+    sectorList.addEventListener('click', event => {
+      const button = event.target.closest('.sector-item');
+      if (!button) return;
+      activeSector = button.dataset.sector;
+      render();
+    });
   </script>
 </body>
 </html>
