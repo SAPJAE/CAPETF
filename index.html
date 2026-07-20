@@ -104,6 +104,7 @@
     .sector-meta { display: block; color: var(--muted); font-size: 11px; }
     .sector-spark { height: 42px; }
     .sector-spark .spark { stroke: var(--accent); }
+    .open-sector { margin-top: 8px; width: 100%; background: var(--paper); color: var(--ink); }
     .head { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
     .name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
     .badge { border: 1px solid currentColor; border-radius: 999px; padding: 2px 7px; font-size: 12px; white-space: nowrap; }
@@ -152,6 +153,7 @@
 
     <div class="content">
       <section class="tabs" aria-label="Dataset">
+        <button class="tab" type="button" data-dataset="sectors">Sectors</button>
         <button class="tab active" type="button" data-dataset="etfs">ETFs</button>
         <button class="tab" type="button" data-dataset="stocks">Stocks</button>
       </section>
@@ -224,7 +226,7 @@
     const authPanel = document.getElementById('auth-panel');
     const tabButtons = [...document.querySelectorAll('.tab')];
     const datasetFiles = { etfs: 'data/etfs.enc.json', stocks: 'data/stocks.enc.json' };
-    const datasetLabels = { etfs: 'ETF', stocks: 'stock' };
+    const datasetLabels = { sectors: 'sector', etfs: 'ETF', stocks: 'stock' };
     const datasets = {};
     let activeDataset = 'etfs';
     let activeSector = 'all';
@@ -329,6 +331,125 @@
       }));
     }
 
+    function sectorPointsFor(items, key) {
+      const series = items.map(item => item[key] || []).filter(points => points.length > 1);
+      if (!series.length) return [];
+      const minLength = Math.min(...series.map(points => points.length));
+      const trimmed = series.map(points => points.slice(points.length - minLength));
+      return trimmed[0].map((point, index) => ({
+        d: point.d,
+        v: Number((trimmed.reduce((sum, points) => sum + points[index].v, 0) / trimmed.length).toFixed(2)),
+      }));
+    }
+
+    function avg(items, key) {
+      const values = items.map(item => item[key]).filter(Number.isFinite);
+      return values.length ? Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2)) : null;
+    }
+
+    function returnFromPoints(points, countBack) {
+      if (!points.length) return null;
+      const end = points[points.length - 1];
+      const start = points[Math.max(0, points.length - countBack - 1)];
+      return start && start.v ? Number(((end.v / start.v - 1) * 100).toFixed(2)) : null;
+    }
+
+    function previousYearLowFrom(points) {
+      if (!points.length) return null;
+      const endYear = Number(String(points[points.length - 1].d).slice(0, 4));
+      const previous = points.filter(point => Number(String(point.d).slice(0, 4)) === endYear - 1);
+      if (!previous.length) return null;
+      return previous.reduce((low, point) => point.v < low.v ? point : low, previous[0]);
+    }
+
+    function oneYearAgoFrom(points) {
+      if (!points.length) return null;
+      const end = new Date(points[points.length - 1].d);
+      const target = new Date(end);
+      target.setFullYear(target.getFullYear() - 1);
+      let found = null;
+      points.forEach(point => {
+        if (new Date(point.d) <= target) found = point;
+      });
+      return found;
+    }
+
+    function buildSectorPayload(stockPayload) {
+      const stocks = stockPayload.items || [];
+      const groups = {};
+      stocks.forEach(item => {
+        const sector = sectorOf(item);
+        if (!groups[sector]) groups[sector] = [];
+        groups[sector].push(item);
+      });
+      const items = Object.entries(groups).map(([sector, sectorItems]) => {
+        const dailyPoints = sectorPointsFor(sectorItems, 'dailyPoints');
+        const weeklyPoints = sectorPointsFor(sectorItems, 'weeklyPoints');
+        const monthlyPoints = sectorPointsFor(sectorItems, 'monthlyPoints');
+        const end = dailyPoints[dailyPoints.length - 1] || monthlyPoints[monthlyPoints.length - 1] || null;
+        const start = dailyPoints[0] || monthlyPoints[0] || null;
+        const low = previousYearLowFrom(dailyPoints);
+        const old = oneYearAgoFrom(dailyPoints);
+        return {
+          epic: sector,
+          name: `${sector} sector index`,
+          symbol: `${sectorItems.length} stocks`,
+          sectorName: sector,
+          sectorMemberCount: sectorItems.length,
+          instrumentType: 'SECTOR',
+          status: 'Aggregated',
+          validated: dailyPoints.length > 1 || monthlyPoints.length > 1,
+          band: 'Unvalidated',
+          performanceRank: null,
+          investmentRank: null,
+          price: end ? end.v : null,
+          priceDate: end ? end.d : null,
+          returnTotal: start && end && start.v ? Number(((end.v / start.v - 1) * 100).toFixed(2)) : null,
+          return1w: returnFromPoints(dailyPoints, 7),
+          return1m: returnFromPoints(dailyPoints, 30),
+          return3m: returnFromPoints(dailyPoints, 91),
+          return6m: returnFromPoints(dailyPoints, 182),
+          return1y: returnFromPoints(dailyPoints, 365),
+          oneYearAgoPrice: old ? old.v : null,
+          oneYearAgoDate: old ? old.d : null,
+          previousYearLowPrice: low ? low.v : null,
+          previousYearLowDate: low ? low.d : null,
+          distanceFromPreviousYearLowPct: low && end && low.v ? Number(((end.v / low.v - 1) * 100).toFixed(2)) : null,
+          days: stockPayload.summary?.sourceAsOf || '',
+          monthlyPoints,
+          weeklyPoints,
+          dailyPoints,
+          ma200SlopePct: avg(sectorItems, 'ma200SlopePct'),
+          trendScore: avg(sectorItems, 'trendScore'),
+          dipScore: avg(sectorItems, 'dipScore'),
+          recoveryScore: avg(sectorItems, 'recoveryScore'),
+          investmentScore: avg(sectorItems, 'investmentScore'),
+          investmentSignal: 'Sector blend',
+        };
+      });
+      classifyClientSide(items);
+      return {
+        summary: {
+          ...(stockPayload.summary || {}),
+          instrumentCount: items.length,
+          validatedChartCount: items.filter(item => item.validated).length,
+          source: `${stockPayload.summary?.source || 'Capital.com demo API'} sectors`,
+        },
+        items,
+      };
+    }
+
+    function classifyClientSide(items) {
+      const ranked = items.filter(item => item.validated && Number.isFinite(item.returnTotal)).sort((a, b) => b.returnTotal - a.returnTotal);
+      const quartile = ranked.length ? Math.ceil(ranked.length * 0.25) : 0;
+      const bottomStart = ranked.length - quartile;
+      ranked.forEach((item, index) => {
+        item.performanceRank = index + 1;
+        item.band = index < quartile ? 'Best' : index >= bottomStart ? 'Worst' : 'Mediocre';
+      });
+      [...items].sort(compareInvestment).forEach((item, index) => { item.investmentRank = index + 1; });
+    }
+
     function renderSectorPanel(items) {
       if (activeDataset !== 'stocks') {
         activeSector = 'all';
@@ -378,6 +499,9 @@
       const investmentRank = item.displayInvestmentRank || item.investmentRank || 'n/a';
       const investmentRankLabel = hasInvestmentScore ? 'Inv rank' : 'Low rank';
       const investmentBasis = hasInvestmentScore ? 'weighted score' : hasLowDistance ? 'low-price only' : 'not scored';
+      const sectorOpen = activeDataset === 'sectors'
+        ? `<button type="button" class="open-sector" data-sector-open="${escapeHtml(item.sectorName || item.name)}">Open ${escapeHtml(item.sectorName || item.name)}</button>`
+        : '';
       const investmentPanel = hasInvestmentScore
         ? `<div class="invest"><div><span>Invest score</span><strong>${fmtScore(item.investmentScore)}</strong></div><div><span>Signal</span><strong>${escapeHtml(item.investmentSignal || 'Watch')}</strong></div><div><span>MA trend</span><strong>${fmtPct(item.ma200SlopePct)}</strong></div></div>`
         : '';
@@ -401,6 +525,7 @@
         <div class="refs"><div><span>1Y ago ${item.oneYearAgoDate || ''}</span><strong>${fmtPrice(item.oneYearAgoPrice)}</strong></div><div><span>Prev-year low ${item.previousYearLowDate || ''}</span><strong>${fmtPrice(item.previousYearLowPrice)} · ${fmtDistance(item.distanceFromPreviousYearLowPct)}</strong></div></div>
         ${trendPanel}
         ${chart}
+        ${sectorOpen}
         <div class="code">Performance ${item.performanceRank || 'n/a'} · Investment ${investmentRank} (${investmentBasis}) · ${chartMode.value} chart · ${item.priceDate || 'n/a'}</div>
       </article>`;
     }
@@ -438,6 +563,11 @@
 
     async function loadDataset(key) {
       if (datasets[key]) return datasets[key];
+      if (key === 'sectors') {
+        const stocks = await loadDataset('stocks');
+        datasets[key] = buildSectorPayload(stocks);
+        return datasets[key];
+      }
       const response = await fetch(datasetFiles[key], { cache: 'no-store' });
       if (!response.ok) {
         throw new Error(`${datasetLabels[key]} data is not ready yet. Run the GitHub refresh once, or wait for the next daily refresh.`);
@@ -459,7 +589,7 @@
       activeDataset = key;
       tabButtons.forEach(button => button.classList.toggle('active', button.dataset.dataset === key));
       grid.innerHTML = '';
-      note.textContent = key === 'stocks' ? 'Loading stocks...' : 'Loading ETFs...';
+      note.textContent = key === 'sectors' ? 'Loading sector indexes...' : key === 'stocks' ? 'Loading stocks...' : 'Loading ETFs...';
       try {
         payload = await loadDataset(key);
         activeSector = 'all';
@@ -530,6 +660,15 @@
       if (!button) return;
       activeSector = button.dataset.sector;
       render();
+    });
+    grid.addEventListener('click', event => {
+      const button = event.target.closest('.open-sector');
+      if (!button) return;
+      activeSector = button.dataset.sectorOpen;
+      selectDataset('stocks').then(() => {
+        activeSector = button.dataset.sectorOpen;
+        render();
+      });
     });
   </script>
 </body>
