@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -246,6 +246,18 @@
       const cls = item.band || 'Unvalidated';
       const points = chartPoints(item);
       const ep = endPoint(points);
+      const hasInvestmentScore = Number.isFinite(item.investmentScore);
+      const hasTrendDetails = [item.trendScore, item.dipScore, item.recoveryScore].some(Number.isFinite);
+      const hasLowDistance = Number.isFinite(item.distanceFromPreviousYearLowPct);
+      const investmentRank = item.displayInvestmentRank || item.investmentRank || 'n/a';
+      const investmentRankLabel = hasInvestmentScore ? 'Inv rank' : 'Low rank';
+      const investmentBasis = hasInvestmentScore ? 'weighted score' : hasLowDistance ? 'low-price only' : 'not scored';
+      const investmentPanel = hasInvestmentScore
+        ? `<div class="invest"><div><span>Invest score</span><strong>${fmtScore(item.investmentScore)}</strong></div><div><span>Signal</span><strong>${escapeHtml(item.investmentSignal || 'Watch')}</strong></div><div><span>MA trend</span><strong>${fmtPct(item.ma200SlopePct)}</strong></div></div>`
+        : '';
+      const trendPanel = hasTrendDetails
+        ? `<div class="code">Trend ${fmtScore(item.trendScore)} / dip ${fmtScore(item.dipScore)} / recovery ${fmtScore(item.recoveryScore)}</div>`
+        : `<div class="code">Investment basis: ${investmentBasis}</div>`;
       const chart = item.validated && points.length > 1
         ? `<svg viewBox="0 0 218 96" role="img" aria-label="${escapeHtml(item.name)} chart">
              <line class="axis" x1="7" y1="70" x2="211" y2="70"></line>
@@ -257,13 +269,13 @@
         : '<div class="no-chart">No chart</div>';
       return `<article class="card ${cls}">
         <div class="head"><div><div class="name">${escapeHtml(item.name)}</div><div class="code">${escapeHtml(item.epic || item.symbol || '')}</div></div><span class="badge">${cls}</span></div>
-        <div class="metrics"><div><span>Perf rank</span><strong>${item.performanceRank || 'n/a'}</strong></div><div><span>Inv rank</span><strong>${item.displayInvestmentRank || item.investmentRank || 'n/a'}</strong></div><div><span>Price</span><strong>${fmtPrice(item.price)}</strong></div></div>
-        <div class="invest"><div><span>Invest score</span><strong>${fmtScore(item.investmentScore)}</strong></div><div><span>Signal</span><strong>${escapeHtml(item.investmentSignal || 'Watch')}</strong></div><div><span>MA trend</span><strong>${fmtPct(item.ma200SlopePct)}</strong></div></div>
+        <div class="metrics"><div><span>Perf rank</span><strong>${item.performanceRank || 'n/a'}</strong></div><div><span>${investmentRankLabel}</span><strong>${investmentRank}</strong></div><div><span>Price</span><strong>${fmtPrice(item.price)}</strong></div></div>
+        ${investmentPanel}
         <div class="periods"><div><span>1W</span><strong>${fmtPct(item.return1w)}</strong></div><div><span>1M</span><strong>${fmtPct(item.return1m)}</strong></div><div><span>3M</span><strong>${fmtPct(item.return3m)}</strong></div><div><span>6M</span><strong>${fmtPct(item.return6m)}</strong></div><div><span>1Y</span><strong>${fmtPct(item.return1y)}</strong></div></div>
         <div class="refs"><div><span>1Y ago ${item.oneYearAgoDate || ''}</span><strong>${fmtPrice(item.oneYearAgoPrice)}</strong></div><div><span>Prev-year low ${item.previousYearLowDate || ''}</span><strong>${fmtPrice(item.previousYearLowPrice)} · ${fmtDistance(item.distanceFromPreviousYearLowPct)}</strong></div></div>
-        <div class="code">Trend ${fmtScore(item.trendScore)} / dip ${fmtScore(item.dipScore)} / recovery ${fmtScore(item.recoveryScore)}</div>
+        ${trendPanel}
         ${chart}
-        <div class="code">Performance ${item.performanceRank || 'n/a'} · Investment ${item.displayInvestmentRank || item.investmentRank || 'n/a'} · ${chartMode.value} chart · ${item.priceDate || 'n/a'}</div>
+        <div class="code">Performance ${item.performanceRank || 'n/a'} · Investment ${investmentRank} (${investmentBasis}) · ${chartMode.value} chart · ${item.priceDate || 'n/a'}</div>
       </article>`;
     }
 
