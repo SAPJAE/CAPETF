@@ -502,6 +502,11 @@
       const sectorOpen = activeDataset === 'sectors'
         ? `<button type="button" class="open-sector" data-sector-open="${escapeHtml(item.sectorName || item.name)}">Open ${escapeHtml(item.sectorName || item.name)}</button>`
         : '';
+      const sectorLine = activeDataset === 'stocks'
+        ? `<div class="code">Sector ${escapeHtml(sectorOf(item))}${item.industry ? ` · Industry ${escapeHtml(item.industry)}` : ''}</div>`
+        : activeDataset === 'sectors'
+          ? `<div class="code">${item.sectorMemberCount || 0} stocks in this sector index</div>`
+          : '';
       const investmentPanel = hasInvestmentScore
         ? `<div class="invest"><div><span>Invest score</span><strong>${fmtScore(item.investmentScore)}</strong></div><div><span>Signal</span><strong>${escapeHtml(item.investmentSignal || 'Watch')}</strong></div><div><span>MA trend</span><strong>${fmtPct(item.ma200SlopePct)}</strong></div></div>`
         : '';
@@ -519,6 +524,7 @@
         : '<div class="no-chart">No chart</div>';
       return `<article class="card ${cls}">
         <div class="head"><div><div class="name">${escapeHtml(item.name)}</div><div class="code">${escapeHtml(item.epic || item.symbol || '')}</div></div><span class="badge">${cls}</span></div>
+        ${sectorLine}
         <div class="metrics"><div><span>Perf rank</span><strong>${item.performanceRank || 'n/a'}</strong></div><div><span>${investmentRankLabel}</span><strong>${investmentRank}</strong></div><div><span>Price</span><strong>${fmtPrice(item.price)}</strong></div></div>
         ${investmentPanel}
         <div class="periods"><div><span>1W</span><strong>${fmtPct(item.return1w)}</strong></div><div><span>1M</span><strong>${fmtPct(item.return1m)}</strong></div><div><span>3M</span><strong>${fmtPct(item.return3m)}</strong></div><div><span>6M</span><strong>${fmtPct(item.return6m)}</strong></div><div><span>1Y</span><strong>${fmtPct(item.return1y)}</strong></div></div>
