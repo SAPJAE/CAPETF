@@ -303,6 +303,24 @@ def fetch_market_details(client, market):
     return market
 
 
+def enrich_market_details(client, markets):
+    enriched = {market["epic"]: dict(market) for market in markets}
+    epics = list(enriched)
+    for start in range(0, len(epics), 50):
+        batch = epics[start:start + 50]
+        try:
+            query = urllib.parse.quote(",".join(batch), safe=",")
+            payload = client.get(f"/markets?epics={query}")
+            for details in extract_markets(payload):
+                epic = details.get("epic")
+                if epic in enriched:
+                    enriched[epic].update(details)
+        except Exception as exc:
+            print(f"GET /markets?epics=batch failed: {exc}")
+        time.sleep(0.15)
+    return [enriched[market["epic"]] for market in markets]
+
+
 def closest_on_or_before(rows, target):
     best = None
     for row in rows:
@@ -562,12 +580,13 @@ def run(output_path, kind="etf", label="ETF", limit=None):
     if not instruments:
         raise RuntimeError(f"No {label} instruments found in Capital.com market discovery.")
 
+    if kind == "stock":
+        instruments = enrich_market_details(client, instruments)
+
     items = []
     for index, market in enumerate(instruments, start=1):
         print(f"[{index}/{len(instruments)}] {market.get('epic')} {market.get('instrumentName')}", flush=True)
         try:
-            if kind == "stock":
-                market = fetch_market_details(client, market)
             rows = fetch_prices(client, market["epic"])
             items.append(build_item(market, rows))
         except Exception as exc:
