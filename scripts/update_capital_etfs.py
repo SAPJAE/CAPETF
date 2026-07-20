@@ -82,13 +82,66 @@ def extract_markets(payload):
 
 def market_text(market):
     parts = []
-    for key in ("instrumentName", "epic", "symbol", "instrumentType", "type", "marketStatus"):
+    for key in (
+        "instrumentName",
+        "epic",
+        "symbol",
+        "instrumentType",
+        "type",
+        "marketStatus",
+        "status",
+        "dealStatus",
+        "tradeStatus",
+        "tradingStatus",
+    ):
         if market.get(key):
             parts.append(str(market[key]))
     return " ".join(parts).lower()
 
 
+def is_tradeable_market(market):
+    text = market_text(market)
+    blocked_terms = (
+        "close only",
+        "closing only",
+        "close-only",
+        "closing-only",
+        "closings only",
+        "view only",
+        "view-only",
+        "reduce only",
+        "reduce-only",
+        "disabled",
+        "suspended",
+        "delisted",
+        "expired",
+        "unavailable",
+        "not tradeable",
+        "not tradable",
+        "not available",
+        "cannot open",
+        "open disabled",
+        "opening disabled",
+    )
+    if any(term in text for term in blocked_terms):
+        return False
+
+    allowed_statuses = ("open", "closed", "tradeable", "tradable", "normal", "online", "active")
+    for key in ("marketStatus", "status", "dealStatus", "tradeStatus", "tradingStatus"):
+        value = str(market.get(key) or "").strip().lower()
+        if value and value not in allowed_statuses:
+            return False
+
+    for key in ("canOpenPosition", "canOpenPositions", "openingAllowed", "isTradeable", "isTradable"):
+        if market.get(key) is False:
+            return False
+
+    return True
+
+
 def is_etf(market):
+    if not is_tradeable_market(market):
+        return False
     name = str(market.get("instrumentName") or market.get("name") or "").lower()
     epic = str(market.get("epic") or "").lower()
     padded_name = f" {name} "
@@ -101,6 +154,8 @@ def is_etf(market):
 
 
 def is_stock(market):
+    if not is_tradeable_market(market):
+        return False
     if is_etf(market):
         return False
     text = market_text(market)
