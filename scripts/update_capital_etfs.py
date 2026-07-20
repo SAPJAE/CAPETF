@@ -524,7 +524,7 @@ def aggregate_points(rows, period):
     ]
 
 
-def classify(items):
+def classify(items, metadata=None):
     ranked = sorted(
         [item for item in items if item.get("validated") and item.get("returnTotal") is not None],
         key=lambda item: item["returnTotal"],
@@ -558,6 +558,7 @@ def classify(items):
             "instrumentCount": len(items),
             "validatedChartCount": len([item for item in items if item.get("validated")]),
             "source": "Capital.com demo API",
+            **(metadata or {}),
             "classification": {
                 "mappedCount": len([item for item in items if item.get("country") and item.get("sector")]),
                 "unmappedCount": len([item for item in items if not item.get("country") or not item.get("sector")]),
@@ -630,15 +631,15 @@ def build_item(market, rows):
     return item
 
 
-def run(output_path, kind="etf", label="ETF", limit=None):
+def run(output_path, kind="etf", label="ETF", limit=None, offset=0, metadata=None):
     client = CapitalClient()
     client.login()
     instruments = discover_instruments(client, kind)
     if limit is not None:
-        selected = instruments[:limit]
+        selected = instruments[offset:offset + limit]
         if kind == "stock":
             selected_epics = {market["epic"] for market in selected}
-            extras = [market for market in instruments[limit:] if is_always_include_stock(market) and market["epic"] not in selected_epics]
+            extras = [market for market in instruments if is_always_include_stock(market) and market["epic"] not in selected_epics]
             selected.extend(extras)
         instruments = selected
     if not instruments:
@@ -675,7 +676,7 @@ def run(output_path, kind="etf", label="ETF", limit=None):
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(classify(items), indent=2, ensure_ascii=False), encoding="utf-8")
+    output.write_text(json.dumps(classify(items, metadata), indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Wrote {output}")
 
 

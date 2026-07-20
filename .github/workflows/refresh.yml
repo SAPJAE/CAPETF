@@ -58,14 +58,19 @@ jobs:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
-        run: python scripts/update_capital_stocks.py --output data/stocks.raw.json --limit 2500
+        run: python scripts/update_capital_stocks.py --output data/stocks.raw.json --limit 625 --chunks 4 --manifest data/stocks-manifest.raw.json
 
       - name: Encrypt stock data
         env:
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
         run: |
-          python scripts/encrypt_data.py --input data/stocks.raw.json --output data/stocks.enc.json
-          rm data/stocks.raw.json
+          for file in data/stocks-*.raw.json; do
+            out="${file/.raw.json/.enc.json}"
+            python scripts/encrypt_data.py --input "$file" --output "$out"
+            rm "$file"
+          done
+          python scripts/encrypt_data.py --input data/stocks-manifest.raw.json --output data/stocks-manifest.enc.json
+          rm data/stocks-manifest.raw.json
 
       - name: Commit refreshed data
         uses: stefanzweifel/git-auto-commit-action@v5

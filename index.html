@@ -248,8 +248,10 @@
     const authPanel = document.getElementById('auth-panel');
     const tabButtons = [...document.querySelectorAll('.tab')];
     const datasetFiles = { etfs: 'data/etfs.enc.json', stocks: 'data/stocks.enc.json' };
+    const stockManifestFile = 'data/stocks-manifest.enc.json';
     const datasetLabels = { sectors: 'sector', etfs: 'ETF', stocks: 'stock' };
     const datasets = {};
+    const loadingDatasets = {};
     let activeDataset = 'etfs';
     let activeSector = 'all';
     const collapsedSectorGroups = new Set();
@@ -643,6 +645,69 @@
       ranked.forEach((item, index) => { item.displayInvestmentRank = index + 1; });
     }
 
+    function mergePayloads(parts) {
+      const itemsByEpic = {};
+      parts.forEach(part => (part.items || []).forEach(item => { itemsByEpic[item.epic] = item; }));
+      const summaries = parts.map(part => part.summary || {});
+      const sourceDates = summaries.map(summary => summary.sourceAsOf).filter(Boolean).sort();
+      const refreshed = summaries.map(summary => summary.refreshedAtUtc).filter(Boolean).sort();
+      return {
+        summary: {
+          ...(summaries[summaries.length - 1] || {}),
+          sourceAsOf: sourceDates[sourceDates.length - 1] || 'n/a',
+          refreshedAtUtc: refreshed[refreshed.length - 1] || '',
+          instrumentCount: Object.keys(itemsByEpic).length,
+          validatedChartCount: Object.values(itemsByEpic).filter(item => item.validated).length,
+          source: 'Capital.com demo API chunks',
+          chunkCount: parts.length,
+        },
+        items: Object.values(itemsByEpic),
+      };
+    }
+
+    async function loadEncryptedFile(file) {
+      const response = await fetch(file, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`${file} is not ready yet.`);
+      return decrypt(await response.json(), dashboardPassword);
+    }
+
+    async function loadChunkedStocks() {
+      if (datasets.stocks) return datasets.stocks;
+      if (loadingDatasets.stocks) return loadingDatasets.stocks;
+      loadingDatasets.stocks = (async () => {
+        try {
+          const manifest = await loadEncryptedFile(stockManifestFile);
+          const files = manifest.chunkFiles || [];
+          const loadedParts = [];
+          for (let index = 0; index < files.length; index += 4) {
+            const group = files.slice(index, index + 4);
+            const parts = await Promise.all(group.map(file => loadEncryptedFile(file)));
+            loadedParts.push(...parts);
+            datasets.stocks = mergePayloads(loadedParts);
+            note.textContent = `Loaded ${Math.min(index + 4, files.length)} of ${files.length} stock chunks.`;
+            if (activeDataset === 'stocks') {
+              payload = datasets.stocks;
+              prepareDisplayRanks();
+              updateSummary();
+              render();
+            }
+            if (activeDataset === 'sectors') delete datasets.sectors;
+          }
+          datasets.stocks = mergePayloads(loadedParts);
+          return datasets.stocks;
+        } catch (error) {
+          const response = await fetch(datasetFiles.stocks, { cache: 'no-store' });
+          if (!response.ok) throw error;
+          const loaded = await decrypt(await response.json(), dashboardPassword);
+          datasets.stocks = loaded;
+          return loaded;
+        } finally {
+          delete loadingDatasets.stocks;
+        }
+      })();
+      return loadingDatasets.stocks;
+    }
+
     async function loadDataset(key) {
       if (datasets[key]) return datasets[key];
       if (key === 'sectors') {
@@ -650,6 +715,7 @@
         datasets[key] = buildSectorPayload(stocks);
         return datasets[key];
       }
+      if (key === 'stocks') return loadChunkedStocks();
       const response = await fetch(datasetFiles[key], { cache: 'no-store' });
       if (!response.ok) {
         throw new Error(`${datasetLabels[key]} data is not ready yet. Run the GitHub refresh once, or wait for the next daily refresh.`);
