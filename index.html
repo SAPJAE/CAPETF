@@ -320,11 +320,13 @@
       return -999999;
     }
 
+    function compareInvestment(a, b) {
+      const diff = investmentSortValue(b) - investmentSortValue(a);
+      return diff || a.name.localeCompare(b.name);
+    }
+
     function prepareDisplayRanks() {
-      const ranked = [...(payload.items || [])].sort((a, b) => {
-        const diff = investmentSortValue(b) - investmentSortValue(a);
-        return diff || a.name.localeCompare(b.name);
-      });
+      const ranked = [...(payload.items || [])].sort(compareInvestment);
       ranked.forEach((item, index) => { item.displayInvestmentRank = index + 1; });
     }
 
@@ -372,7 +374,7 @@
       ));
       items.sort((a, b) => {
         if (sort.value === 'name') return a.name.localeCompare(b.name);
-        if (sort.value === 'investmentRank') return investmentSortValue(b) - investmentSortValue(a);
+        if (sort.value === 'investmentRank') return compareInvestment(a, b);
         if (sort.value.startsWith('return')) return (b[sort.value] ?? -999999) - (a[sort.value] ?? -999999);
         return (a.performanceRank ?? 999999) - (b.performanceRank ?? 999999);
       });
