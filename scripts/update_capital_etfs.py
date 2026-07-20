@@ -17,6 +17,31 @@ except ImportError:
 DEMO_BASE_URL = "https://demo-api-capital.backend-capital.com/api/v1"
 LIVE_BASE_URL = "https://api-capital.backend-capital.com/api/v1"
 ALWAYS_INCLUDE_STOCK_TERMS = ("sap",)
+SECTOR_NAMES = {
+    "basic materials": "Materials",
+    "communication services": "Communication Services",
+    "communications": "Communication Services",
+    "consumer cyclical": "Consumer Discretionary",
+    "consumer defensive": "Consumer Staples",
+    "consumer discretionary": "Consumer Discretionary",
+    "consumer goods": "Consumer Staples",
+    "consumer services": "Consumer Discretionary",
+    "consumer staples": "Consumer Staples",
+    "energy": "Energy",
+    "financial": "Financials",
+    "financial services": "Financials",
+    "financials": "Financials",
+    "health care": "Healthcare",
+    "healthcare": "Healthcare",
+    "industrial goods": "Industrials",
+    "industrials": "Industrials",
+    "information technology": "Technology",
+    "materials": "Materials",
+    "real estate": "Real Estate",
+    "technology": "Technology",
+    "telecommunications": "Communication Services",
+    "utilities": "Utilities",
+}
 
 
 class CapitalClient:
@@ -84,6 +109,15 @@ def extract_markets(payload):
     for market in markets:
         deduped[market["epic"]] = market
     return list(deduped.values())
+
+
+def extract_navigation_markets(payload, path):
+    markets = []
+    for market in payload.get("markets", []) or []:
+        enriched = dict(market)
+        enriched["navigationPath"] = path
+        markets.append(enriched)
+    return markets
 
 
 def market_text(market):
@@ -204,21 +238,22 @@ def discover_instruments(client, kind):
     except Exception as exc:
         print(f"GET /markets failed: {exc}")
 
-    if not any(instrument_matches(market, kind) for market in markets):
+    if kind == "stock" or not any(instrument_matches(market, kind) for market in markets):
         roots = client.get("/marketnavigation")
         nodes = roots.get("nodes") or roots.get("marketNavigation") or []
-        queue = list(nodes)
+        queue = [(node, [str(node.get("name") or node.get("id") or "")]) for node in nodes]
         seen = set()
         while queue:
-            node = queue.pop(0)
+            node, path = queue.pop(0)
             node_id = str(node.get("id", ""))
             if not node_id or node_id in seen:
                 continue
             seen.add(node_id)
             node_payload = client.get(f"/marketnavigation/{urllib.parse.quote(node_id)}?limit=500")
-            markets.extend(extract_markets(node_payload))
+            markets.extend(extract_navigation_markets(node_payload, path))
             for child in node_payload.get("nodes", []) or node_payload.get("marketNavigation", []) or []:
-                queue.append(child)
+                child_name = str(child.get("name") or child.get("id") or "")
+                queue.append((child, [*path, child_name]))
             time.sleep(0.15)
 
     instruments = [market for market in markets if instrument_matches(market, kind)]
@@ -252,6 +287,14 @@ def first_market_value(market, keys):
 
 def first_upper_market_value(market, keys):
     return first_market_value(market, keys).upper()
+
+
+def navigation_sector(market):
+    for part in market.get("navigationPath") or []:
+        normalized = str(part or "").strip().lower().replace("_", " ")
+        if normalized in SECTOR_NAMES:
+            return SECTOR_NAMES[normalized]
+    return ""
 
 
 def discover_etfs(client):
@@ -532,12 +575,13 @@ def build_item(market, rows):
         "name": name,
         "symbol": market.get("symbol", ""),
         "instrumentType": market.get("instrumentType") or market.get("type") or "",
-        "sector": first_market_value(market, ("sector", "sectorName", "industrySector", "marketSector")),
+        "sector": first_market_value(market, ("sector", "sectorName", "industrySector", "marketSector")) or navigation_sector(market),
         "industry": first_market_value(market, ("industry", "industryName", "subsector", "subSector", "sectorSubType")),
         "country": first_market_value(market, ("country", "countryName", "countryOfOrigin")),
         "currency": first_upper_market_value(market, ("currency", "currencyCode", "quoteCurrency", "priceCurrency")),
         "exchange": first_market_value(market, ("exchange", "exchangeName", "exchangeShortName")),
         "region": first_market_value(market, ("region",)),
+        "navigationPath": market.get("navigationPath") or [],
         "classificationSource": market.get("classificationSource") or "Capital.com",
         "classificationConfidence": market.get("classificationConfidence") or 0,
         "status": market.get("marketStatus") or market.get("status") or "",
