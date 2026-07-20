@@ -247,6 +247,21 @@
       return String(value || '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[char]));
     }
 
+    function escapeRegExp(value) {
+      return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function matchesSearch(item, query) {
+      if (!query) return true;
+      const name = String(item.name || '').toLowerCase();
+      const symbol = String(item.symbol || '').toLowerCase();
+      const epic = String(item.epic || '').toLowerCase();
+      if (query.length <= 3) {
+        return symbol.startsWith(query) || epic.startsWith(query) || new RegExp(`\\b${escapeRegExp(query)}\\b`).test(name);
+      }
+      return `${name} ${symbol} ${epic}`.includes(query);
+    }
+
     function fromBase64Url(value) {
       const padded = value + '='.repeat((4 - value.length % 4) % 4);
       const binary = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
@@ -308,7 +323,7 @@
       const text = `${item.name || ''} ${item.symbol || ''}`.toLowerCase();
       if (/bank|bancorp|financial|capital|insurance|asset|managers|credit|loan|mortgage|exchange/.test(text)) return 'Financials';
       if (/bio|pharma|health|medical|therapeutics|genomics|surgery|well|care|diagnostics/.test(text)) return 'Healthcare';
-      if (/software|semiconductor|systems|digital|cyber|tech|data|network|communications|apple|sap/.test(text)) return 'Technology';
+      if (/software|semiconductor|systems|digital|cyber|tech|data|network|communications|apple|\bsap\b/.test(text)) return 'Technology';
       if (/energy|oil|gas|solar|power|electric|resources|mining|metals/.test(text)) return 'Energy & Materials';
       if (/air|auto|industrial|aerospace|logistics|shipping|rail|construction|test systems/.test(text)) return 'Industrials';
       if (/retail|consumer|restaurants|foods|beverage|apparel|travel|hotel|entertainment|media|networks/.test(text)) return 'Consumer';
@@ -613,7 +628,7 @@
       const query = search.value.trim().toLowerCase();
       let items = (payload.items || []).filter(item => (
         (band.value === 'all' || item.band === band.value) &&
-        (!query || `${item.name} ${item.symbol} ${item.epic}`.toLowerCase().includes(query))
+        matchesSearch(item, query)
       ));
       renderSectorPanel(items);
       if (activeDataset === 'stocks' && activeSector !== 'all') {
