@@ -327,9 +327,17 @@
     }
 
     async function unlock() {
+      if (!password.value) {
+        authNote.textContent = 'Enter the dashboard password.';
+        return;
+      }
+      const unlockButton = document.getElementById('unlock');
+      unlockButton.disabled = true;
       try {
-        authNote.textContent = 'Decrypting...';
+        authNote.textContent = 'Downloading encrypted data. First load can take up to a minute.';
         const response = await fetch('data/etfs.enc.json', { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        authNote.textContent = 'Decrypting data. Please keep this tab open.';
         payload = await decrypt(await response.json(), password.value);
         prepareDisplayRanks();
         const summary = payload.summary || {};
@@ -338,10 +346,12 @@
         document.getElementById('source-date').textContent = summary.sourceAsOf || 'n/a';
         document.getElementById('source-name').textContent = summary.source || 'Demo';
         document.body.classList.remove('locked');
+        authNote.textContent = 'Unlocked.';
         authPanel.style.display = 'none';
         render();
       } catch {
         authNote.textContent = 'Password did not unlock the data.';
+        unlockButton.disabled = false;
       }
     }
 
