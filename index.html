@@ -76,6 +76,9 @@
     .controls, .status { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin: 10px 0; }
     .status { justify-content: space-between; }
     .status a { color: var(--accent); font-size: 13px; }
+    .refresh-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+    .refresh-tools .disabled { color: var(--muted); pointer-events: none; text-decoration: none; }
+    .refresh-state { color: var(--muted); font-size: 12px; }
     .dashboard-layout { display: block; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 10px; }
     .sector-groups { display: grid; gap: 12px; grid-column: 1 / -1; }
@@ -192,7 +195,10 @@
 
       <div class="status">
         <div class="note" id="note">Waiting for password...</div>
-        <a href="https://github.com/SAPJAE/CAPETF/actions/workflows/refresh.yml">Manual refresh</a>
+        <div class="refresh-tools">
+          <span class="refresh-state" id="refresh-state">Checking refresh...</span>
+          <a id="manual-refresh" href="https://github.com/SAPJAE/CAPETF/actions/workflows/refresh.yml">Manual refresh</a>
+        </div>
       </div>
       <section class="dashboard-layout">
         <section class="grid" id="grid"></section>
@@ -207,6 +213,8 @@
     const sort = document.getElementById('sort');
     const chartMode = document.getElementById('chart-mode');
     const note = document.getElementById('note');
+    const refreshState = document.getElementById('refresh-state');
+    const manualRefresh = document.getElementById('manual-refresh');
     const password = document.getElementById('password');
     const authNote = document.getElementById('auth-note');
     const authPanel = document.getElementById('auth-panel');
@@ -221,6 +229,7 @@
     let dashboardPassword = '';
     let payload = null;
     let renderToken = 0;
+    let refreshPollTimer = null;
 
     const fmtPct = value => value == null ? 'n/a' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
     const fmtPrice = value => value == null ? 'n/a' : Number(value).toFixed(2);
@@ -238,6 +247,38 @@
 
     function escapeRegExp(value) {
       return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function setRefreshBusy(isBusy, text) {
+      refreshState.textContent = text;
+      manualRefresh.classList.toggle('disabled', isBusy);
+      manualRefresh.setAttribute('aria-disabled', isBusy ? 'true' : 'false');
+      manualRefresh.title = isBusy ? 'A refresh is already running. Wait for GitHub Pages to publish the new files.' : 'Open GitHub Actions manual refresh page.';
+    }
+
+    async function checkRefreshStatus() {
+      try {
+        const response = await fetch('https://api.github.com/repos/SAPJAE/CAPETF/actions/workflows/refresh.yml/runs?per_page=1', { cache: 'no-store' });
+        if (!response.ok) throw new Error('status unavailable');
+        const data = await response.json();
+        const run = (data.workflow_runs || [])[0];
+        if (!run) {
+          setRefreshBusy(false, 'Refresh status unavailable');
+          return;
+        }
+        if (run.status === 'queued' || run.status === 'in_progress' || run.status === 'waiting') {
+          setRefreshBusy(true, `Refresh ${run.status.replace('_', ' ')}`);
+          if (!refreshPollTimer) refreshPollTimer = setInterval(checkRefreshStatus, 60000);
+          return;
+        }
+        setRefreshBusy(false, `Last refresh ${run.conclusion || run.status}`);
+        if (refreshPollTimer) {
+          clearInterval(refreshPollTimer);
+          refreshPollTimer = null;
+        }
+      } catch {
+        setRefreshBusy(false, 'Refresh status unavailable');
+      }
     }
 
     function matchesSearch(item, query) {
@@ -782,6 +823,7 @@
         document.body.classList.remove('locked');
         authNote.textContent = 'Unlocked.';
         authPanel.style.display = 'none';
+        checkRefreshStatus();
         render();
       } catch {
         authNote.textContent = 'Password did not unlock the data.';
@@ -790,6 +832,9 @@
     }
 
     document.getElementById('unlock').addEventListener('click', unlock);
+    manualRefresh.addEventListener('click', event => {
+      if (manualRefresh.getAttribute('aria-disabled') === 'true') event.preventDefault();
+    });
     password.addEventListener('keydown', event => { if (event.key === 'Enter') unlock(); });
     search.addEventListener('input', render);
     band.addEventListener('change', render);
