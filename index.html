@@ -405,6 +405,14 @@
       return `${regionOf(item)} / ${currencyOf(item)} / ${sectorOf(item)}`;
     }
 
+    function stockFamilyKey(item) {
+      return `stock|${regionOf(item)}|${currencyOf(item)}`;
+    }
+
+    function stockFamilyLabel(item) {
+      return `${regionOf(item)} / ${currencyOf(item)}`;
+    }
+
     function sectorFamilyKey(item) {
       return `${item.regionName || regionOf(item)}|${item.currencyName || currencyOf(item)}`;
     }
@@ -823,6 +831,10 @@
         grid.innerHTML = renderSectorGroups(items);
         return;
       }
+      if (activeDataset === 'stocks') {
+        renderStockGroups(items, token, finalNote);
+        return;
+      }
       renderCardsInBatches(items, token, finalNote);
     }
 
@@ -843,6 +855,45 @@
         }
       }
       appendBatch();
+    }
+
+    function renderStockGroups(items, token, finalNote) {
+      const groups = {};
+      items.forEach(item => {
+        const key = stockFamilyKey(item);
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(item);
+      });
+      const entries = Object.entries(groups).sort(([left], [right]) => left.localeCompare(right));
+      let index = 0;
+      grid.innerHTML = '<div class="sector-groups" id="stock-groups"></div>';
+      const container = document.getElementById('stock-groups');
+      function appendGroup() {
+        if (token !== renderToken) return;
+        const entry = entries[index];
+        if (!entry) {
+          note.textContent = finalNote;
+          return;
+        }
+        const [key, groupItems] = entry;
+        const collapsed = collapsedSectorGroups.has(key);
+        const label = stockFamilyLabel(groupItems[0] || {});
+        const best = groupItems.filter(item => (item.displayBand || item.band) === 'Best').length;
+        const mediocre = groupItems.filter(item => (item.displayBand || item.band) === 'Mediocre').length;
+        const worst = groupItems.filter(item => (item.displayBand || item.band) === 'Worst').length;
+        container.insertAdjacentHTML('beforeend', `<section class="sector-group ${collapsed ? 'collapsed' : ''}">
+          <button type="button" class="sector-toggle" data-sector-family="${escapeHtml(key)}">${collapsed ? '+' : '-'} ${escapeHtml(label)} <span>${groupItems.length} stocks · Best ${best} · Mid ${mediocre} · Worst ${worst}</span></button>
+          <div class="sector-group-grid">${groupItems.map(card).join('')}</div>
+        </section>`);
+        index += 1;
+        if (index < entries.length) {
+          note.textContent = `Rendering ${index} of ${entries.length} stock currency groups...`;
+          requestAnimationFrame(appendGroup);
+        } else {
+          note.textContent = finalNote;
+        }
+      }
+      appendGroup();
     }
 
     function renderSectorGroups(items) {
