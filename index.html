@@ -235,6 +235,7 @@
     let renderToken = 0;
     let refreshPollTimer = null;
     let stockBatchPollTimer = null;
+    let refreshIsBusy = false;
 
     const fmtPct = value => value == null ? 'n/a' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
     const fmtPrice = value => value == null ? 'n/a' : Number(value).toFixed(2);
@@ -255,10 +256,20 @@
     }
 
     function setRefreshBusy(isBusy, text) {
+      refreshIsBusy = isBusy;
       refreshState.textContent = text;
       manualRefresh.classList.toggle('disabled', isBusy);
       manualRefresh.setAttribute('aria-disabled', isBusy ? 'true' : 'false');
       manualRefresh.title = isBusy ? 'A refresh is already running. Wait for GitHub Pages to publish the new files.' : 'Open GitHub Actions manual refresh page.';
+      if (isBusy && !Object.keys(stockPartsByFile).length) {
+        delete datasets.stocks;
+        if (activeDataset === 'stocks') {
+          payload = { summary: { instrumentCount: 0, validatedChartCount: 0, source: 'Waiting for stock batches', sourceAsOf: 'n/a' }, items: [] };
+          updateSummary();
+          grid.innerHTML = '';
+          note.textContent = `${text}. Waiting for first stock batch to publish.`;
+        }
+      }
     }
 
     async function checkRefreshStatus() {
@@ -722,6 +733,7 @@
     }
 
     async function loadChunkedStocks() {
+      await checkRefreshStatus();
       const { files, expectedCount } = await stockFilesToLoad();
       if (datasets.stocks && files.every(file => stockPartsByFile[file])) return datasets.stocks;
       if (loadingDatasets.stocks) return loadingDatasets.stocks;
@@ -730,6 +742,9 @@
           const loaded = await loadAvailableStockBatches(files, expectedCount);
           scheduleStockBatchPolling(files, expectedCount);
           if (loaded) return loaded;
+          if (refreshIsBusy) {
+            throw new Error('Stock refresh is running. Waiting for the first 250-stock batch to publish.');
+          }
           const response = await fetch(datasetFiles.stocks, { cache: 'no-store' });
           if (!response.ok) throw new Error('Stock batches are not published yet.');
           const fallback = await decrypt(await response.json(), dashboardPassword);
