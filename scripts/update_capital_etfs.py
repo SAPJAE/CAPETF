@@ -509,7 +509,7 @@ def investment_metrics(rows, end, low, returns):
 
 def aggregate_points(rows, period):
     if period == "daily":
-        selected = rows
+        selected = rows[-130:]
         label_len = 10
     else:
         selected_by_period = {}
@@ -522,6 +522,8 @@ def aggregate_points(rows, period):
                 key = row["date"][:7]
             selected_by_period[key] = row
         selected = [selected_by_period[key] for key in sorted(selected_by_period)]
+        if period == "weekly":
+            selected = selected[-156:]
         label_len = 7
 
     if not selected:

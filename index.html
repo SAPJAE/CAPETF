@@ -333,11 +333,11 @@
     function chartPoints(item) {
       if (chartMode.value === 'daily') {
         const points = item.dailyPoints || [];
-        return points.slice(Math.floor(points.length * 0.75));
+        return points.length > 260 ? points.slice(Math.floor(points.length * 0.75)) : points;
       }
       if (chartMode.value === 'weekly') {
         const points = item.weeklyPoints || item.monthlyPoints || [];
-        return points.slice(Math.floor(points.length * 0.5));
+        return points.length > 156 ? points.slice(Math.floor(points.length * 0.5)) : points;
       }
       return item.monthlyPoints || [];
     }
