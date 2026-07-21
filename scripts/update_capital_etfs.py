@@ -3,6 +3,7 @@ import json
 import math
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timezone, timedelta
@@ -62,12 +63,21 @@ class CapitalClient:
         if auth:
             req.add_header("CST", self.cst)
             req.add_header("X-SECURITY-TOKEN", self.security_token)
-        with urllib.request.urlopen(req, timeout=45) as response:
-            text = response.read().decode("utf-8")
-            if path == "/session":
-                self.cst = response.headers.get("CST", "")
-                self.security_token = response.headers.get("X-SECURITY-TOKEN", "")
-            return json.loads(text) if text else {}
+        for attempt in range(6):
+            try:
+                with urllib.request.urlopen(req, timeout=45) as response:
+                    text = response.read().decode("utf-8")
+                    if path == "/session":
+                        self.cst = response.headers.get("CST", "")
+                        self.security_token = response.headers.get("X-SECURITY-TOKEN", "")
+                    return json.loads(text) if text else {}
+            except urllib.error.HTTPError as exc:
+                if exc.code not in (429, 500, 502, 503, 504) or attempt == 5:
+                    raise
+                retry_after = exc.headers.get("Retry-After")
+                delay = int(retry_after) if retry_after and retry_after.isdigit() else min(90, 8 * (attempt + 1))
+                print(f"{method} {path} returned HTTP {exc.code}; retrying in {delay}s.", flush=True)
+                time.sleep(delay)
 
     def login(self):
         self.request(
