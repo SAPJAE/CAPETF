@@ -68,7 +68,7 @@ jobs:
         env:
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
         run: |
-          for file in data/stocks-*.raw.json; do
+          for file in data/stocks-[0-9][0-9][0-9].raw.json; do
             out="${file/.raw.json/.enc.json}"
             python scripts/encrypt_data.py --input "$file" --output "$out"
             rm "$file"

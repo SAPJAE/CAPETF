@@ -45,6 +45,7 @@ def run_chunked(output_path, limit, offset, chunks, manifest_path):
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
+    base_name = output.name[:-len(".raw.json")] if output.name.endswith(".raw.json") else output.stem
     chunk_files = []
     total_chunks = math.ceil(len(selected) / limit)
     for chunk_index in range(total_chunks):
@@ -69,7 +70,7 @@ def run_chunked(output_path, limit, offset, chunks, manifest_path):
                 )
             time.sleep(0.15)
 
-        chunk_output = output.parent / f"{output.stem}-{chunk_index:03d}{output.suffix}"
+        chunk_output = output.parent / f"{base_name}-{chunk_index:03d}.raw.json"
         write_stock_payload(
             chunk_output,
             chunk_items,
