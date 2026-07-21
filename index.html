@@ -220,6 +220,7 @@
     const collapsedSectorGroups = new Set();
     let dashboardPassword = '';
     let payload = null;
+    let renderToken = 0;
 
     const fmtPct = value => value == null ? 'n/a' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
     const fmtPrice = value => value == null ? 'n/a' : Number(value).toFixed(2);
@@ -633,7 +634,7 @@
             loadedParts.push(part);
             datasets.stocks = mergePayloads(loadedParts);
             const loadedStocks = datasets.stocks.summary?.instrumentCount || 0;
-            const totalStocks = manifest.instrumentCount || files.length * (manifest.chunkSize || 4);
+            const totalStocks = manifest.instrumentCount || files.length * (manifest.chunkSize || 250);
             note.textContent = `Loaded ${loadedStocks} of ${totalStocks} stocks.`;
             if (activeDataset === 'stocks') {
               payload = datasets.stocks;
@@ -701,6 +702,7 @@
 
     function render() {
       if (!payload) return;
+      const token = ++renderToken;
       const query = search.value.trim().toLowerCase();
       let items = (payload.items || []).filter(item => (
         (band.value === 'all' || (item.displayBand || item.band) === band.value) &&
@@ -716,8 +718,32 @@
       const loadedText = summary.totalChunks && summary.chunkCount < summary.totalChunks
         ? ` Loaded ${summary.instrumentCount || 0} stocks from ${summary.chunkCount} of ${summary.totalChunks} batches.`
         : '';
-      note.textContent = `${items.length} shown. Refreshed ${fmtTimestamp(summary.refreshedAtUtc)}; source date ${summary.sourceAsOf || 'n/a'}.${loadedText}`;
-      grid.innerHTML = activeDataset === 'sectors' ? renderSectorGroups(items) : items.map(card).join('');
+      const finalNote = `${items.length} shown. Refreshed ${fmtTimestamp(summary.refreshedAtUtc)}; source date ${summary.sourceAsOf || 'n/a'}.${loadedText}`;
+      note.textContent = finalNote;
+      if (activeDataset === 'sectors') {
+        grid.innerHTML = renderSectorGroups(items);
+        return;
+      }
+      renderCardsInBatches(items, token, finalNote);
+    }
+
+    function renderCardsInBatches(items, token, finalNote) {
+      const batchSize = 60;
+      let index = 0;
+      grid.innerHTML = '';
+      function appendBatch() {
+        if (token !== renderToken) return;
+        const next = items.slice(index, index + batchSize);
+        grid.insertAdjacentHTML('beforeend', next.map(card).join(''));
+        index += batchSize;
+        if (index < items.length) {
+          note.textContent = `Rendering ${Math.min(index, items.length)} of ${items.length} shown...`;
+          requestAnimationFrame(appendBatch);
+        } else {
+          note.textContent = finalNote;
+        }
+      }
+      appendBatch();
     }
 
     function renderSectorGroups(items) {
