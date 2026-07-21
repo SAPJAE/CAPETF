@@ -221,15 +221,20 @@
     const tabButtons = [...document.querySelectorAll('.tab')];
     const datasetFiles = { etfs: 'data/etfs.enc.json', stocks: 'data/stocks.enc.json' };
     const stockManifestFile = 'data/stocks-manifest.enc.json';
+    const stockBatchCount = 11;
+    const stockBatchSize = 250;
+    const stockBatchFiles = Array.from({ length: stockBatchCount }, (_, index) => `data/stocks-${String(index).padStart(3, '0')}.enc.json`);
     const datasetLabels = { sectors: 'sector', etfs: 'ETF', stocks: 'stock' };
     const datasets = {};
     const loadingDatasets = {};
+    const stockPartsByFile = {};
     let activeDataset = 'etfs';
     const collapsedSectorGroups = new Set();
     let dashboardPassword = '';
     let payload = null;
     let renderToken = 0;
     let refreshPollTimer = null;
+    let stockBatchPollTimer = null;
 
     const fmtPct = value => value == null ? 'n/a' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
     const fmtPrice = value => value == null ? 'n/a' : Number(value).toFixed(2);
@@ -662,37 +667,75 @@
       return decrypt(await response.json(), dashboardPassword);
     }
 
+    async function stockFilesToLoad() {
+      try {
+        const manifest = await loadEncryptedFile(stockManifestFile);
+        return {
+          files: manifest.chunkFiles?.length ? manifest.chunkFiles : stockBatchFiles,
+          expectedCount: manifest.instrumentCount || stockBatchCount * stockBatchSize,
+        };
+      } catch {
+        return { files: stockBatchFiles, expectedCount: stockBatchCount * stockBatchSize };
+      }
+    }
+
+    function updateStocksFromParts(files, expectedCount) {
+      const parts = files.map(file => stockPartsByFile[file]).filter(Boolean);
+      if (!parts.length) return null;
+      datasets.stocks = mergePayloads(parts);
+      datasets.stocks.summary.totalChunks = files.length;
+      datasets.stocks.summary.expectedInstrumentCount = expectedCount;
+      if (activeDataset === 'stocks') {
+        payload = datasets.stocks;
+        prepareDisplayRanks();
+        updateSummary();
+        render();
+      }
+      if (activeDataset === 'sectors') delete datasets.sectors;
+      return datasets.stocks;
+    }
+
+    async function loadAvailableStockBatches(files, expectedCount) {
+      for (const file of files) {
+        if (stockPartsByFile[file]) continue;
+        try {
+          stockPartsByFile[file] = await loadEncryptedFile(file);
+          const loaded = updateStocksFromParts(files, expectedCount);
+          const loadedStocks = loaded?.summary?.instrumentCount || 0;
+          note.textContent = `Loaded ${loadedStocks} of about ${expectedCount} stocks from ${Object.keys(stockPartsByFile).length} of ${files.length} batches.`;
+        } catch {
+          // Missing batches are normal while parallel GitHub jobs are still publishing.
+        }
+      }
+      return updateStocksFromParts(files, expectedCount);
+    }
+
+    function scheduleStockBatchPolling(files, expectedCount) {
+      if (stockBatchPollTimer || files.every(file => stockPartsByFile[file])) return;
+      stockBatchPollTimer = setInterval(async () => {
+        await loadAvailableStockBatches(files, expectedCount);
+        if (files.every(file => stockPartsByFile[file])) {
+          clearInterval(stockBatchPollTimer);
+          stockBatchPollTimer = null;
+        }
+      }, 60000);
+    }
+
     async function loadChunkedStocks() {
-      if (datasets.stocks) return datasets.stocks;
+      const { files, expectedCount } = await stockFilesToLoad();
+      if (datasets.stocks && files.every(file => stockPartsByFile[file])) return datasets.stocks;
       if (loadingDatasets.stocks) return loadingDatasets.stocks;
       loadingDatasets.stocks = (async () => {
         try {
-          const manifest = await loadEncryptedFile(stockManifestFile);
-          const files = manifest.chunkFiles || [];
-          const loadedParts = [];
-          for (let index = 0; index < files.length; index += 1) {
-            const part = await loadEncryptedFile(files[index]);
-            loadedParts.push(part);
-            datasets.stocks = mergePayloads(loadedParts);
-            const loadedStocks = datasets.stocks.summary?.instrumentCount || 0;
-            const totalStocks = manifest.instrumentCount || files.length * (manifest.chunkSize || 250);
-            note.textContent = `Loaded ${loadedStocks} of ${totalStocks} stocks.`;
-            if (activeDataset === 'stocks') {
-              payload = datasets.stocks;
-              prepareDisplayRanks();
-              updateSummary();
-              render();
-            }
-            if (activeDataset === 'sectors') delete datasets.sectors;
-          }
-          datasets.stocks = mergePayloads(loadedParts);
-          return datasets.stocks;
-        } catch (error) {
+          const loaded = await loadAvailableStockBatches(files, expectedCount);
+          scheduleStockBatchPolling(files, expectedCount);
+          if (loaded) return loaded;
           const response = await fetch(datasetFiles.stocks, { cache: 'no-store' });
-          if (!response.ok) throw error;
-          const loaded = await decrypt(await response.json(), dashboardPassword);
-          datasets.stocks = loaded;
-          return loaded;
+          if (!response.ok) throw new Error('Stock batches are not published yet.');
+          const fallback = await decrypt(await response.json(), dashboardPassword);
+          datasets.stocks = fallback;
+          note.textContent = 'Showing last stock file while new batches publish.';
+          return fallback;
         } finally {
           delete loadingDatasets.stocks;
         }

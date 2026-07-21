@@ -99,6 +99,58 @@ def run_chunked(output_path, limit, offset, chunks, manifest_path):
         )
 
 
+def run_batch(output_path, limit, offset, batch_index, batch_count):
+    client = CapitalClient()
+    client.login()
+    instruments = discover_instruments(client, "stock")
+    selected = instruments[offset:offset + limit]
+    if batch_index == batch_count - 1:
+        selected_epics = {market["epic"] for market in selected}
+        extras = [market for market in instruments if is_always_include_stock(market) and market["epic"] not in selected_epics]
+        selected.extend(extras)
+    if not selected:
+        raise RuntimeError("No stock instruments found in Capital.com market discovery.")
+
+    selected = enrich_market_details(client, selected)
+    selected, provider_stats = enrich_classification(selected)
+    classify.provider_stats = provider_stats
+    for market in selected:
+        if not market.get("region"):
+            market["region"] = region_for(market.get("country"), market.get("currency"))
+
+    items = []
+    for index, market in enumerate(selected, start=1):
+        absolute_index = offset + index
+        print(f"[batch {batch_index + 1}/{batch_count}] [{absolute_index}] {market.get('epic')} {market.get('instrumentName')}", flush=True)
+        try:
+            rows = fetch_prices(client, market["epic"])
+            items.append(build_item(market, rows))
+        except Exception as exc:
+            items.append(
+                {
+                    "epic": market["epic"],
+                    "name": market.get("instrumentName") or market["epic"],
+                    "instrumentType": market.get("instrumentType") or "",
+                    "validated": False,
+                    "band": "Unvalidated",
+                    "error": str(exc),
+                }
+            )
+        time.sleep(0.15)
+
+    write_stock_payload(
+        output_path,
+        items,
+        {
+            "chunkIndex": batch_index,
+            "chunkCount": batch_count,
+            "offset": offset,
+            "limit": limit,
+            "totalRequested": limit * batch_count,
+        },
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="data/stocks.raw.json")
@@ -106,7 +158,12 @@ def main():
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--chunks", type=int, default=0)
     parser.add_argument("--manifest", default="")
+    parser.add_argument("--batch-index", type=int, default=None)
+    parser.add_argument("--batch-count", type=int, default=11)
     args = parser.parse_args()
+    if args.batch_index is not None:
+        run_batch(args.output, args.limit, args.offset, args.batch_index, args.batch_count)
+        return
     if args.chunks:
         run_chunked(args.output, args.limit, args.offset, args.chunks, args.manifest)
         return

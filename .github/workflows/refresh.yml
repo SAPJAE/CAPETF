@@ -17,7 +17,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  refresh:
+  refresh-etfs:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -34,7 +35,6 @@ jobs:
           python -m pip install cryptography
 
       - name: Refresh Capital.com ETF data
-        if: github.event_name != 'push'
         env:
           CAPITAL_DEMO: "true"
           CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
@@ -43,14 +43,74 @@ jobs:
         run: python scripts/update_capital_etfs.py --output data/etfs.raw.json
 
       - name: Encrypt ETF data
-        if: github.event_name != 'push'
         env:
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
         run: |
           python scripts/encrypt_data.py --input data/etfs.raw.json --output data/etfs.enc.json
           rm data/etfs.raw.json
 
-      - name: Refresh Capital.com stock data
+      - name: Commit ETF data
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "data: refresh ETF data"
+          file_pattern: data/etfs.enc.json
+
+  stock-batch:
+    name: stock-batch-${{ matrix.batch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - batch: "000"
+            index: 0
+            offset: 0
+          - batch: "001"
+            index: 1
+            offset: 250
+          - batch: "002"
+            index: 2
+            offset: 500
+          - batch: "003"
+            index: 3
+            offset: 750
+          - batch: "004"
+            index: 4
+            offset: 1000
+          - batch: "005"
+            index: 5
+            offset: 1250
+          - batch: "006"
+            index: 6
+            offset: 1500
+          - batch: "007"
+            index: 7
+            offset: 1750
+          - batch: "008"
+            index: 8
+            offset: 2000
+          - batch: "009"
+            index: 9
+            offset: 2250
+          - batch: "010"
+            index: 10
+            offset: 2500
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install cryptography
+
+      - name: Refresh Capital.com stock batch ${{ matrix.batch }}
         env:
           CAPITAL_DEMO: "true"
           CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
@@ -61,23 +121,33 @@ jobs:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
         run: |
-          rm -f data/stocks-*.raw.json data/stocks-*.enc.json data/stocks-manifest.raw.json data/stocks-manifest.enc.json
-          python scripts/update_capital_stocks.py --output data/stocks.raw.json --limit 250 --chunks 11 --manifest data/stocks-manifest.raw.json
+          python scripts/update_capital_stocks.py \
+            --output data/stocks-${{ matrix.batch }}.raw.json \
+            --limit 250 \
+            --offset ${{ matrix.offset }} \
+            --batch-index ${{ matrix.index }} \
+            --batch-count 11
 
-      - name: Encrypt stock data
+      - name: Encrypt stock batch ${{ matrix.batch }}
         env:
           DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
         run: |
-          for file in data/stocks-[0-9][0-9][0-9].raw.json; do
-            out="${file/.raw.json/.enc.json}"
-            python scripts/encrypt_data.py --input "$file" --output "$out"
-            rm "$file"
-          done
-          python scripts/encrypt_data.py --input data/stocks-manifest.raw.json --output data/stocks-manifest.enc.json
-          rm data/stocks-manifest.raw.json
+          python scripts/encrypt_data.py --input data/stocks-${{ matrix.batch }}.raw.json --output data/stocks-${{ matrix.batch }}.enc.json
+          rm data/stocks-${{ matrix.batch }}.raw.json
 
-      - name: Commit refreshed data
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "data: refresh market data"
-          file_pattern: data/*.enc.json
+      - name: Commit stock batch ${{ matrix.batch }}
+        env:
+          BATCH_FILE: data/stocks-${{ matrix.batch }}.enc.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$BATCH_FILE"
+          git commit -m "data: refresh stock batch ${{ matrix.batch }}" || exit 0
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin main
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+          exit 1
