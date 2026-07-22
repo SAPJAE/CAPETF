@@ -3,3 +3,7 @@ __pycache__/
 data/etfs.raw.json
 data/stocks.raw.json
 .env
+artifacts/
+desktop/**/bin/
+desktop/**/obj/
+desktop/**/publish/
