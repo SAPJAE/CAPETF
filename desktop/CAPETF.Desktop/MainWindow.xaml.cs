@@ -41,16 +41,15 @@ public partial class MainWindow : Window
         {
             ConnectionText.Text = "Connecting...";
             var credentials = ReadCredentials();
-            var session = await _api.LoginAsync(credentials);
-            _streaming = new CapitalStreamingClient();
-            _streaming.QuoteReceived += Streaming_QuoteReceived;
-            _streaming.StatusChanged += (_, message) => Dispatcher.Invoke(() => ConnectionText.Text = message);
-            await _streaming.ConnectAsync(session);
+            ValidateCredentials(credentials);
+            await _api.LoginAsync(credentials);
             ConnectionText.Text = "Connected";
+            ResultText.Text = "Connected. Press Search to load instruments.";
         }
         catch (Exception ex)
         {
             ConnectionText.Text = "Connection failed";
+            ResultText.Text = ex.Message;
             MessageBox.Show(ex.Message, "Capital.com connection", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -101,7 +100,9 @@ public partial class MainWindow : Window
 
             await LoadHistoryForVisibleAsync(_instruments.Take(40));
             RebuildGroups();
-            ResultText.Text = $"{_instruments.Count} instruments loaded. Expand a group, then start realtime for visible.";
+            ResultText.Text = _instruments.Count == 0
+                ? "0 instruments found. Check Dataset vs Search, for example use Dataset ETFs with search ETF."
+                : $"{_instruments.Count} instruments loaded. Expand a group, then start realtime for visible.";
             UpdatedText.Text = DateTime.Now.ToString("HH:mm:ss");
         }
         catch (Exception ex)
@@ -157,8 +158,16 @@ public partial class MainWindow : Window
     {
         if (_api.Session is null || _streaming is null)
         {
-            MessageBox.Show("Connect to Capital.com first.", "Realtime", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
+            if (_api.Session is null)
+            {
+                MessageBox.Show("Connect to Capital.com first.", "Realtime", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            _streaming = new CapitalStreamingClient();
+            _streaming.QuoteReceived += Streaming_QuoteReceived;
+            _streaming.StatusChanged += (_, message) => Dispatcher.Invoke(() => ConnectionText.Text = message);
+            await _streaming.ConnectAsync(_api.Session);
         }
 
         var visible = _groups.Where(group => group.IsExpanded).SelectMany(group => group.Instruments).Take(40).ToList();
@@ -225,6 +234,13 @@ public partial class MainWindow : Window
         ApiKey = ApiKeyBox.Password,
         UseDemo = DemoCheck.IsChecked == true,
     };
+
+    private static void ValidateCredentials(ApiCredentials credentials)
+    {
+        if (string.IsNullOrWhiteSpace(credentials.Identifier)) throw new InvalidOperationException("Identifier is required.");
+        if (string.IsNullOrWhiteSpace(credentials.Password)) throw new InvalidOperationException("API password is required.");
+        if (string.IsNullOrWhiteSpace(credentials.ApiKey)) throw new InvalidOperationException("API key is required.");
+    }
 
     private void InstrumentCard_Click(object sender, MouseButtonEventArgs e)
     {

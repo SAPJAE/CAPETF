@@ -29,7 +29,10 @@ public sealed class CapitalApiClient : IDisposable
 
         using var response = await _http.SendAsync(request, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Capital.com login failed: {(int)response.StatusCode} {response.ReasonPhrase}. {body}");
+        }
 
         _session = new CapitalSession
         {
@@ -89,7 +92,11 @@ public sealed class CapitalApiClient : IDisposable
         request.Headers.Add("X-CAP-API-KEY", _credentials!.ApiKey);
 
         using var response = await _http.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException($"Capital.com request failed: {(int)response.StatusCode} {response.ReasonPhrase}. {body}");
+        }
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
     }
