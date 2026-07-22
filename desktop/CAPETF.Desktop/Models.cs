@@ -25,8 +25,12 @@ public sealed class MarketInstrument : INotifyPropertyChanged
     private decimal? _bid;
     private decimal? _offer;
     private decimal? _intradayReturn;
+    private decimal? _sma20;
+    private decimal? _sma50;
+    private decimal? _alertPrice;
     private DateTimeOffset? _lastTickAt;
     private string _status = "";
+    private bool _isWatchlisted;
 
     public string Epic { get; init; } = "";
     public string Name { get; init; } = "";
@@ -47,19 +51,67 @@ public sealed class MarketInstrument : INotifyPropertyChanged
     public decimal? Bid
     {
         get => _bid;
-        set => SetField(ref _bid, value);
+        set
+        {
+            SetField(ref _bid, value);
+            OnPropertyChanged(nameof(Spread));
+        }
     }
 
     public decimal? Offer
     {
         get => _offer;
-        set => SetField(ref _offer, value);
+        set
+        {
+            SetField(ref _offer, value);
+            OnPropertyChanged(nameof(Spread));
+        }
     }
 
     public decimal? IntradayReturn
     {
         get => _intradayReturn;
         set => SetField(ref _intradayReturn, value);
+    }
+
+    public decimal? Sma20
+    {
+        get => _sma20;
+        set
+        {
+            SetField(ref _sma20, value);
+            OnPropertyChanged(nameof(TrendLabel));
+        }
+    }
+
+    public decimal? Sma50
+    {
+        get => _sma50;
+        set
+        {
+            SetField(ref _sma50, value);
+            OnPropertyChanged(nameof(TrendLabel));
+        }
+    }
+
+    public decimal? AlertPrice
+    {
+        get => _alertPrice;
+        set
+        {
+            SetField(ref _alertPrice, value);
+            OnPropertyChanged(nameof(AlertText));
+        }
+    }
+
+    public bool IsWatchlisted
+    {
+        get => _isWatchlisted;
+        set
+        {
+            SetField(ref _isWatchlisted, value);
+            OnPropertyChanged(nameof(WatchlistMarker));
+        }
     }
 
     public DateTimeOffset? LastTickAt
@@ -75,6 +127,10 @@ public sealed class MarketInstrument : INotifyPropertyChanged
     }
 
     public string Group => $"{Normalize(Region, "Other")} / {Normalize(Currency, "Currency")} / {Normalize(Sector, "Sector")}";
+    public string TrendLabel => Sma20 is null || Sma50 is null ? "Building" : Sma20 >= Sma50 ? "Uptrend" : "Weak";
+    public decimal? Spread => Bid is not null && Offer is not null ? Offer - Bid : null;
+    public string WatchlistMarker => IsWatchlisted ? "Saved" : "Watch";
+    public string AlertText => AlertPrice is null ? "No alert" : $"Alert {AlertPrice:0.####}";
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -84,8 +140,10 @@ public sealed class MarketInstrument : INotifyPropertyChanged
     {
         if (EqualityComparer<T>.Default.Equals(field, value)) return;
         field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        OnPropertyChanged(propertyName);
     }
+
+    private void OnPropertyChanged(string propertyName) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }
 
 public sealed record ChartPoint(DateTimeOffset Time, decimal Close);

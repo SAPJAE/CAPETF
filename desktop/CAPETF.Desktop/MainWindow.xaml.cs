@@ -11,17 +11,21 @@ namespace CAPETF.Desktop;
 public partial class MainWindow : Window
 {
     private readonly CredentialStore _credentialStore = new();
+    private readonly WorkspaceStore _workspaceStore = new();
     private readonly CapitalApiClient _api = new();
     private CapitalStreamingClient? _streaming;
     private readonly ObservableCollection<InstrumentGroup> _groups = [];
     private readonly List<MarketInstrument> _instruments = [];
+    private readonly WorkspaceState _workspace;
     private MarketInstrument? _selected;
 
     public MainWindow()
     {
         InitializeComponent();
+        _workspace = _workspaceStore.Load();
         GroupList.ItemsSource = _groups;
         LoadSavedCredentials();
+        UpdateStats();
     }
 
     private void LoadSavedCredentials()
@@ -95,6 +99,7 @@ public partial class MainWindow : Window
             var filtered = FilterDataset(markets).Take(240).ToList();
             foreach (var item in filtered)
             {
+                ApplyWorkspaceState(item);
                 _instruments.Add(item);
             }
 
@@ -104,6 +109,7 @@ public partial class MainWindow : Window
                 ? "0 instruments found. Check Dataset vs Search, for example use Dataset ETFs with search ETF."
                 : $"{_instruments.Count} instruments loaded. Expand a group, then start realtime for visible.";
             UpdatedText.Text = DateTime.Now.ToString("HH:mm:ss");
+            UpdateStats();
         }
         catch (Exception ex)
         {
@@ -145,7 +151,7 @@ public partial class MainWindow : Window
         var selected = (DatasetBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Stocks";
         if (selected == "ETFs") return markets.Where(IsEtf);
         if (selected == "Stocks") return markets.Where(item => !IsEtf(item));
-        return markets;
+        return markets.Where(item => _workspace.WatchlistEpics.Contains(item.Epic));
     }
 
     private static bool IsEtf(MarketInstrument item)
@@ -197,9 +203,11 @@ public partial class MainWindow : Window
                 item.Points.Add(new ChartPoint(update.Time, update.Price.Value));
                 TrimPoints(item);
                 UpdateDerivedValues(item);
+                CheckAlert(item);
             }
             if (_selected == item) ShowSelected(item);
             RedrawCharts();
+            UpdateStats();
         });
     }
 
@@ -220,6 +228,14 @@ public partial class MainWindow : Window
         item.Price = item.Points[^1].Close;
         var first = item.Points[0].Close;
         item.IntradayReturn = first == 0 ? null : decimal.Round(((item.Price ?? first) / first - 1) * 100, 2);
+        item.Sma20 = Average(item.Points.TakeLast(20));
+        item.Sma50 = Average(item.Points.TakeLast(50));
+    }
+
+    private static decimal? Average(IEnumerable<ChartPoint> points)
+    {
+        var values = points.Select(point => point.Close).ToList();
+        return values.Count == 0 ? null : decimal.Round(values.Average(), 4);
     }
 
     private static void TrimPoints(MarketInstrument item)
@@ -259,6 +275,14 @@ public partial class MainWindow : Window
         OfferText.Text = item.Offer?.ToString("0.####") ?? "n/a";
         PriceText.Text = item.Price?.ToString("0.####") ?? "n/a";
         DetailStatusText.Text = $"{item.Group} | {item.Status}";
+        Sma20Text.Text = item.Sma20?.ToString("0.####") ?? "n/a";
+        Sma50Text.Text = item.Sma50?.ToString("0.####") ?? "n/a";
+        TrendText.Text = item.TrendLabel;
+        AlertPriceBox.Text = item.AlertPrice?.ToString("0.####") ?? "";
+        AlertStatusText.Text = item.AlertPrice is null ? "No alert set for this instrument." : $"Alert set at {item.AlertPrice:0.####}.";
+        TicketSummaryText.Text = item.Price is null
+            ? "Load a price before preparing a ticket preview."
+            : $"{item.Name}: last {item.Price:0.####}. Set quantity, stop, and take profit for planning.";
         DrawChart(DetailChart, item.Points);
     }
 
@@ -305,6 +329,69 @@ public partial class MainWindow : Window
     private void RedrawCharts()
     {
         if (_selected is not null) DrawChart(DetailChart, _selected.Points);
+    }
+
+    private void ToggleWatchlist_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if ((sender as FrameworkElement)?.DataContext is not MarketInstrument item) return;
+        item.IsWatchlisted = !item.IsWatchlisted;
+        if (item.IsWatchlisted && !_workspace.WatchlistEpics.Contains(item.Epic)) _workspace.WatchlistEpics.Add(item.Epic);
+        if (!item.IsWatchlisted) _workspace.WatchlistEpics.Remove(item.Epic);
+        _workspaceStore.Save(_workspace);
+        UpdateStats();
+        RebuildGroups();
+    }
+
+    private void SaveAlert_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selected is null)
+        {
+            AlertStatusText.Text = "Select an instrument first.";
+            return;
+        }
+        if (!decimal.TryParse(AlertPriceBox.Text, out var alertPrice))
+        {
+            AlertStatusText.Text = "Enter a valid price.";
+            return;
+        }
+        _selected.AlertPrice = alertPrice;
+        _workspace.Alerts[_selected.Epic] = alertPrice;
+        _workspaceStore.Save(_workspace);
+        AlertStatusText.Text = $"Alert saved at {alertPrice:0.####}.";
+    }
+
+    private void ClearAlert_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selected is null) return;
+        _selected.AlertPrice = null;
+        _workspace.Alerts.Remove(_selected.Epic);
+        _workspaceStore.Save(_workspace);
+        AlertPriceBox.Text = "";
+        AlertStatusText.Text = "Alert cleared.";
+    }
+
+    private void ApplyWorkspaceState(MarketInstrument item)
+    {
+        item.IsWatchlisted = _workspace.WatchlistEpics.Contains(item.Epic);
+        if (_workspace.Alerts.TryGetValue(item.Epic, out var alertPrice)) item.AlertPrice = alertPrice;
+    }
+
+    private void CheckAlert(MarketInstrument item)
+    {
+        if (item.AlertPrice is null || item.Price is null) return;
+        if (item.Price >= item.AlertPrice)
+        {
+            AlertStatusText.Text = $"{item.Name} reached alert {item.AlertPrice:0.####}. Last {item.Price:0.####}.";
+            System.Media.SystemSounds.Exclamation.Play();
+        }
+    }
+
+    private void UpdateStats()
+    {
+        MarketCountText.Text = _instruments.Count.ToString();
+        WatchCountText.Text = _workspace.WatchlistEpics.Count.ToString();
+        LiveCountText.Text = _instruments.Count(item => item.Status == "Live").ToString();
     }
 
     private static void DrawChart(Canvas canvas, IReadOnlyList<ChartPoint> points)
