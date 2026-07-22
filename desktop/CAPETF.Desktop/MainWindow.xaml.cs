@@ -109,6 +109,7 @@ public partial class MainWindow : Window
                 ? "0 instruments found. Check Dataset vs Search, for example use Dataset ETFs with search ETF."
                 : $"{_instruments.Count} instruments loaded. Expand a group, then start realtime for visible.";
             UpdatedText.Text = DateTime.Now.ToString("HH:mm:ss");
+            UpdateDiscoveryStrip();
             UpdateStats();
         }
         catch (Exception ex)
@@ -228,6 +229,9 @@ public partial class MainWindow : Window
         item.Price = item.Points[^1].Close;
         var first = item.Points[0].Close;
         item.IntradayReturn = first == 0 ? null : decimal.Round(((item.Price ?? first) / first - 1) * 100, 2);
+        item.ChangePercent = item.IntradayReturn;
+        item.Low = item.Points.Min(point => point.Close);
+        item.High = item.Points.Max(point => point.Close);
         item.Sma20 = Average(item.Points.TakeLast(20));
         item.Sma50 = Average(item.Points.TakeLast(50));
     }
@@ -343,6 +347,15 @@ public partial class MainWindow : Window
         RebuildGroups();
     }
 
+    private void QuickAlert_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if ((sender as FrameworkElement)?.DataContext is not MarketInstrument item) return;
+        ShowSelected(item);
+        AlertPriceBox.Text = item.Price?.ToString("0.####") ?? "";
+        AlertStatusText.Text = item.Price is null ? "Load a price before saving an alert." : "Review the trigger price and press Save alert.";
+    }
+
     private void SaveAlert_Click(object sender, RoutedEventArgs e)
     {
         if (_selected is null)
@@ -392,6 +405,48 @@ public partial class MainWindow : Window
         MarketCountText.Text = _instruments.Count.ToString();
         WatchCountText.Text = _workspace.WatchlistEpics.Count.ToString();
         LiveCountText.Text = _instruments.Count(item => item.Status == "Live").ToString();
+    }
+
+    private void UpdateDiscoveryStrip()
+    {
+        var priced = _instruments.Where(item => item.ChangePercent is not null).ToList();
+        TopTradedText.Text = string.Join("  ", _instruments.Take(5).Select(item => string.IsNullOrWhiteSpace(item.Symbol) ? item.Epic : item.Symbol));
+        TopRiserText.Text = priced.OrderByDescending(item => item.ChangePercent).Select(item => $"{ShortName(item)} {item.ChangePercent:+0.00;-0.00;0.00}%").FirstOrDefault() ?? "n/a";
+        TopFallerText.Text = priced.OrderBy(item => item.ChangePercent).Select(item => $"{ShortName(item)} {item.ChangePercent:+0.00;-0.00;0.00}%").FirstOrDefault() ?? "n/a";
+        MostVolatileText.Text = priced
+            .OrderByDescending(item => item.High is not null && item.Low is not null && item.Low != 0 ? (item.High - item.Low) / item.Low : 0)
+            .Select(item => ShortName(item))
+            .FirstOrDefault() ?? "n/a";
+    }
+
+    private static string ShortName(MarketInstrument item)
+    {
+        var value = string.IsNullOrWhiteSpace(item.Symbol) ? item.Name : item.Symbol;
+        return value.Length <= 18 ? value : value[..18] + "...";
+    }
+
+    private void WorkspaceModeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var mode = (WorkspaceModeBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Trade";
+        WorkspaceTitleText.Text = mode switch
+        {
+            "Discover" => "Discover | movers, volatility, categories",
+            "Charts" => "Charts | select any market row",
+            "Portfolio" => "Portfolio | local watchlist and live exposure",
+            "Calendar" => "Calendar | market events placeholder",
+            "Alerts" => "Alerts | local price triggers",
+            _ => "Trade",
+        };
+        DiscoverStrip.Visibility = mode is "Trade" or "Discover" ? Visibility.Visible : Visibility.Collapsed;
+        ResultText.Text = mode switch
+        {
+            "Portfolio" => $"{_workspace.WatchlistEpics.Count} watchlist markets saved locally.",
+            "Calendar" => "Calendar API is not wired yet; use this pane for future event integration.",
+            "Alerts" => $"{_workspace.Alerts.Count} local price alerts saved.",
+            "Charts" => "Select a market row to inspect the chart panel.",
+            "Discover" => "Discovery strip uses loaded markets: top traded, riser, faller, volatility.",
+            _ => ResultText.Text,
+        };
     }
 
     private static void DrawChart(Canvas canvas, IReadOnlyList<ChartPoint> points)

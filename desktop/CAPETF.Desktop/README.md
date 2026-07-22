@@ -9,7 +9,10 @@ Local Windows dashboard for Capital.com market data.
 - Searches Capital.com instruments with REST API.
 - Loads historical chart data for visible instruments.
 - Streams realtime quotes for up to 40 visible instruments through Capital.com WebSocket.
-- Keeps grouped tiles collapsed by default for fast browsing.
+- Uses a dense Capital.com-style trade grid with grouped rows, bid/offer, low/high, sparklines, watchlist actions, and alerts.
+- Includes workspace modes for Trade, Discover, Charts, Portfolio, Calendar, and Alerts.
+- Keeps grouped markets collapsed by default for fast browsing.
+- Keeps order-ticket controls in preview mode only. This build does not submit live trades.
 
 ## Build
 

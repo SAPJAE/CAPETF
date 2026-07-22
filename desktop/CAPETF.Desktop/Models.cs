@@ -25,6 +25,9 @@ public sealed class MarketInstrument : INotifyPropertyChanged
     private decimal? _bid;
     private decimal? _offer;
     private decimal? _intradayReturn;
+    private decimal? _changePercent;
+    private decimal? _low;
+    private decimal? _high;
     private decimal? _sma20;
     private decimal? _sma50;
     private decimal? _alertPrice;
@@ -72,6 +75,24 @@ public sealed class MarketInstrument : INotifyPropertyChanged
     {
         get => _intradayReturn;
         set => SetField(ref _intradayReturn, value);
+    }
+
+    public decimal? ChangePercent
+    {
+        get => _changePercent;
+        set => SetField(ref _changePercent, value);
+    }
+
+    public decimal? Low
+    {
+        get => _low;
+        set => SetField(ref _low, value);
+    }
+
+    public decimal? High
+    {
+        get => _high;
+        set => SetField(ref _high, value);
     }
 
     public decimal? Sma20
@@ -131,6 +152,7 @@ public sealed class MarketInstrument : INotifyPropertyChanged
     public decimal? Spread => Bid is not null && Offer is not null ? Offer - Bid : null;
     public string WatchlistMarker => IsWatchlisted ? "Saved" : "Watch";
     public string AlertText => AlertPrice is null ? "No alert" : $"Alert {AlertPrice:0.####}";
+    public string Category => string.IsNullOrWhiteSpace(Type) ? "Market" : Type;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 

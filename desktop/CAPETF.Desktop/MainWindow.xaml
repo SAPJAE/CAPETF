@@ -135,6 +135,16 @@
                         <Button Content="Search" Click="Search_Click"/>
                         <Button Content="Stream visible" Click="StreamVisible_Click" Background="#216E8A" BorderBrush="#216E8A"/>
 
+                        <TextBlock Text="Workspace" Foreground="{StaticResource MutedBrush}"/>
+                        <ComboBox x:Name="WorkspaceModeBox" SelectionChanged="WorkspaceModeBox_SelectionChanged">
+                            <ComboBoxItem Content="Trade" IsSelected="True"/>
+                            <ComboBoxItem Content="Discover"/>
+                            <ComboBoxItem Content="Charts"/>
+                            <ComboBoxItem Content="Portfolio"/>
+                            <ComboBoxItem Content="Calendar"/>
+                            <ComboBoxItem Content="Alerts"/>
+                        </ComboBox>
+
                         <Separator Margin="0,12" Background="{StaticResource LineBrush}"/>
 
                         <TextBlock Text="Workspace Stats" FontSize="16" FontWeight="SemiBold"/>
@@ -158,14 +168,25 @@
 
             <Border Grid.Column="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,10,0">
                 <DockPanel>
-                    <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Market Groups" FontSize="16" FontWeight="SemiBold"/>
-                        <TextBlock Grid.Column="1" Text="Groups open on demand; streaming follows visible groups." Foreground="{StaticResource MutedBrush}"/>
-                    </Grid>
+                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="WorkspaceTitleText" Text="Trade" FontSize="16" FontWeight="SemiBold"/>
+                            <TextBlock Grid.Column="1" Text="Groups open on demand; streaming follows visible groups." Foreground="{StaticResource MutedBrush}"/>
+                        </Grid>
+                        <Border x:Name="DiscoverStrip" Background="#0F172A" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,8,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                <StackPanel><TextBlock Text="Top traded" Foreground="{StaticResource MutedBrush}"/><TextBlock x:Name="TopTradedText" Text="Load markets" FontWeight="SemiBold" TextWrapping="Wrap"/></StackPanel>
+                                <StackPanel Grid.Column="1"><TextBlock Text="Top riser" Foreground="{StaticResource MutedBrush}"/><TextBlock x:Name="TopRiserText" Text="n/a" FontWeight="SemiBold" Foreground="#86EFAC" TextWrapping="Wrap"/></StackPanel>
+                                <StackPanel Grid.Column="2"><TextBlock Text="Top faller" Foreground="{StaticResource MutedBrush}"/><TextBlock x:Name="TopFallerText" Text="n/a" FontWeight="SemiBold" Foreground="#FCA5A5" TextWrapping="Wrap"/></StackPanel>
+                                <StackPanel Grid.Column="3"><TextBlock Text="Volatile" Foreground="{StaticResource MutedBrush}"/><TextBlock x:Name="MostVolatileText" Text="n/a" FontWeight="SemiBold" TextWrapping="Wrap"/></StackPanel>
+                            </Grid>
+                        </Border>
+                    </StackPanel>
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <ItemsControl x:Name="GroupList">
                             <ItemsControl.ItemTemplate>
@@ -173,33 +194,39 @@
                                     <Expander Header="{Binding Header}" IsExpanded="{Binding IsExpanded}" Margin="0,0,0,8">
                                         <ItemsControl ItemsSource="{Binding Instruments}">
                                             <ItemsControl.ItemsPanel>
-                                                <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                                <ItemsPanelTemplate><StackPanel/></ItemsPanelTemplate>
                                             </ItemsControl.ItemsPanel>
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
-                                                    <Border Width="250" MinHeight="198" Background="{StaticResource PanelAltBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,10,10" MouseLeftButtonUp="InstrumentCard_Click">
-                                                        <StackPanel>
-                                                            <Grid>
-                                                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                                                <StackPanel>
-                                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                                                                    <TextBlock Text="{Binding Epic}" Foreground="{StaticResource MutedBrush}"/>
-                                                                </StackPanel>
-                                                                <Button Grid.Column="1" Content="{Binding WatchlistMarker}" Click="ToggleWatchlist_Click" Padding="7,3" Margin="8,0,0,0"/>
-                                                            </Grid>
-                                                            <Grid Margin="0,9,0,0">
-                                                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                                                <StackPanel><TextBlock Text="Price" Foreground="{StaticResource MutedBrush}"/><TextBlock Text="{Binding Price, TargetNullValue=n/a}" FontWeight="SemiBold"/></StackPanel>
-                                                                <StackPanel Grid.Column="1"><TextBlock Text="Move" Foreground="{StaticResource MutedBrush}"/><TextBlock Text="{Binding IntradayReturn, StringFormat={}{0:+0.00;-0.00;0.00}%}" FontWeight="SemiBold"/></StackPanel>
-                                                                <StackPanel Grid.Column="2"><TextBlock Text="Spread" Foreground="{StaticResource MutedBrush}"/><TextBlock Text="{Binding Spread, TargetNullValue=n/a}" FontWeight="SemiBold"/></StackPanel>
-                                                            </Grid>
-                                                            <Canvas Height="58" Margin="0,10,0,0" Loaded="MiniChart_Loaded" SizeChanged="MiniChart_SizeChanged"/>
-                                                            <Grid Margin="0,9,0,0">
-                                                                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                                                                <TextBlock Text="{Binding TrendLabel}" Foreground="#86EFAC"/>
-                                                                <TextBlock Grid.Column="1" Text="{Binding AlertText}" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Right"/>
-                                                            </Grid>
-                                                        </StackPanel>
+                                                    <Border Background="{StaticResource PanelAltBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="8" MouseLeftButtonUp="InstrumentCard_Click">
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="2.8*"/>
+                                                                <ColumnDefinition Width="0.8*"/>
+                                                                <ColumnDefinition Width="1.1*"/>
+                                                                <ColumnDefinition Width="1.1*"/>
+                                                                <ColumnDefinition Width="0.9*"/>
+                                                                <ColumnDefinition Width="0.9*"/>
+                                                                <ColumnDefinition Width="0.9*"/>
+                                                                <ColumnDefinition Width="96"/>
+                                                                <ColumnDefinition Width="92"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <StackPanel>
+                                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                                                <TextBlock Text="{Binding Epic}" Foreground="{StaticResource MutedBrush}"/>
+                                                            </StackPanel>
+                                                            <TextBlock Grid.Column="1" Text="{Binding ChangePercent, StringFormat={}{0:+0.00;-0.00;0.00}%}" Foreground="#86EFAC" VerticalAlignment="Center"/>
+                                                            <Button Grid.Column="2" Content="{Binding Bid, TargetNullValue=Sell}" Padding="8,3" Margin="6,0" Foreground="#FCA5A5"/>
+                                                            <Button Grid.Column="3" Content="{Binding Offer, TargetNullValue=Buy}" Padding="8,3" Margin="6,0" Foreground="#FDBA74"/>
+                                                            <TextBlock Grid.Column="4" Text="{Binding Low, TargetNullValue=n/a}" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                                                            <TextBlock Grid.Column="5" Text="{Binding High, TargetNullValue=n/a}" VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                                                            <TextBlock Grid.Column="6" Text="{Binding TrendLabel}" VerticalAlignment="Center" HorizontalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+                                                            <Canvas Grid.Column="7" Height="42" Loaded="MiniChart_Loaded" SizeChanged="MiniChart_SizeChanged"/>
+                                                            <StackPanel Grid.Column="8" Orientation="Horizontal" HorizontalAlignment="Right">
+                                                                <Button Content="+" Click="ToggleWatchlist_Click" Padding="7,2" Margin="4,0"/>
+                                                                <Button Content="Alert" Click="QuickAlert_Click" Padding="7,2" Margin="4,0"/>
+                                                            </StackPanel>
+                                                        </Grid>
                                                     </Border>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
