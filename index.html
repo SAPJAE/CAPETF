@@ -21,6 +21,16 @@
     main { padding: 18px; }
     h1 { margin: 0 0 4px; font-size: 24px; font-weight: 600; }
     .note, .code { color: var(--muted); font-size: 13px; }
+    .sticky-panel {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(247, 247, 244, 0.96);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid #e4e7ec;
+      padding: 8px 0 10px;
+      margin-bottom: 12px;
+    }
     .auth {
       max-width: 420px;
       background: var(--paper);
@@ -127,6 +137,7 @@
     .no-chart { height: 96px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; border-top: 1px solid #eef0f3; border-bottom: 1px solid #eef0f3; }
     @media (max-width: 640px) {
       main { padding: 12px; }
+      .sticky-panel { max-height: 72vh; overflow: auto; }
       .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       label, input, select { min-width: 0; width: 100%; }
       .auth-row { align-items: stretch; flex-direction: column; }
@@ -148,58 +159,67 @@
     </section>
 
     <div class="content">
-      <section class="tabs" aria-label="Dataset">
-        <button class="tab" type="button" data-dataset="sectors">Sectors</button>
-        <button class="tab active" type="button" data-dataset="etfs">ETFs</button>
-        <button class="tab" type="button" data-dataset="stocks">Stocks</button>
-      </section>
+      <section class="sticky-panel">
+        <section class="tabs" aria-label="Dataset">
+          <button class="tab" type="button" data-dataset="sectors">Sectors</button>
+          <button class="tab active" type="button" data-dataset="etfs">ETFs</button>
+          <button class="tab" type="button" data-dataset="stocks">Stocks</button>
+        </section>
 
-      <section class="summary">
-        <div><strong id="instrument-count">...</strong><span class="note">instruments</span></div>
-        <div><strong id="validated-count">...</strong><span class="note">validated charts</span></div>
-        <div><strong id="source-date">...</strong><span class="note">source date</span></div>
-        <div><strong id="source-name">Demo</strong><span class="note">source</span></div>
-      </section>
+        <section class="summary">
+          <div><strong id="instrument-count">...</strong><span class="note">instruments</span></div>
+          <div><strong id="validated-count">...</strong><span class="note">validated charts</span></div>
+          <div><strong id="source-date">...</strong><span class="note">source date</span></div>
+          <div><strong id="source-name">Demo</strong><span class="note">source</span></div>
+        </section>
 
-      <section class="controls">
-        <label>Search <input id="search" type="search" placeholder="Name, symbol, epic"></label>
-        <label>Group
-          <select id="band">
-            <option value="all">All groups</option>
-            <option>Best</option>
-            <option>Mediocre</option>
-            <option>Worst</option>
-            <option>Unvalidated</option>
-          </select>
-        </label>
-        <label>Sort
-          <select id="sort">
-            <option value="investmentRank">Investment rank, best to worst</option>
-            <option value="performanceRank">Performance rank, best to worst</option>
-            <option value="name">Name</option>
-            <option value="return1w">1W return</option>
-            <option value="return1m">1M return</option>
-            <option value="return3m">3M return</option>
-            <option value="return6m">6M return</option>
-            <option value="return1y">1Y return</option>
-          </select>
-        </label>
-        <label>Chart
-          <select id="chart-mode">
-            <option value="monthly">Monthly</option>
-            <option value="weekly">Weekly</option>
-            <option value="daily">Daily</option>
-          </select>
-        </label>
-      </section>
+        <section class="controls">
+          <label>Search <input id="search" type="search" placeholder="Name, symbol, epic"></label>
+          <label>Group
+            <select id="band">
+              <option value="all">All groups</option>
+              <option>Best</option>
+              <option>Mediocre</option>
+              <option>Worst</option>
+              <option>Unvalidated</option>
+            </select>
+          </label>
+          <label>Sort
+            <select id="sort">
+              <option value="investmentRank">Investment rank, best to worst</option>
+              <option value="opportunity">Opportunity score</option>
+              <option value="closestLow">Closest to previous-year low</option>
+              <option value="deepestDiscount">Best 1Y discount</option>
+              <option value="dipUptrend">Dip inside uptrend</option>
+              <option value="lowestPrice">Lowest buy price</option>
+              <option value="rebound1m">Best 1M rebound</option>
+              <option value="maTrend">Best MA trend</option>
+              <option value="performanceRank">Performance rank, best to worst</option>
+              <option value="name">Name</option>
+              <option value="return1w">1W return</option>
+              <option value="return1m">1M return</option>
+              <option value="return3m">3M return</option>
+              <option value="return6m">6M return</option>
+              <option value="return1y">1Y return</option>
+            </select>
+          </label>
+          <label>Chart
+            <select id="chart-mode">
+              <option value="monthly">Monthly</option>
+              <option value="weekly">Weekly</option>
+              <option value="daily">Daily</option>
+            </select>
+          </label>
+        </section>
 
-      <div class="status">
-        <div class="note" id="note">Waiting for password...</div>
-        <div class="refresh-tools">
-          <span class="refresh-state" id="refresh-state">Checking refresh...</span>
-          <a id="manual-refresh" href="https://github.com/SAPJAE/CAPETF/actions/workflows/refresh.yml">Manual refresh</a>
+        <div class="status">
+          <div class="note" id="note">Waiting for password...</div>
+          <div class="refresh-tools">
+            <span class="refresh-state" id="refresh-state">Checking refresh...</span>
+            <a id="manual-refresh" href="https://github.com/SAPJAE/CAPETF/actions/workflows/refresh.yml">Manual refresh</a>
+          </div>
         </div>
-      </div>
+      </section>
       <section class="dashboard-layout">
         <section class="grid" id="grid"></section>
       </section>
@@ -639,9 +659,40 @@
       return -999999;
     }
 
+    function opportunitySortValue(item) {
+      const distance = Number.isFinite(item.distanceFromPreviousYearLowPct) ? item.distanceFromPreviousYearLowPct : 999;
+      const lowScore = Math.max(0, 80 - Math.abs(distance) * 2.5);
+      const discountScore = Number.isFinite(item.return1y) && item.return1y < 0 ? Math.min(60, Math.abs(item.return1y)) : 0;
+      const recoveryScore = Math.max(0, Math.min(30, item.return1m || 0)) + Math.max(0, Math.min(25, item.return3m || 0));
+      const trendScore = Math.max(0, Math.min(35, item.ma200SlopePct || 0));
+      return lowScore + discountScore + recoveryScore + trendScore;
+    }
+
+    function dipUptrendSortValue(item) {
+      const distance = Number.isFinite(item.distanceFromPreviousYearLowPct) ? item.distanceFromPreviousYearLowPct : 999;
+      const nearLow = Math.max(0, 60 - Math.max(0, distance) * 2);
+      const trend = Math.max(0, Math.min(60, (item.ma200SlopePct || 0) * 2));
+      const recovery = Math.max(0, Math.min(30, item.return1m || 0));
+      return nearLow + trend + recovery;
+    }
+
     function compareInvestment(a, b) {
       const diff = investmentSortValue(b) - investmentSortValue(a);
       return diff || a.name.localeCompare(b.name);
+    }
+
+    function compareBySort(a, b) {
+      if (sort.value === 'name') return a.name.localeCompare(b.name);
+      if (sort.value === 'investmentRank') return compareInvestment(a, b);
+      if (sort.value === 'opportunity') return opportunitySortValue(b) - opportunitySortValue(a) || compareInvestment(a, b);
+      if (sort.value === 'closestLow') return (a.distanceFromPreviousYearLowPct ?? 999999) - (b.distanceFromPreviousYearLowPct ?? 999999) || compareInvestment(a, b);
+      if (sort.value === 'deepestDiscount') return (a.return1y ?? 999999) - (b.return1y ?? 999999) || compareInvestment(a, b);
+      if (sort.value === 'dipUptrend') return dipUptrendSortValue(b) - dipUptrendSortValue(a) || compareInvestment(a, b);
+      if (sort.value === 'lowestPrice') return (a.price ?? 999999999) - (b.price ?? 999999999) || compareInvestment(a, b);
+      if (sort.value === 'rebound1m') return (b.return1m ?? -999999) - (a.return1m ?? -999999) || compareInvestment(a, b);
+      if (sort.value === 'maTrend') return (b.ma200SlopePct ?? -999999) - (a.ma200SlopePct ?? -999999) || compareInvestment(a, b);
+      if (sort.value.startsWith('return')) return (b[sort.value] ?? -999999) - (a[sort.value] ?? -999999);
+      return (a.displayPerformanceRank ?? a.performanceRank ?? 999999) - (b.displayPerformanceRank ?? b.performanceRank ?? 999999);
     }
 
     function prepareDisplayRanks() {
@@ -815,12 +866,7 @@
         (band.value === 'all' || (item.displayBand || item.band) === band.value) &&
         matchesSearch(item, query)
       ));
-      items.sort((a, b) => {
-        if (sort.value === 'name') return a.name.localeCompare(b.name);
-        if (sort.value === 'investmentRank') return compareInvestment(a, b);
-        if (sort.value.startsWith('return')) return (b[sort.value] ?? -999999) - (a[sort.value] ?? -999999);
-        return (a.displayPerformanceRank ?? a.performanceRank ?? 999999) - (b.displayPerformanceRank ?? b.performanceRank ?? 999999);
-      });
+      items.sort(compareBySort);
       const summary = payload.summary || {};
       const loadedText = summary.totalChunks && summary.chunkCount < summary.totalChunks
         ? ` Loaded ${summary.instrumentCount || 0} stocks from ${summary.chunkCount} of ${summary.totalChunks} batches.`
