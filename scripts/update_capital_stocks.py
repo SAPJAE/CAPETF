@@ -10,6 +10,7 @@ from update_capital_etfs import (
     classify,
     discover_instruments,
     enrich_market_details,
+    fetch_hourly_prices,
     fetch_prices,
     is_always_include_stock,
     run,
@@ -56,7 +57,12 @@ def run_chunked(output_path, limit, offset, chunks, manifest_path):
             print(f"[{absolute_index}/{len(selected)}] {market.get('epic')} {market.get('instrumentName')}", flush=True)
             try:
                 rows = fetch_prices(client, market["epic"])
-                chunk_items.append(build_item(market, rows))
+                try:
+                    hourly_rows = fetch_hourly_prices(client, market["epic"])
+                except Exception as intraday_exc:
+                    print(f"Hourly prices unavailable for {market.get('epic')}: {intraday_exc}", flush=True)
+                    hourly_rows = []
+                chunk_items.append(build_item(market, rows, hourly_rows))
             except Exception as exc:
                 chunk_items.append(
                     {
@@ -124,7 +130,12 @@ def run_batch(output_path, limit, offset, batch_index, batch_count):
         print(f"[batch {batch_index + 1}/{batch_count}] [{absolute_index}] {market.get('epic')} {market.get('instrumentName')}", flush=True)
         try:
             rows = fetch_prices(client, market["epic"])
-            items.append(build_item(market, rows))
+            try:
+                hourly_rows = fetch_hourly_prices(client, market["epic"])
+            except Exception as intraday_exc:
+                print(f"Hourly prices unavailable for {market.get('epic')}: {intraday_exc}", flush=True)
+                hourly_rows = []
+            items.append(build_item(market, rows, hourly_rows))
         except Exception as exc:
             items.append(
                 {

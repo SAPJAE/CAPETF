@@ -342,6 +342,17 @@ def parse_price_row(row):
     }
 
 
+def parse_intraday_row(row):
+    snapshot = row.get("snapshotTimeUTC") or row.get("snapshotTime") or row.get("time")
+    if not snapshot:
+        return None
+    close = price_value(row.get("closePrice")) or price_value(row.get("lastTradedPrice"))
+    if close is None:
+        return None
+    timestamp = str(snapshot).replace(" ", "T")[:16]
+    return {"date": timestamp, "close": round(close, 6)}
+
+
 def fetch_prices(client, epic):
     path = f"/prices/{urllib.parse.quote(epic)}?resolution=DAY&max=1000"
     payload = client.get(path)
@@ -350,6 +361,22 @@ def fetch_prices(client, epic):
     rows = [row for row in rows if row]
     deduped = {row["date"]: row for row in rows}
     return [deduped[key] for key in sorted(deduped)]
+
+
+def fetch_hourly_prices(client, epic, max_points=72):
+    path = f"/prices/{urllib.parse.quote(epic)}?resolution=HOUR&max={max_points}"
+    payload = client.get(path)
+    prices = payload.get("prices") or []
+    rows = [parse_intraday_row(row) for row in prices]
+    rows = [row for row in rows if row]
+    deduped = {row["date"]: row for row in rows}
+    return [deduped[key] for key in sorted(deduped)]
+
+
+def intraday_points(rows):
+    if not rows:
+        return []
+    return [{"d": row["date"], "p": row["close"]} for row in rows if row.get("close")]
 
 
 def fetch_market_details(client, market):
@@ -581,7 +608,7 @@ def classify(items, metadata=None):
     }
 
 
-def build_item(market, rows):
+def build_item(market, rows, hourly_rows=None):
     name = market.get("instrumentName") or market.get("symbol") or market["epic"]
     item = {
         "epic": market["epic"],
@@ -637,6 +664,7 @@ def build_item(market, rows):
             "monthlyPoints": aggregate_points(rows, "monthly"),
             "weeklyPoints": aggregate_points(rows, "weekly"),
             "dailyPoints": aggregate_points(rows, "daily"),
+            "hourlyPoints": intraday_points(hourly_rows or []),
         }
     )
     item.update(investing)
@@ -672,7 +700,12 @@ def run(output_path, kind="etf", label="ETF", limit=None, offset=0, metadata=Non
         print(f"[{index}/{len(instruments)}] {market.get('epic')} {market.get('instrumentName')}", flush=True)
         try:
             rows = fetch_prices(client, market["epic"])
-            items.append(build_item(market, rows))
+            try:
+                hourly_rows = fetch_hourly_prices(client, market["epic"])
+            except Exception as intraday_exc:
+                print(f"Hourly prices unavailable for {market.get('epic')}: {intraday_exc}", flush=True)
+                hourly_rows = []
+            items.append(build_item(market, rows, hourly_rows))
         except Exception as exc:
             items.append(
                 {

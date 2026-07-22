@@ -28,8 +28,8 @@
       background: rgba(247, 247, 244, 0.96);
       backdrop-filter: blur(8px);
       border-bottom: 1px solid #e4e7ec;
-      padding: 8px 0 10px;
-      margin-bottom: 12px;
+      padding: 4px 0 6px;
+      margin-bottom: 10px;
     }
     .auth {
       max-width: 420px;
@@ -135,9 +135,30 @@
     .end-dot { fill: currentColor; }
     .chart-label { font-size: 11px; fill: var(--muted); }
     .no-chart { height: 96px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; border-top: 1px solid #eef0f3; border-bottom: 1px solid #eef0f3; }
+    .sticky-panel .tabs { margin: 4px 0 6px; }
+    .sticky-panel .tab { padding: 6px 10px; }
+    .sticky-panel .summary { gap: 6px; margin: 4px 0; }
+    .sticky-panel .summary div { padding: 6px 8px; }
+    .sticky-panel .summary strong { font-size: 16px; line-height: 1.1; }
+    .sticky-panel .note { font-size: 11px; }
+    .sticky-panel .controls, .sticky-panel .status { gap: 8px; margin: 4px 0; }
+    .sticky-panel label { gap: 2px; }
+    .sticky-panel input, .sticky-panel select { min-width: 140px; padding: 6px 8px; }
+    @media (min-width: 960px) {
+      .sticky-panel {
+        display: grid;
+        grid-template-columns: minmax(360px, 0.8fr) minmax(520px, 1.2fr);
+        gap: 6px 12px;
+        align-items: end;
+      }
+      .sticky-panel .tabs { grid-column: 1 / -1; }
+      .sticky-panel .summary { margin: 0; }
+      .sticky-panel .controls { margin: 0; justify-content: flex-start; }
+      .sticky-panel .status { grid-column: 1 / -1; margin: 0; }
+    }
     @media (max-width: 640px) {
       main { padding: 12px; }
-      .sticky-panel { max-height: 72vh; overflow: auto; }
+      .sticky-panel { max-height: 58vh; overflow: auto; }
       .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       label, input, select { min-width: 0; width: 100%; }
       .auth-row { align-items: stretch; flex-direction: column; }
@@ -923,7 +944,7 @@
       document.getElementById('instrument-count').textContent = summary.instrumentCount ?? 0;
       document.getElementById('validated-count').textContent = summary.validatedChartCount ?? 0;
       document.getElementById('source-date').textContent = summary.sourceAsOf || 'n/a';
-      document.getElementById('source-name').textContent = summary.source || 'Demo';
+      document.getElementById('source-name').textContent = String(summary.source || 'Demo').replace('Capital.com demo API chunks', 'Capital API').replace('Capital.com demo API', 'Capital API');
     }
 
     async function selectDataset(key) {
