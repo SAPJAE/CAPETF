@@ -192,6 +192,11 @@
               <option value="deepestDiscount">Best 1Y discount</option>
               <option value="dipUptrend">Dip inside uptrend</option>
               <option value="lowestPrice">Lowest buy price</option>
+              <option value="best2h">Best 2H move</option>
+              <option value="best4h">Best 4H move</option>
+              <option value="best6h">Best 6H move</option>
+              <option value="nearIntradayLow">Near intraday low</option>
+              <option value="intradayRecovery">Recovered from intraday low</option>
               <option value="rebound1m">Best 1M rebound</option>
               <option value="maTrend">Best MA trend</option>
               <option value="performanceRank">Performance rank, best to worst</option>
@@ -208,6 +213,9 @@
               <option value="monthly">Monthly</option>
               <option value="weekly">Weekly</option>
               <option value="daily">Daily</option>
+              <option value="2h">2H</option>
+              <option value="4h">4H</option>
+              <option value="6h">6H</option>
             </select>
           </label>
         </section>
@@ -249,7 +257,7 @@
     const loadingDatasets = {};
     const stockPartsByFile = {};
     let activeDataset = 'etfs';
-    const collapsedSectorGroups = new Set();
+    const expandedGroupKeys = new Set();
     let dashboardPassword = '';
     let payload = null;
     let renderToken = 0;
@@ -350,7 +358,70 @@
       return JSON.parse(new TextDecoder().decode(plain));
     }
 
+    function isIntradayMode() {
+      return ['2h', '4h', '6h'].includes(chartMode.value);
+    }
+
+    function pointValue(point) {
+      return Number.isFinite(point?.p) ? point.p : point?.v;
+    }
+
+    function normalizeIntradayPoints(points, limit = 96) {
+      const source = (points || []).filter(point => Number.isFinite(pointValue(point))).slice(-limit);
+      if (source.length < 2) return [];
+      const first = pointValue(source[0]);
+      if (!first) return [];
+      return source.map(point => ({
+        d: String(point.d || point.date || '').replace('T', ' ').slice(5, 16),
+        v: Number(((pointValue(point) / first) * 100).toFixed(2)),
+        p: pointValue(point),
+      }));
+    }
+
+    function aggregateIntradayPoints(points, hours) {
+      const source = (points || []).filter(point => Number.isFinite(pointValue(point)));
+      if (source.length < 2) return [];
+      const buckets = [];
+      for (let index = 0; index < source.length; index += hours) {
+        const bucket = source.slice(index, index + hours);
+        if (bucket.length) buckets.push(bucket[bucket.length - 1]);
+      }
+      return normalizeIntradayPoints(buckets, 96);
+    }
+
+    function intradayChartPoints(item, mode) {
+      const hourly = item.hourlyPoints || item.hourPoints || [];
+      if (mode === '4h') {
+        const native = normalizeIntradayPoints(item.fourHourPoints || item.hour4Points || item.h4Points || []);
+        return native.length ? native : aggregateIntradayPoints(hourly, 4);
+      }
+      if (mode === '2h') return aggregateIntradayPoints(hourly, 2);
+      if (mode === '6h') return aggregateIntradayPoints(hourly, 6);
+      return [];
+    }
+
+    function pointReturn(points) {
+      if (!points || points.length < 2) return null;
+      const start = pointValue(points[0]);
+      const end = pointValue(points[points.length - 1]);
+      return start ? Number(((end / start - 1) * 100).toFixed(2)) : null;
+    }
+
+    function intradayReturn(item, mode = chartMode.value) {
+      return pointReturn(intradayChartPoints(item, mode));
+    }
+
+    function intradayLowDistance(item, mode = chartMode.value) {
+      const points = intradayChartPoints(item, mode);
+      if (points.length < 2) return null;
+      const values = points.map(pointValue).filter(Number.isFinite);
+      const end = values[values.length - 1];
+      const low = Math.min(...values);
+      return low ? Number(((end / low - 1) * 100).toFixed(2)) : null;
+    }
+
     function chartPoints(item) {
+      if (isIntradayMode()) return intradayChartPoints(item, chartMode.value);
       if (chartMode.value === 'daily') {
         const points = item.dailyPoints || [];
         return points.length > 260 ? points.slice(Math.floor(points.length * 0.75)) : points;
@@ -595,6 +666,14 @@
       const cls = item.displayBand || item.band || 'Unvalidated';
       const points = chartPoints(item);
       const ep = endPoint(points);
+      const intraday = isIntradayMode();
+      const intraday2h = intradayReturn(item, '2h');
+      const intraday4h = intradayReturn(item, '4h');
+      const intraday6h = intradayReturn(item, '6h');
+      const intradayLow = intradayLowDistance(item, chartMode.value);
+      const intradayPanel = intraday
+        ? `<div class="periods"><div><span>2H</span><strong>${fmtPct(intraday2h)}</strong></div><div><span>4H</span><strong>${fmtPct(intraday4h)}</strong></div><div><span>6H</span><strong>${fmtPct(intraday6h)}</strong></div><div><span>Low dist</span><strong>${fmtPct(intradayLow)}</strong></div><div><span>Mode</span><strong>${chartMode.value.toUpperCase()}</strong></div></div>`
+        : `<div class="periods"><div><span>1W</span><strong>${fmtPct(item.return1w)}</strong></div><div><span>1M</span><strong>${fmtPct(item.return1m)}</strong></div><div><span>3M</span><strong>${fmtPct(item.return3m)}</strong></div><div><span>6M</span><strong>${fmtPct(item.return6m)}</strong></div><div><span>1Y</span><strong>${fmtPct(item.return1y)}</strong></div></div>`;
       const hasInvestmentScore = Number.isFinite(item.investmentScore);
       const hasTrendDetails = [item.trendScore, item.dipScore, item.recoveryScore].some(Number.isFinite);
       const hasLowDistance = Number.isFinite(item.distanceFromPreviousYearLowPct);
@@ -623,13 +702,13 @@
              <text class="chart-label" x="7" y="90">${points[0]?.d || ''}</text>
              <text class="chart-label" x="211" y="90" text-anchor="end">${points[points.length - 1]?.d || ''}</text>
            </svg>`
-        : '<div class="no-chart">No chart</div>';
+        : `<div class="no-chart">${intraday ? 'No intraday data loaded' : 'No chart'}</div>`;
       return `<article class="card ${cls}">
         <div class="head"><div><div class="name">${escapeHtml(item.name)}</div><div class="code">${escapeHtml(item.epic || item.symbol || '')}</div></div><span class="badge">${cls}</span></div>
         ${sectorLine}
         <div class="metrics"><div><span>Perf rank</span><strong>${item.displayPerformanceRank || item.performanceRank || 'n/a'}</strong></div><div><span>${investmentRankLabel}</span><strong>${investmentRank}</strong></div><div><span>Price</span><strong>${fmtPrice(item.price)}</strong></div></div>
         ${investmentPanel}
-        <div class="periods"><div><span>1W</span><strong>${fmtPct(item.return1w)}</strong></div><div><span>1M</span><strong>${fmtPct(item.return1m)}</strong></div><div><span>3M</span><strong>${fmtPct(item.return3m)}</strong></div><div><span>6M</span><strong>${fmtPct(item.return6m)}</strong></div><div><span>1Y</span><strong>${fmtPct(item.return1y)}</strong></div></div>
+        ${intradayPanel}
         <div class="refs"><div><span>1Y ago ${item.oneYearAgoDate || ''}</span><strong>${fmtPrice(item.oneYearAgoPrice)}</strong></div><div><span>Prev-year low ${item.previousYearLowDate || ''}</span><strong>${fmtPrice(item.previousYearLowPrice)} · ${fmtDistance(item.distanceFromPreviousYearLowPct)}</strong></div></div>
         ${trendPanel}
         ${chart}
@@ -689,6 +768,11 @@
       if (sort.value === 'deepestDiscount') return (a.return1y ?? 999999) - (b.return1y ?? 999999) || compareInvestment(a, b);
       if (sort.value === 'dipUptrend') return dipUptrendSortValue(b) - dipUptrendSortValue(a) || compareInvestment(a, b);
       if (sort.value === 'lowestPrice') return (a.price ?? 999999999) - (b.price ?? 999999999) || compareInvestment(a, b);
+      if (sort.value === 'best2h') return (intradayReturn(b, '2h') ?? -999999) - (intradayReturn(a, '2h') ?? -999999) || compareInvestment(a, b);
+      if (sort.value === 'best4h') return (intradayReturn(b, '4h') ?? -999999) - (intradayReturn(a, '4h') ?? -999999) || compareInvestment(a, b);
+      if (sort.value === 'best6h') return (intradayReturn(b, '6h') ?? -999999) - (intradayReturn(a, '6h') ?? -999999) || compareInvestment(a, b);
+      if (sort.value === 'nearIntradayLow') return (intradayLowDistance(a) ?? 999999) - (intradayLowDistance(b) ?? 999999) || compareInvestment(a, b);
+      if (sort.value === 'intradayRecovery') return (intradayLowDistance(b) ?? -999999) - (intradayLowDistance(a) ?? -999999) || compareInvestment(a, b);
       if (sort.value === 'rebound1m') return (b.return1m ?? -999999) - (a.return1m ?? -999999) || compareInvestment(a, b);
       if (sort.value === 'maTrend') return (b.ma200SlopePct ?? -999999) - (a.ma200SlopePct ?? -999999) || compareInvestment(a, b);
       if (sort.value.startsWith('return')) return (b[sort.value] ?? -999999) - (a[sort.value] ?? -999999);
@@ -922,14 +1006,14 @@
           return;
         }
         const [key, groupItems] = entry;
-        const collapsed = collapsedSectorGroups.has(key);
+        const collapsed = !expandedGroupKeys.has(key);
         const label = stockFamilyLabel(groupItems[0] || {});
         const best = groupItems.filter(item => (item.displayBand || item.band) === 'Best').length;
         const mediocre = groupItems.filter(item => (item.displayBand || item.band) === 'Mediocre').length;
         const worst = groupItems.filter(item => (item.displayBand || item.band) === 'Worst').length;
         container.insertAdjacentHTML('beforeend', `<section class="sector-group ${collapsed ? 'collapsed' : ''}">
           <button type="button" class="sector-toggle" data-sector-family="${escapeHtml(key)}">${collapsed ? '+' : '-'} ${escapeHtml(label)} <span>${groupItems.length} stocks · Best ${best} · Mid ${mediocre} · Worst ${worst}</span></button>
-          <div class="sector-group-grid">${groupItems.map(card).join('')}</div>
+          <div class="sector-group-grid">${collapsed ? '' : groupItems.map(card).join('')}</div>
         </section>`);
         index += 1;
         if (index < entries.length) {
@@ -952,12 +1036,12 @@
       return `<div class="sector-groups">${Object.entries(groups)
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([key, groupItems]) => {
-          const collapsed = collapsedSectorGroups.has(key);
+          const collapsed = !expandedGroupKeys.has(key);
           const stockCount = groupItems.reduce((sum, item) => sum + (item.sectorMemberCount || 0), 0);
           const label = sectorFamilyLabel(groupItems[0] || {});
           return `<section class="sector-group ${collapsed ? 'collapsed' : ''}">
             <button type="button" class="sector-toggle" data-sector-family="${escapeHtml(key)}">${collapsed ? '+' : '-'} ${escapeHtml(label)} <span>${groupItems.length} sectors · ${stockCount} stocks</span></button>
-            <div class="sector-group-grid">${groupItems.map(card).join('')}</div>
+            <div class="sector-group-grid">${collapsed ? '' : groupItems.map(card).join('')}</div>
           </section>`;
         }).join('')}</div>`;
     }
@@ -1000,8 +1084,8 @@
       const toggle = event.target.closest('.sector-toggle');
       if (toggle) {
         const key = toggle.dataset.sectorFamily;
-        if (collapsedSectorGroups.has(key)) collapsedSectorGroups.delete(key);
-        else collapsedSectorGroups.add(key);
+        if (expandedGroupKeys.has(key)) expandedGroupKeys.delete(key);
+        else expandedGroupKeys.add(key);
         render();
         return;
       }
