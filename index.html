@@ -126,6 +126,10 @@
     .invest { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0; font-size: 12px; }
     .metrics span, .periods span, .refs span, .invest span { display: block; color: var(--muted); }
     .metrics strong, .periods strong, .refs strong, .invest strong { font-weight: 600; }
+    .quality-dip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 8px 0; font-size: 12px; }
+    .quality-dip span { display: block; color: var(--muted); }
+    .quality-dip strong { font-weight: 600; overflow-wrap: anywhere; }
+    .quality-dip-context { margin: -2px 0 8px; }
     svg { width: 100%; height: 96px; display: block; overflow: visible; }
     .axis { stroke: var(--line); stroke-width: 1; }
     .spark { fill: none; stroke-width: 2; }
@@ -208,6 +212,9 @@
           <label>Sort
             <select id="sort">
               <option value="investmentRank">Investment rank, best to worst</option>
+              <option value="qualityDip" data-stock-only="true">Quality dip, best to worst</option>
+              <option value="qualityDiscount" data-stock-only="true">Largest discount in quality trend</option>
+              <option value="qualityStabilizing" data-stock-only="true">Stabilizing dips</option>
               <option value="opportunity">Opportunity score</option>
               <option value="closestLow">Closest to previous-year low</option>
               <option value="deepestDiscount">Best 1Y discount</option>
@@ -715,6 +722,7 @@
       const trendPanel = hasTrendDetails
         ? `<div class="code">Trend ${fmtScore(item.trendScore)} / dip ${fmtScore(item.dipScore)} / recovery ${fmtScore(item.recoveryScore)}</div>`
         : `<div class="code">Investment basis: ${investmentBasis}</div>`;
+      const qualityDip = qualityDipPanel(item);
       const chart = item.validated && points.length > 1
         ? `<svg viewBox="0 0 218 96" role="img" aria-label="${escapeHtml(item.name)} chart">
              <line class="axis" x1="7" y1="70" x2="211" y2="70"></line>
@@ -728,6 +736,7 @@
         <div class="head"><div><div class="name">${escapeHtml(item.name)}</div><div class="code">${escapeHtml(item.epic || item.symbol || '')}</div></div><span class="badge">${cls}</span></div>
         ${sectorLine}
         <div class="metrics"><div><span>Perf rank</span><strong>${item.displayPerformanceRank || item.performanceRank || 'n/a'}</strong></div><div><span>${investmentRankLabel}</span><strong>${investmentRank}</strong></div><div><span>Price</span><strong>${fmtPrice(item.price)}</strong></div></div>
+        ${qualityDip}
         ${investmentPanel}
         ${intradayPanel}
         <div class="refs"><div><span>1Y ago ${item.oneYearAgoDate || ''}</span><strong>${fmtPrice(item.oneYearAgoPrice)}</strong></div><div><span>Prev-year low ${item.previousYearLowDate || ''}</span><strong>${fmtPrice(item.previousYearLowPrice)} · ${fmtDistance(item.distanceFromPreviousYearLowPct)}</strong></div></div>
@@ -781,9 +790,72 @@
       return diff || a.name.localeCompare(b.name);
     }
 
+    function compareQualityDip(a, b) {
+      const aScore = Number.isFinite(a.qualityDipScore) ? a.qualityDipScore : -Infinity;
+      const bScore = Number.isFinite(b.qualityDipScore) ? b.qualityDipScore : -Infinity;
+      return bScore - aScore || a.name.localeCompare(b.name);
+    }
+
+    function assignQualityDipRanks(items, complete) {
+      items.forEach(item => { delete item.displayQualityDipRank; });
+      if (!complete) return;
+      items
+        .filter(item => Number.isFinite(item.qualityDipScore))
+        .sort(compareQualityDip)
+        .forEach((item, index) => { item.displayQualityDipRank = index + 1; });
+    }
+
+    function stockBatchesComplete(summary) {
+      return Number.isFinite(summary?.chunkCount)
+        && Number.isFinite(summary?.totalChunks)
+        && summary.totalChunks > 0
+        && summary.chunkCount >= summary.totalChunks;
+    }
+
+    function isQualityDipSort(value) {
+      return ['qualityDip', 'qualityDiscount', 'qualityStabilizing'].includes(value);
+    }
+
+    function syncQualityDipSortControls() {
+      const stocksActive = activeDataset === 'stocks';
+      [...sort.options]
+        .filter(option => option.dataset.stockOnly === 'true')
+        .forEach(option => {
+          option.hidden = !stocksActive;
+          option.disabled = !stocksActive;
+        });
+      if (!stocksActive && isQualityDipSort(sort.value)) sort.value = 'investmentRank';
+    }
+
+    function qualityDipPanel(item) {
+      if (activeDataset !== 'stocks') return '';
+      const complete = stockBatchesComplete(payload?.summary);
+      const rank = !complete
+        ? 'Pending'
+        : Number.isFinite(item.qualityDipScore) && Number.isFinite(item.displayQualityDipRank)
+          ? item.displayQualityDipRank
+          : 'Unrated';
+      const score = Number.isFinite(item.qualityDipScore) ? fmtScore(item.qualityDipScore) : 'Unrated';
+      const component = (value, maximum) => Number.isFinite(value) ? `${fmtScore(value)}/${maximum}` : 'Unrated';
+      const signal = Number.isFinite(item.qualityDipScore) ? escapeHtml(item.qualityDipLabel || '') : 'Unrated';
+      return `<div class="quality-dip"><div><span>Quality dip</span><strong>${rank}</strong></div><div><span>Score</span><strong>${score}</strong></div><div><span>Signal</span><strong>${signal}</strong></div><div><span>Trend</span><strong>${component(item.qualityDipTrendScore, 40)}</strong></div><div><span>Discount</span><strong>${component(item.qualityDipDiscountScore, 30)}</strong></div><div><span>Stabilizing</span><strong>${component(item.qualityDipStabilizationScore, 20)}</strong></div></div>
+        <div class="code quality-dip-context">52W drawdown ${fmtPct(item.qualityDipDrawdownPct)} · vs trend ${fmtPct(item.qualityDipTrendDistancePct)}</div>`;
+    }
+
     function compareBySort(a, b) {
       if (sort.value === 'name') return a.name.localeCompare(b.name);
       if (sort.value === 'investmentRank') return compareInvestment(a, b);
+      if (sort.value === 'qualityDip') return compareQualityDip(a, b);
+      if (sort.value === 'qualityDiscount') {
+        return (a.qualityDipTrendDistancePct ?? 999999)
+          - (b.qualityDipTrendDistancePct ?? 999999)
+          || compareQualityDip(a, b);
+      }
+      if (sort.value === 'qualityStabilizing') {
+        return (b.qualityDipStabilizationScore ?? -999999)
+          - (a.qualityDipStabilizationScore ?? -999999)
+          || compareQualityDip(a, b);
+      }
       if (sort.value === 'opportunity') return opportunitySortValue(b) - opportunitySortValue(a) || compareInvestment(a, b);
       if (sort.value === 'closestLow') return (a.distanceFromPreviousYearLowPct ?? 999999) - (b.distanceFromPreviousYearLowPct ?? 999999) || compareInvestment(a, b);
       if (sort.value === 'deepestDiscount') return (a.return1y ?? 999999) - (b.return1y ?? 999999) || compareInvestment(a, b);
@@ -813,9 +885,10 @@
       });
       const investment = [...items].sort(compareInvestment);
       investment.forEach((item, index) => { item.displayInvestmentRank = index + 1; });
+      assignQualityDipRanks(items, activeDataset === 'stocks' && stockBatchesComplete(payload.summary));
     }
 
-    function mergePayloads(parts) {
+    function mergePayloads(parts, expectedBatchCount) {
       const itemsByEpic = {};
       parts.forEach(part => (part.items || []).forEach(item => { itemsByEpic[item.epic] = item; }));
       const summaries = parts.map(part => part.summary || {});
@@ -830,7 +903,7 @@
           validatedChartCount: Object.values(itemsByEpic).filter(item => item.validated).length,
           source: 'Capital.com demo API chunks',
           chunkCount: parts.length,
-          totalChunks: summaries[summaries.length - 1]?.chunkCount || parts.length,
+          totalChunks: expectedBatchCount,
         },
         items: Object.values(itemsByEpic),
       };
@@ -857,8 +930,7 @@
     function updateStocksFromParts(files, expectedCount) {
       const parts = files.map(file => stockPartsByFile[file]).filter(Boolean);
       if (!parts.length) return null;
-      datasets.stocks = mergePayloads(parts);
-      datasets.stocks.summary.totalChunks = files.length;
+      datasets.stocks = mergePayloads(parts, files.length);
       datasets.stocks.summary.expectedInstrumentCount = expectedCount;
       if (activeDataset === 'stocks') {
         payload = datasets.stocks;
@@ -949,6 +1021,7 @@
 
     async function selectDataset(key) {
       activeDataset = key;
+      syncQualityDipSortControls();
       tabButtons.forEach(button => button.classList.toggle('active', button.dataset.dataset === key));
       grid.innerHTML = '';
       note.textContent = key === 'sectors' ? 'Loading sector indexes...' : key === 'stocks' ? 'Loading stocks...' : 'Loading ETFs...';
@@ -1091,6 +1164,7 @@
       }
     }
 
+    syncQualityDipSortControls();
     document.getElementById('unlock').addEventListener('click', unlock);
     manualRefresh.addEventListener('click', event => {
       if (manualRefresh.getAttribute('aria-disabled') === 'true') event.preventDefault();
