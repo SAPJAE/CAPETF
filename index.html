@@ -279,6 +279,7 @@
     const stockManifestFile = 'data/stocks-manifest.enc.json';
     const stockBatchCount = 11;
     const stockBatchSize = 250;
+    const qualityDipScoringVersion = 'quality-dip-v1';
     const stockBatchFiles = Array.from({ length: stockBatchCount }, (_, index) => `data/stocks-${String(index).padStart(3, '0')}.enc.json`);
     const datasetLabels = { sectors: 'sector', etfs: 'ETF', stocks: 'stock' };
     const datasets = {};
@@ -294,6 +295,7 @@
     let refreshIsBusy = false;
 
     const fmtPct = value => value == null ? 'n/a' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
+    const fmtBelow = value => Number.isFinite(value) ? `${Math.abs(value).toFixed(1)}% below` : 'n/a';
     const fmtPrice = value => value == null ? 'n/a' : Number(value).toFixed(2);
     const fmtScore = value => value == null ? 'n/a' : Number(value).toFixed(1);
     const fmtDistance = value => value == null ? 'n/a' : value < 0 ? `${Math.abs(value).toFixed(1)}% below` : `${value.toFixed(1)}% above`;
@@ -793,23 +795,22 @@
     function compareQualityDip(a, b) {
       const aScore = Number.isFinite(a.qualityDipScore) ? a.qualityDipScore : -Infinity;
       const bScore = Number.isFinite(b.qualityDipScore) ? b.qualityDipScore : -Infinity;
-      return bScore - aScore || a.name.localeCompare(b.name);
+      return bScore - aScore
+        || String(a.name || '').localeCompare(String(b.name || ''))
+        || String(a.epic || '').localeCompare(String(b.epic || ''));
     }
 
     function assignQualityDipRanks(items, complete) {
       items.forEach(item => { delete item.displayQualityDipRank; });
       if (!complete) return;
       items
-        .filter(item => Number.isFinite(item.qualityDipScore))
+        .filter(item => item.validated === true && Number.isFinite(item.qualityDipScore))
         .sort(compareQualityDip)
         .forEach((item, index) => { item.displayQualityDipRank = index + 1; });
     }
 
     function stockBatchesComplete(summary) {
-      return Number.isFinite(summary?.chunkCount)
-        && Number.isFinite(summary?.totalChunks)
-        && summary.totalChunks > 0
-        && summary.chunkCount >= summary.totalChunks;
+      return summary?.stockBatchesComplete === true;
     }
 
     function isQualityDipSort(value) {
@@ -839,7 +840,7 @@
       const component = (value, maximum) => Number.isFinite(value) ? `${fmtScore(value)}/${maximum}` : 'Unrated';
       const signal = Number.isFinite(item.qualityDipScore) ? escapeHtml(item.qualityDipLabel || '') : 'Unrated';
       return `<div class="quality-dip"><div><span>Quality dip</span><strong>${rank}</strong></div><div><span>Score</span><strong>${score}</strong></div><div><span>Signal</span><strong>${signal}</strong></div><div><span>Trend</span><strong>${component(item.qualityDipTrendScore, 40)}</strong></div><div><span>Discount</span><strong>${component(item.qualityDipDiscountScore, 30)}</strong></div><div><span>Stabilizing</span><strong>${component(item.qualityDipStabilizationScore, 20)}</strong></div></div>
-        <div class="code quality-dip-context">52W drawdown ${fmtPct(item.qualityDipDrawdownPct)} · vs trend ${fmtPct(item.qualityDipTrendDistancePct)}</div>`;
+        <div class="code quality-dip-context">52W drawdown ${fmtBelow(item.qualityDipDrawdownPct)} · vs trend ${fmtBelow(item.qualityDipTrendDistancePct)}</div>`;
     }
 
     function compareBySort(a, b) {
@@ -847,8 +848,8 @@
       if (sort.value === 'investmentRank') return compareInvestment(a, b);
       if (sort.value === 'qualityDip') return compareQualityDip(a, b);
       if (sort.value === 'qualityDiscount') {
-        return (a.qualityDipTrendDistancePct ?? 999999)
-          - (b.qualityDipTrendDistancePct ?? 999999)
+        return (b.qualityDipTrendDistancePct ?? -Infinity)
+          - (a.qualityDipTrendDistancePct ?? -Infinity)
           || compareQualityDip(a, b);
       }
       if (sort.value === 'qualityStabilizing') {
@@ -894,6 +895,19 @@
       const summaries = parts.map(part => part.summary || {});
       const sourceDates = summaries.map(summary => summary.sourceAsOf).filter(Boolean).sort();
       const refreshed = summaries.map(summary => summary.refreshedAtUtc).filter(Boolean).sort();
+      const chunkIndices = summaries.map(summary => summary.chunkIndex);
+      const uniqueChunkIndices = new Set(chunkIndices);
+      const generations = summaries.map(summary => summary.refreshGeneration);
+      const oneGeneration = generations.length === expectedBatchCount
+        && generations.every(generation => typeof generation === 'string' && generation.length > 0)
+        && new Set(generations).size === 1;
+      const coherent = parts.length === expectedBatchCount
+        && expectedBatchCount > 0
+        && chunkIndices.every(index => Number.isInteger(index) && index >= 0 && index < expectedBatchCount)
+        && uniqueChunkIndices.size === expectedBatchCount
+        && Array.from({ length: expectedBatchCount }, (_, index) => index).every(index => uniqueChunkIndices.has(index))
+        && oneGeneration
+        && summaries.every(summary => summary.qualityDipScoringVersion === qualityDipScoringVersion);
       return {
         summary: {
           ...(summaries[summaries.length - 1] || {}),
@@ -904,6 +918,9 @@
           source: 'Capital.com demo API chunks',
           chunkCount: parts.length,
           totalChunks: expectedBatchCount,
+          refreshGeneration: oneGeneration ? generations[0] : '',
+          qualityDipScoringVersion: coherent ? qualityDipScoringVersion : '',
+          stockBatchesComplete: coherent,
         },
         items: Object.values(itemsByEpic),
       };
@@ -913,6 +930,14 @@
       const response = await fetch(file, { cache: 'no-store' });
       if (!response.ok) throw new Error(`${file} is not ready yet.`);
       return decrypt(await response.json(), dashboardPassword);
+    }
+
+    function cacheStockPart(file, nextPart) {
+      const previousGeneration = stockPartsByFile[file]?.summary?.refreshGeneration;
+      const nextGeneration = nextPart?.summary?.refreshGeneration;
+      if (stockPartsByFile[file] && previousGeneration === nextGeneration) return false;
+      stockPartsByFile[file] = nextPart;
+      return true;
     }
 
     async function stockFilesToLoad() {
@@ -943,10 +968,11 @@
     }
 
     async function loadAvailableStockBatches(files, expectedCount) {
+      const refetchCached = refreshIsBusy || !stockBatchesComplete(datasets.stocks?.summary);
       for (const file of files) {
-        if (stockPartsByFile[file]) continue;
+        if (stockPartsByFile[file] && !refetchCached) continue;
         try {
-          stockPartsByFile[file] = await loadEncryptedFile(file);
+          cacheStockPart(file, await loadEncryptedFile(file));
           const loaded = updateStocksFromParts(files, expectedCount);
           const loadedStocks = loaded?.summary?.instrumentCount || 0;
           note.textContent = `Loaded ${loadedStocks} of about ${expectedCount} stocks from ${Object.keys(stockPartsByFile).length} of ${files.length} batches.`;
@@ -957,11 +983,17 @@
       return updateStocksFromParts(files, expectedCount);
     }
 
+    function stockBatchPollingNeeded(files) {
+      return refreshIsBusy
+        || !files.every(file => stockPartsByFile[file])
+        || !stockBatchesComplete(datasets.stocks?.summary);
+    }
+
     function scheduleStockBatchPolling(files, expectedCount) {
-      if (stockBatchPollTimer || files.every(file => stockPartsByFile[file])) return;
+      if (stockBatchPollTimer || !stockBatchPollingNeeded(files)) return;
       stockBatchPollTimer = setInterval(async () => {
         await loadAvailableStockBatches(files, expectedCount);
-        if (files.every(file => stockPartsByFile[file])) {
+        if (!stockBatchPollingNeeded(files)) {
           clearInterval(stockBatchPollTimer);
           stockBatchPollTimer = null;
         }
@@ -971,7 +1003,7 @@
     async function loadChunkedStocks() {
       await checkRefreshStatus();
       const { files, expectedCount } = await stockFilesToLoad();
-      if (datasets.stocks && files.every(file => stockPartsByFile[file])) return datasets.stocks;
+      if (datasets.stocks && !stockBatchPollingNeeded(files)) return datasets.stocks;
       if (loadingDatasets.stocks) return loadingDatasets.stocks;
       loadingDatasets.stocks = (async () => {
         try {

@@ -105,6 +105,18 @@ function baseCardItem(overrides = {}) {
   };
 }
 
+function stockPart(index, generation, items = [], version = 'quality-dip-v1') {
+  return {
+    summary: {
+      chunkIndex: index,
+      chunkCount: 3,
+      refreshGeneration: generation,
+      qualityDipScoringVersion: version,
+    },
+    items,
+  };
+}
+
 const tests = [];
 
 function test(name, callback) {
@@ -123,15 +135,16 @@ test('Quality Dip comparison sorts scores descending', () => {
   );
 });
 
-test('Quality Dip comparison breaks score ties by name', () => {
+test('Quality Dip comparison breaks score ties by name then epic', () => {
   const items = [
-    { name: 'Zulu', qualityDipScore: 50 },
-    { name: 'Alpha', qualityDipScore: 50 },
+    { epic: 'Z', name: 'Zulu', qualityDipScore: 50 },
+    { epic: 'ZZ', name: 'Alpha', qualityDipScore: 50 },
+    { epic: 'AA', name: 'Alpha', qualityDipScore: 50 },
   ];
   context.testItems = items;
   assert.deepEqual(
-    Array.from(run('[...testItems].sort(compareQualityDip).map(item => item.name)')),
-    ['Alpha', 'Zulu']
+    Array.from(run('[...testItems].sort(compareQualityDip).map(item => item.epic)')),
+    ['AA', 'ZZ', 'Z']
   );
 });
 
@@ -158,57 +171,95 @@ test('incomplete rank assignment clears every displayed global rank', () => {
   assert.ok(items.every(item => !Object.hasOwn(item, 'displayQualityDipRank')));
 });
 
-test('complete rank assignment ranks scored stocks and omits Unrated', () => {
+test('complete rank assignment ranks validated stocks and omits Unrated or unvalidated', () => {
   const items = [
-    { name: 'Beta', qualityDipScore: 70 },
-    { name: 'Alpha', qualityDipScore: 80 },
-    { name: 'Unrated' },
+    { epic: 'B', name: 'Beta', validated: true, qualityDipScore: 70 },
+    { epic: 'A', name: 'Alpha', validated: true, qualityDipScore: 80 },
+    { epic: 'U', name: 'Unrated', validated: true },
+    { epic: 'X', name: 'Unvalidated', validated: false, qualityDipScore: 99 },
   ];
   context.testItems = items;
   run('assignQualityDipRanks(testItems, true)');
   assert.equal(items[1].displayQualityDipRank, 1);
   assert.equal(items[0].displayQualityDipRank, 2);
   assert.ok(!Object.hasOwn(items[2], 'displayQualityDipRank'));
+  assert.ok(!Object.hasOwn(items[3], 'displayQualityDipRank'));
 });
 
-test('merged stock completeness uses loaded count versus expected batches', () => {
-  context.testParts = [{
-    summary: { chunkCount: 1 },
-    items: [{ epic: 'A', name: 'Alpha', qualityDipScore: 80 }],
-  }];
-  const incomplete = run('mergePayloads(testParts, 3)');
-  assert.equal(incomplete.summary.chunkCount, 1);
-  assert.equal(incomplete.summary.totalChunks, 3);
-  context.testPayload = incomplete;
-  run(`
-    activeDataset = 'stocks';
-    payload = testPayload;
-    prepareDisplayRanks();
-  `);
-  assert.ok(!Object.hasOwn(incomplete.items[0], 'displayQualityDipRank'));
-
+test('mixed refresh generations are incomplete and receive no global ranks', () => {
   context.testParts = [
-    { summary: { chunkCount: 1 }, items: [{ epic: 'A', name: 'Alpha', qualityDipScore: 80 }] },
-    { summary: { chunkCount: 1 }, items: [{ epic: 'B', name: 'Beta', qualityDipScore: 70 }] },
-    { summary: { chunkCount: 1 }, items: [{ epic: 'C', name: 'Unrated' }] },
+    stockPart(0, 'old', [{ epic: 'A', name: 'Alpha', validated: true, qualityDipScore: 80 }]),
+    stockPart(1, 'new', [{ epic: 'B', name: 'Beta', validated: true, qualityDipScore: 70 }]),
+    stockPart(2, 'new', [{ epic: 'C', name: 'Gamma', validated: true, qualityDipScore: 60 }]),
+  ];
+  const mixed = run('mergePayloads(testParts, 3)');
+  context.testPayload = mixed;
+  run('activeDataset = "stocks"; payload = testPayload; prepareDisplayRanks()');
+
+  assert.equal(run('stockBatchesComplete(testPayload.summary)'), false);
+  assert.ok(mixed.items.every(item => !Object.hasOwn(item, 'displayQualityDipRank')));
+});
+
+test('duplicate or missing chunk indices are incomplete', () => {
+  context.testParts = [stockPart(0, 'run'), stockPart(0, 'run'), stockPart(2, 'run')];
+  assert.equal(run('stockBatchesComplete(mergePayloads(testParts, 3).summary)'), false);
+
+  context.testParts = [stockPart(0, 'run'), stockPart(2, 'run')];
+  assert.equal(run('stockBatchesComplete(mergePayloads(testParts, 3).summary)'), false);
+});
+
+test('mismatched scoring versions are incomplete', () => {
+  context.testParts = [
+    stockPart(0, 'run'),
+    stockPart(1, 'run', [], 'quality-dip-v0'),
+    stockPart(2, 'run'),
+  ];
+
+  assert.equal(run('stockBatchesComplete(mergePayloads(testParts, 3).summary)'), false);
+});
+
+test('all expected coherent batches complete and receive validated global ranks', () => {
+  context.testParts = [
+    stockPart(0, 'run', [{ epic: 'A', name: 'Alpha', validated: true, qualityDipScore: 80 }]),
+    stockPart(1, 'run', [{ epic: 'B', name: 'Beta', validated: true, qualityDipScore: 70 }]),
+    stockPart(2, 'run', [{ epic: 'C', name: 'Unrated', validated: true }]),
   ];
   const complete = run('mergePayloads(testParts, 3)');
   context.testPayload = complete;
   run('payload = testPayload; prepareDisplayRanks()');
+
+  assert.equal(run('stockBatchesComplete(testPayload.summary)'), true);
   assert.equal(complete.items.find(item => item.epic === 'A').displayQualityDipRank, 1);
   assert.equal(complete.items.find(item => item.epic === 'B').displayQualityDipRank, 2);
   assert.ok(!Object.hasOwn(complete.items.find(item => item.epic === 'C'), 'displayQualityDipRank'));
 });
 
-test('Quality Dip sort uses score, discount, and stabilization rules', () => {
+test('stock cache replaces a batch only when its refresh generation changes', () => {
+  context.testOldPart = stockPart(0, 'old', [{ epic: 'OLD' }]);
+  context.testSamePart = stockPart(0, 'old', [{ epic: 'SAME' }]);
+  context.testNewPart = stockPart(0, 'new', [{ epic: 'NEW' }]);
+
+  run(`
+    delete stockPartsByFile['stocks-000'];
+    cacheStockPart('stocks-000', testOldPart);
+  `);
+  assert.equal(run("cacheStockPart('stocks-000', testSamePart)"), false);
+  assert.equal(run("stockPartsByFile['stocks-000'].items[0].epic"), 'OLD');
+  assert.equal(run("cacheStockPart('stocks-000', testNewPart)"), true);
+  assert.equal(run("stockPartsByFile['stocks-000'].items[0].epic"), 'NEW');
+  run("delete stockPartsByFile['stocks-000']");
+});
+
+test('Quality Dip sort uses score, discount magnitude then score, and stabilization rules', () => {
   const items = [
     { name: 'Unrated' },
-    { name: 'Alpha', qualityDipScore: 80, qualityDipTrendDistancePct: -8, qualityDipStabilizationScore: 4 },
-    { name: 'Beta', qualityDipScore: 70, qualityDipTrendDistancePct: -15, qualityDipStabilizationScore: 17 },
+    { name: 'Alpha', qualityDipScore: 80, qualityDipTrendDistancePct: 8, qualityDipStabilizationScore: 4 },
+    { name: 'Beta', qualityDipScore: 70, qualityDipTrendDistancePct: 15, qualityDipStabilizationScore: 17 },
+    { name: 'Gamma', qualityDipScore: 90, qualityDipTrendDistancePct: 15, qualityDipStabilizationScore: 10 },
   ];
-  assert.deepEqual(namesFor(items, 'qualityDip'), ['Alpha', 'Beta', 'Unrated']);
-  assert.deepEqual(namesFor(items, 'qualityDiscount'), ['Beta', 'Alpha', 'Unrated']);
-  assert.deepEqual(namesFor(items, 'qualityStabilizing'), ['Beta', 'Alpha', 'Unrated']);
+  assert.deepEqual(namesFor(items, 'qualityDip'), ['Gamma', 'Alpha', 'Beta', 'Unrated']);
+  assert.deepEqual(namesFor(items, 'qualityDiscount'), ['Gamma', 'Beta', 'Alpha', 'Unrated']);
+  assert.deepEqual(namesFor(items, 'qualityStabilizing'), ['Beta', 'Gamma', 'Alpha', 'Unrated']);
 });
 
 test('Quality Dip sort controls are Stocks-only and repair selection outside Stocks', () => {
@@ -258,8 +309,8 @@ test('stock tile shows Pending without rendering a partial rank', () => {
     qualityDipTrendScore: 31,
     qualityDipDiscountScore: 22,
     qualityDipStabilizationScore: 14,
-    qualityDipDrawdownPct: -18.4,
-    qualityDipTrendDistancePct: -7.2,
+    qualityDipDrawdownPct: 18.4,
+    qualityDipTrendDistancePct: 7.2,
   });
   context.testItem = item;
   const html = run(`
@@ -273,17 +324,18 @@ test('stock tile shows Pending without rendering a partial rank', () => {
   assert.match(html, /<span>Trend<\/span><strong>31\.0\/40<\/strong>/);
   assert.match(html, /<span>Discount<\/span><strong>22\.0\/30<\/strong>/);
   assert.match(html, /<span>Stabilizing<\/span><strong>14\.0\/20<\/strong>/);
-  assert.match(html, /52W drawdown -18\.4% .* vs trend -7\.2%/);
+  assert.match(html, /52W drawdown 18\.4% below .* vs trend 7\.2% below/);
+  assert.doesNotMatch(html, /\+18\.4%|\+7\.2%/);
   assert.doesNotMatch(html, /98765|qualityDipPartialRank/);
 });
 
 test('stock tile shows Unrated after complete load and numeric rank when scored', () => {
-  const scored = baseCardItem({ epic: 'S', name: 'Scored', qualityDipScore: 75, qualityDipLabel: 'Candidate' });
-  const unrated = baseCardItem({ epic: 'U', name: 'Unrated' });
+  const scored = baseCardItem({ epic: 'S', name: 'Scored', validated: true, qualityDipScore: 75, qualityDipLabel: 'Candidate' });
+  const unrated = baseCardItem({ epic: 'U', name: 'Unrated', validated: true });
   context.testItems = [scored, unrated];
   const html = run(`
     activeDataset = 'stocks';
-    payload = { summary: { chunkCount: 2, totalChunks: 2 }, items: testItems };
+    payload = { summary: { stockBatchesComplete: true }, items: testItems };
     prepareDisplayRanks();
     [card(testItems[0]), card(testItems[1])];
   `);

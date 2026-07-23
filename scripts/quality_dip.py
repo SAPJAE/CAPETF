@@ -14,11 +14,11 @@ def quality_dip_metrics(rows: list[dict], bid: float | None = None, offer: float
     closes = [row["close"] for row in weekly]
     regression = _log_regression(closes)
     trend_score = _trend_score(weekly, regression)
-    drawdown_pct = _trailing_drawdown(closes)
+    drawdown_pct = _trailing_drawdown(weekly)
     trend_distance_pct = _trend_distance(closes[-1], regression, len(closes) - 1)
     discount_score = _discount_score(weekly, drawdown_pct, trend_distance_pct)
     stabilization_score = _stabilization_score(closes)
-    risk_score = _risk_score(closes, bid, offer)
+    risk_score = _risk_score(weekly, bid, offer)
 
     score = trend_score + discount_score + stabilization_score + risk_score
     if _sharply_falling_average(closes):
@@ -48,7 +48,7 @@ def quality_dip_metrics(rows: list[dict], bid: float | None = None, offer: float
 
 
 def _weekly_rows(rows):
-    latest_by_week = {}
+    weekly_by_key = {}
     for row in rows:
         try:
             observed = _parse_date(row.get("date"))
@@ -61,10 +61,16 @@ def _weekly_rows(rows):
             continue
         year, week, _ = observed.isocalendar()
         key = (year, week)
-        candidate = {"date": observed, "close": close}
-        if key not in latest_by_week or observed >= latest_by_week[key]["date"]:
-            latest_by_week[key] = candidate
-    return [latest_by_week[key] for key in sorted(latest_by_week)]
+        if key not in weekly_by_key:
+            weekly_by_key[key] = {"date": observed, "close": close, "high": high, "low": low}
+            continue
+        aggregate = weekly_by_key[key]
+        aggregate["high"] = max(aggregate["high"], high)
+        aggregate["low"] = min(aggregate["low"], low)
+        if observed >= aggregate["date"]:
+            aggregate["date"] = observed
+            aggregate["close"] = close
+    return [weekly_by_key[key] for key in sorted(weekly_by_key)]
 
 
 def _parse_date(value):
@@ -76,7 +82,11 @@ def _parse_date(value):
 
 
 def _is_eligible(weekly):
-    return len(weekly) >= 120 and (weekly[-1]["date"] - weekly[0]["date"]).days >= 1095
+    return (
+        len(weekly) >= 120
+        and (weekly[-1]["date"] - weekly[0]["date"]).days >= 1095
+        and (date.today() - weekly[-1]["date"]).days <= 10
+    )
 
 
 def _unrated():
@@ -125,9 +135,9 @@ def _positive_year_ratio(weekly):
     return sum(returns) / len(returns) if returns else 0.0
 
 
-def _trailing_drawdown(closes):
-    high = max(closes[-52:])
-    return max(0.0, (high - closes[-1]) / high * 100)
+def _trailing_drawdown(weekly):
+    high = max(row["high"] for row in weekly[-52:])
+    return max(0.0, (high - weekly[-1]["close"]) / high * 100)
 
 
 def _trend_distance(close, regression, index):
@@ -139,11 +149,11 @@ def _discount_score(weekly, drawdown_pct, trend_distance_pct):
     drawdown_points = _pullback_points(drawdown_pct, 12)
     trend_points = _pullback_points(trend_distance_pct, 10)
     latest_year = weekly[-1]["date"].year
-    previous_year_closes = [row["close"] for row in weekly if row["date"].year == latest_year - 1]
-    if not previous_year_closes:
+    previous_year_lows = [row["low"] for row in weekly if row["date"].year == latest_year - 1]
+    if not previous_year_lows:
         previous_low_points = 0.0
     else:
-        distance_above_low = max(0.0, (weekly[-1]["close"] / min(previous_year_closes) - 1) * 100)
+        distance_above_low = max(0.0, (weekly[-1]["close"] / min(previous_year_lows) - 1) * 100)
         previous_low_points = _clamp(1 - distance_above_low / 25, 0, 1) * 8
     return drawdown_points + trend_points + previous_low_points
 
@@ -172,38 +182,46 @@ def _stabilization_score(closes):
     return no_new_low + improving_return + average_points + average_slope_points
 
 
-def _risk_score(closes, bid, offer):
-    historical_drawdown = _worst_drawdown(closes)
-    current_drawdown = _all_time_drawdown(closes)
+def _risk_score(weekly, bid, offer):
+    closes = [row["close"] for row in weekly]
+    historical_drawdown = _worst_drawdown(weekly)
+    current_drawdown = _all_time_drawdown(weekly)
     drawdown_points = 4 if historical_drawdown == 0 or current_drawdown < historical_drawdown * 0.8 else 0
     log_returns = [math.log(current / previous) for previous, current in zip(closes, closes[1:])]
     recent_volatility = _stdev(log_returns[-13:])
     historical_volatility = _stdev(log_returns[:-13])
     volatility_points = 3 if recent_volatility <= max(historical_volatility * 1.5, 1e-12) else 0
-    if bid is None or offer is None:
-        return (drawdown_points + volatility_points) * 10 / 7
+    risk_subtotal = drawdown_points + volatility_points
     try:
         bid_value = float(bid)
         offer_value = float(offer)
     except (TypeError, ValueError):
-        return (drawdown_points + volatility_points) * 10 / 7
+        return risk_subtotal * 10 / 7
+    if (
+        not math.isfinite(bid_value)
+        or not math.isfinite(offer_value)
+        or bid_value <= 0
+        or offer_value <= 0
+        or offer_value < bid_value
+    ):
+        return risk_subtotal * 10 / 7
     midpoint = (bid_value + offer_value) / 2
-    spread_points = 3 if bid_value > 0 and offer_value >= bid_value and midpoint > 0 and (offer_value - bid_value) / midpoint * 100 <= 1 else 0
-    return drawdown_points + volatility_points + spread_points
+    spread_points = 3 if (offer_value - bid_value) / midpoint * 100 <= 1 else 0
+    return risk_subtotal + spread_points
 
 
-def _worst_drawdown(closes):
-    peak = closes[0]
+def _worst_drawdown(weekly):
+    peak = weekly[0]["high"]
     worst = 0.0
-    for close in closes:
-        peak = max(peak, close)
-        worst = max(worst, (peak - close) / peak * 100)
+    for row in weekly:
+        peak = max(peak, row["high"])
+        worst = max(worst, (peak - row["close"]) / peak * 100)
     return worst
 
 
-def _all_time_drawdown(closes):
-    peak = max(closes)
-    return (peak - closes[-1]) / peak * 100
+def _all_time_drawdown(weekly):
+    peak = max(row["high"] for row in weekly)
+    return (peak - weekly[-1]["close"]) / peak * 100
 
 
 def _stdev(values):

@@ -593,8 +593,12 @@ def classify(items, metadata=None):
         item["investmentRank"] = index
 
     quality_dip = sorted(
-        [item for item in items if item.get("qualityDipScore") is not None],
-        key=lambda item: (-item["qualityDipScore"], item["name"]),
+        [item for item in items if item.get("validated") is True and item.get("qualityDipScore") is not None],
+        key=lambda item: (
+            -item["qualityDipScore"],
+            str(item.get("name") or ""),
+            str(item.get("epic") or ""),
+        ),
     )
     for index, item in enumerate(quality_dip, start=1):
         item["qualityDipPartialRank"] = index

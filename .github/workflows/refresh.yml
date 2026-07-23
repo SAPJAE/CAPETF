@@ -57,6 +57,8 @@ jobs:
   stock-batch:
     name: stock-batch-${{ matrix.batch }}
     runs-on: ubuntu-latest
+    env:
+      REFRESH_GENERATION: ${{ github.run_id }}
     strategy:
       fail-fast: false
       max-parallel: 2

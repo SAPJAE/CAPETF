@@ -1,4 +1,5 @@
 import math
+import os
 import sys
 import tempfile
 import unittest
@@ -15,10 +16,12 @@ import update_capital_etfs as pipeline
 import update_capital_stocks as stocks
 
 
-def generated_history(weeks=190):
+def generated_history(weeks=190, end=None):
+    end = end or (date.today() - timedelta(days=(date.today().weekday() - 4) % 7))
+    start = end - timedelta(weeks=weeks - 1)
     return [
         {
-            "date": (date(2019, 1, 4) + timedelta(weeks=index)).isoformat(),
+            "date": (start + timedelta(weeks=index)).isoformat(),
             "close": round(100 * math.exp(0.0025 * index), 6),
             "high": round(101 * math.exp(0.0025 * index), 6),
             "low": round(99 * math.exp(0.0025 * index), 6),
@@ -69,30 +72,36 @@ class StockQualityDipTests(unittest.TestCase):
 
         scorer.assert_called_once_with(self.rows[:2], 99.9, 100.1)
 
-    def test_classify_assigns_stock_partial_ranks_by_score_then_name(self):
+    def test_classify_assigns_validated_stock_partial_ranks_by_score_name_and_epic(self):
         items = [
-            {"name": "Zed", "validated": False, "qualityDipScore": 70},
-            {"name": "Beta", "validated": False, "qualityDipScore": 80},
-            {"name": "Alpha", "validated": False, "qualityDipScore": 80},
+            {"epic": "Z", "name": "Zed", "validated": True, "qualityDipScore": 70},
+            {"epic": "B", "name": "Beta", "validated": True, "qualityDipScore": 80},
+            {"epic": "ZZ", "name": "Alpha", "validated": True, "qualityDipScore": 80},
+            {"epic": "AA", "name": "Alpha", "validated": True, "qualityDipScore": 80},
+            {"epic": "X", "name": "Unvalidated", "validated": False, "qualityDipScore": 99},
             {"name": "Unrated", "validated": False, "qualityDipScore": None},
         ]
 
         result = pipeline.classify(items)
-        ranks = {item["name"]: item.get("qualityDipPartialRank") for item in result["items"]}
+        ranks = {item.get("epic", item["name"]): item.get("qualityDipPartialRank") for item in result["items"]}
 
-        self.assertEqual(1, ranks["Alpha"])
-        self.assertEqual(2, ranks["Beta"])
-        self.assertEqual(3, ranks["Zed"])
+        self.assertEqual(1, ranks["AA"])
+        self.assertEqual(2, ranks["ZZ"])
+        self.assertEqual(3, ranks["B"])
+        self.assertEqual(4, ranks["Z"])
+        self.assertIsNone(ranks["X"])
         self.assertIsNone(ranks["Unrated"])
         self.assertNotIn("qualityDipPartialRank", next(item for item in result["items"] if item["name"] == "Unrated"))
 
-    def test_stock_batch_metadata_includes_the_scoring_version(self):
+    def test_stock_batch_metadata_includes_scoring_version_and_exact_refresh_generation(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "stocks.raw.json"
-            stocks.write_stock_payload(output, [], {})
+            with patch.dict(os.environ, {"REFRESH_GENERATION": "run-001 exact"}):
+                stocks.write_stock_payload(output, [], {})
             payload = pipeline.json.loads(output.read_text(encoding="utf-8"))
 
         self.assertEqual("quality-dip-v1", payload["summary"]["qualityDipScoringVersion"])
+        self.assertEqual("run-001 exact", payload["summary"]["refreshGeneration"])
 
     def test_etf_metadata_excludes_the_scoring_version(self):
         result = pipeline.classify([], {"kind": "etf"})
@@ -137,6 +146,16 @@ class StockQualityDipTests(unittest.TestCase):
                 stocks.run_chunked(output, limit=1, offset=0, chunks=1, manifest_path="")
                 self.assertEqual("stock", build.call_args.kwargs["kind"])
                 mocked_time.sleep.assert_called()
+
+    def test_closed_stock_is_included_and_view_only_stock_is_excluded(self):
+        market = {
+            "epic": "TEST",
+            "instrumentName": "Test Company Inc",
+            "instrumentType": "SHARES",
+        }
+
+        self.assertTrue(pipeline.is_stock({**market, "marketStatus": "closed"}))
+        self.assertFalse(pipeline.is_stock({**market, "marketStatus": "view only"}))
 
     def test_shared_stock_run_marks_a_price_fetch_failure_unrated(self):
         with tempfile.TemporaryDirectory() as directory:

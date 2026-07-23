@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import os
 import time
 from pathlib import Path
 
@@ -22,7 +23,11 @@ from stock_classification import enrich_classification, region_for
 def write_stock_payload(output_path, items, metadata):
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output_metadata = {**metadata, "qualityDipScoringVersion": QUALITY_DIP_SCORING_VERSION}
+    output_metadata = {
+        **metadata,
+        "qualityDipScoringVersion": QUALITY_DIP_SCORING_VERSION,
+        "refreshGeneration": os.environ.get("REFRESH_GENERATION", ""),
+    }
     output.write_text(json.dumps(classify(items, output_metadata), indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Wrote {output}", flush=True)
 
@@ -166,7 +171,14 @@ def main():
     if args.chunks:
         run_chunked(args.output, args.limit, args.offset, args.chunks, args.manifest)
         return
-    run(args.output, kind="stock", label="stock", limit=args.limit, offset=args.offset)
+    run(
+        args.output,
+        kind="stock",
+        label="stock",
+        limit=args.limit,
+        offset=args.offset,
+        metadata={"refreshGeneration": os.environ.get("REFRESH_GENERATION", "")},
+    )
 
 
 if __name__ == "__main__":
