@@ -721,16 +721,21 @@ def run(output_path, kind="etf", label="ETF", limit=None, offset=0, metadata=Non
                 hourly_rows = []
             items.append(build_item(market, rows, hourly_rows, kind=kind))
         except Exception as exc:
-            items.append(
-                {
-                    "epic": market["epic"],
-                    "name": market.get("instrumentName") or market["epic"],
-                    "instrumentType": market.get("instrumentType") or "",
-                    "validated": False,
-                    "band": "Unvalidated",
-                    "error": str(exc),
-                }
-            )
+            if kind == "stock":
+                item = build_item(market, [], kind="stock")
+                item.update({"validated": False, "band": "Unvalidated", "error": str(exc)})
+                items.append(item)
+            else:
+                items.append(
+                    {
+                        "epic": market["epic"],
+                        "name": market.get("instrumentName") or market["epic"],
+                        "instrumentType": market.get("instrumentType") or "",
+                        "validated": False,
+                        "band": "Unvalidated",
+                        "error": str(exc),
+                    }
+                )
         time.sleep(0.15)
 
     output = Path(output_path)

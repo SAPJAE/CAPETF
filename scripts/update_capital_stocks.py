@@ -66,16 +66,9 @@ def run_chunked(output_path, limit, offset, chunks, manifest_path):
                     hourly_rows = []
                 chunk_items.append(build_item(market, rows, hourly_rows, kind="stock"))
             except Exception as exc:
-                chunk_items.append(
-                    {
-                        "epic": market["epic"],
-                        "name": market.get("instrumentName") or market["epic"],
-                        "instrumentType": market.get("instrumentType") or "",
-                        "validated": False,
-                        "band": "Unvalidated",
-                        "error": str(exc),
-                    }
-                )
+                item = build_item(market, [], kind="stock")
+                item.update({"validated": False, "band": "Unvalidated", "error": str(exc)})
+                chunk_items.append(item)
             time.sleep(0.15)
 
         chunk_output = output.parent / f"{base_name}-{chunk_index:03d}.raw.json"
@@ -139,16 +132,9 @@ def run_batch(output_path, limit, offset, batch_index, batch_count):
                 hourly_rows = []
             items.append(build_item(market, rows, hourly_rows, kind="stock"))
         except Exception as exc:
-            items.append(
-                {
-                    "epic": market["epic"],
-                    "name": market.get("instrumentName") or market["epic"],
-                    "instrumentType": market.get("instrumentType") or "",
-                    "validated": False,
-                    "band": "Unvalidated",
-                    "error": str(exc),
-                }
-            )
+            item = build_item(market, [], kind="stock")
+            item.update({"validated": False, "band": "Unvalidated", "error": str(exc)})
+            items.append(item)
         time.sleep(0.15)
 
     write_stock_payload(

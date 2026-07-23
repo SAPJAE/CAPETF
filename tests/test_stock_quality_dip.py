@@ -138,6 +138,63 @@ class StockQualityDipTests(unittest.TestCase):
                 self.assertEqual("stock", build.call_args.kwargs["kind"])
                 mocked_time.sleep.assert_called()
 
+    def test_shared_stock_run_marks_a_price_fetch_failure_unrated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "stocks.raw.json"
+            with patch.object(pipeline, "CapitalClient", return_value=FakeClient()), \
+                 patch.object(pipeline, "discover_instruments", return_value=[self.market]), \
+                 patch.object(pipeline, "enrich_market_details", side_effect=lambda client, markets: markets), \
+                 patch.object(pipeline, "enrich_classification", side_effect=lambda markets: (markets, {})), \
+                 patch.object(pipeline, "fetch_prices", side_effect=RuntimeError("price fetch failed")), \
+                 patch.object(pipeline, "time"):
+                pipeline.run(output, kind="stock", label="stock")
+            item = pipeline.json.loads(output.read_text(encoding="utf-8"))["items"][0]
+
+        self.assertIsNone(item["qualityDipScore"])
+        self.assertEqual("Unrated", item["qualityDipLabel"])
+        self.assertEqual("quality-dip-v1", item["qualityDipVersion"])
+        self.assertFalse(item["validated"])
+        self.assertEqual("Unvalidated", item["band"])
+        self.assertEqual("price fetch failed", item["error"])
+
+    def test_chunked_stock_run_marks_a_price_fetch_failure_unrated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "stocks.raw.json"
+            with patch.object(stocks, "CapitalClient", return_value=FakeClient()), \
+                 patch.object(stocks, "discover_instruments", return_value=[self.market]), \
+                 patch.object(stocks, "enrich_market_details", side_effect=lambda client, markets: markets), \
+                 patch.object(stocks, "enrich_classification", side_effect=lambda markets: (markets, {})), \
+                 patch.object(stocks, "fetch_prices", side_effect=RuntimeError("price fetch failed")), \
+                 patch.object(stocks, "time"):
+                stocks.run_chunked(output, limit=1, offset=0, chunks=1, manifest_path="")
+            item = pipeline.json.loads((Path(directory) / "stocks-000.raw.json").read_text(encoding="utf-8"))["items"][0]
+
+        self.assertIsNone(item["qualityDipScore"])
+        self.assertEqual("Unrated", item["qualityDipLabel"])
+        self.assertEqual("quality-dip-v1", item["qualityDipVersion"])
+        self.assertFalse(item["validated"])
+        self.assertEqual("Unvalidated", item["band"])
+        self.assertEqual("price fetch failed", item["error"])
+
+    def test_batched_stock_run_marks_a_price_fetch_failure_unrated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "stocks.raw.json"
+            with patch.object(stocks, "CapitalClient", return_value=FakeClient()), \
+                 patch.object(stocks, "discover_instruments", return_value=[self.market]), \
+                 patch.object(stocks, "enrich_market_details", side_effect=lambda client, markets: markets), \
+                 patch.object(stocks, "enrich_classification", side_effect=lambda markets: (markets, {})), \
+                 patch.object(stocks, "fetch_prices", side_effect=RuntimeError("price fetch failed")), \
+                 patch.object(stocks, "time"):
+                stocks.run_batch(output, limit=1, offset=0, batch_index=0, batch_count=1)
+            item = pipeline.json.loads(output.read_text(encoding="utf-8"))["items"][0]
+
+        self.assertIsNone(item["qualityDipScore"])
+        self.assertEqual("Unrated", item["qualityDipLabel"])
+        self.assertEqual("quality-dip-v1", item["qualityDipVersion"])
+        self.assertFalse(item["validated"])
+        self.assertEqual("Unvalidated", item["band"])
+        self.assertEqual("price fetch failed", item["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
