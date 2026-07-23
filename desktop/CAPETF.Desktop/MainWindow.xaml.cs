@@ -26,6 +26,7 @@ public partial class MainWindow : Window
         GroupList.ItemsSource = _groups;
         LoadSavedCredentials();
         UpdateStats();
+        ApplyWorkspaceMode();
     }
 
     private void LoadSavedCredentials()
@@ -427,6 +428,13 @@ public partial class MainWindow : Window
 
     private void WorkspaceModeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (!IsLoaded && (WorkspaceTitleText is null || DiscoverStrip is null || ResultText is null)) return;
+        ApplyWorkspaceMode();
+    }
+
+    private void ApplyWorkspaceMode()
+    {
+        if (WorkspaceTitleText is null || DiscoverStrip is null || ResultText is null) return;
         var mode = (WorkspaceModeBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Trade";
         WorkspaceTitleText.Text = mode switch
         {
