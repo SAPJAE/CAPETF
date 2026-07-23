@@ -14,6 +14,11 @@ try:
 except ImportError:
     from scripts.stock_classification import enrich_classification, region_for
 
+try:
+    from quality_dip import VERSION as QUALITY_DIP_SCORING_VERSION, quality_dip_metrics
+except ImportError:
+    from scripts.quality_dip import VERSION as QUALITY_DIP_SCORING_VERSION, quality_dip_metrics
+
 
 DEMO_BASE_URL = "https://demo-api-capital.backend-capital.com/api/v1"
 LIVE_BASE_URL = "https://api-capital.backend-capital.com/api/v1"
@@ -587,6 +592,13 @@ def classify(items, metadata=None):
     for index, item in enumerate(investment, start=1):
         item["investmentRank"] = index
 
+    quality_dip = sorted(
+        [item for item in items if item.get("qualityDipScore") is not None],
+        key=lambda item: (-item["qualityDipScore"], item["name"]),
+    )
+    for index, item in enumerate(quality_dip, start=1):
+        item["qualityDipPartialRank"] = index
+
     items.sort(key=lambda item: (0 if item.get("validated") else 1, item.get("performanceRank") or 999999))
     dates = sorted({item["priceDate"] for item in items if item.get("priceDate")})
     return {
@@ -608,7 +620,7 @@ def classify(items, metadata=None):
     }
 
 
-def build_item(market, rows, hourly_rows=None):
+def build_item(market, rows, hourly_rows=None, kind=None):
     name = market.get("instrumentName") or market.get("symbol") or market["epic"]
     item = {
         "epic": market["epic"],
@@ -630,6 +642,8 @@ def build_item(market, rows, hourly_rows=None):
         "performanceRank": None,
         "investmentRank": None,
     }
+    if kind == "stock":
+        item.update(quality_dip_metrics(rows, market.get("bid"), market.get("offer")))
     if len(rows) <= 1:
         return item
 
@@ -705,7 +719,7 @@ def run(output_path, kind="etf", label="ETF", limit=None, offset=0, metadata=Non
             except Exception as intraday_exc:
                 print(f"Hourly prices unavailable for {market.get('epic')}: {intraday_exc}", flush=True)
                 hourly_rows = []
-            items.append(build_item(market, rows, hourly_rows))
+            items.append(build_item(market, rows, hourly_rows, kind=kind))
         except Exception as exc:
             items.append(
                 {
@@ -721,7 +735,10 @@ def run(output_path, kind="etf", label="ETF", limit=None, offset=0, metadata=Non
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(classify(items, metadata), indent=2, ensure_ascii=False), encoding="utf-8")
+    output_metadata = dict(metadata or {})
+    if kind == "stock":
+        output_metadata["qualityDipScoringVersion"] = QUALITY_DIP_SCORING_VERSION
+    output.write_text(json.dumps(classify(items, output_metadata), indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Wrote {output}")
 
 

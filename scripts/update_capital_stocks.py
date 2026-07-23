@@ -13,6 +13,7 @@ from update_capital_etfs import (
     fetch_hourly_prices,
     fetch_prices,
     is_always_include_stock,
+    QUALITY_DIP_SCORING_VERSION,
     run,
 )
 from stock_classification import enrich_classification, region_for
@@ -21,7 +22,8 @@ from stock_classification import enrich_classification, region_for
 def write_stock_payload(output_path, items, metadata):
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(classify(items, metadata), indent=2, ensure_ascii=False), encoding="utf-8")
+    output_metadata = {**metadata, "qualityDipScoringVersion": QUALITY_DIP_SCORING_VERSION}
+    output.write_text(json.dumps(classify(items, output_metadata), indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Wrote {output}", flush=True)
 
 
@@ -62,7 +64,7 @@ def run_chunked(output_path, limit, offset, chunks, manifest_path):
                 except Exception as intraday_exc:
                     print(f"Hourly prices unavailable for {market.get('epic')}: {intraday_exc}", flush=True)
                     hourly_rows = []
-                chunk_items.append(build_item(market, rows, hourly_rows))
+                chunk_items.append(build_item(market, rows, hourly_rows, kind="stock"))
             except Exception as exc:
                 chunk_items.append(
                     {
@@ -135,7 +137,7 @@ def run_batch(output_path, limit, offset, batch_index, batch_count):
             except Exception as intraday_exc:
                 print(f"Hourly prices unavailable for {market.get('epic')}: {intraday_exc}", flush=True)
                 hourly_rows = []
-            items.append(build_item(market, rows, hourly_rows))
+            items.append(build_item(market, rows, hourly_rows, kind="stock"))
         except Exception as exc:
             items.append(
                 {
