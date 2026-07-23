@@ -54,6 +54,7 @@ const elements = {
   unlock: makeElement(),
 };
 
+const scheduledTimeouts = [];
 const context = vm.createContext({
   console,
   crypto: {},
@@ -65,6 +66,11 @@ const context = vm.createContext({
   },
   setInterval: () => 1,
   clearInterval() {},
+  setTimeout(callback, delay) {
+    scheduledTimeouts.push({ callback, delay });
+    return scheduledTimeouts.length;
+  },
+  clearTimeout() {},
   requestAnimationFrame(callback) {
     callback();
   },
@@ -234,9 +240,10 @@ test('all expected coherent batches complete and receive validated global ranks'
   assert.ok(!Object.hasOwn(complete.items.find(item => item.epic === 'C'), 'displayQualityDipRank'));
 });
 
-test('stock cache replaces a batch only when its refresh generation changes', () => {
+test('stock cache replaces a batch when its refresh generation or scoring version changes', () => {
   context.testOldPart = stockPart(0, 'old', [{ epic: 'OLD' }]);
   context.testSamePart = stockPart(0, 'old', [{ epic: 'SAME' }]);
+  context.testNewVersionPart = stockPart(0, 'old', [{ epic: 'VERSION' }], 'quality-dip-v2');
   context.testNewPart = stockPart(0, 'new', [{ epic: 'NEW' }]);
 
   run(`
@@ -245,9 +252,64 @@ test('stock cache replaces a batch only when its refresh generation changes', ()
   `);
   assert.equal(run("cacheStockPart('stocks-000', testSamePart)"), false);
   assert.equal(run("stockPartsByFile['stocks-000'].items[0].epic"), 'OLD');
+  assert.equal(run("cacheStockPart('stocks-000', testNewVersionPart)"), true);
+  assert.equal(run("stockPartsByFile['stocks-000'].items[0].epic"), 'VERSION');
   assert.equal(run("cacheStockPart('stocks-000', testNewPart)"), true);
   assert.equal(run("stockPartsByFile['stocks-000'].items[0].epic"), 'NEW');
   run("delete stockPartsByFile['stocks-000']");
+});
+
+test('stock metadata change detection skips unchanged batches and reloads changed generations or versions', () => {
+  const loaded = stockPart(0, 'run-1');
+  context.testLoadedPart = loaded;
+  context.testSameMetadata = { ...loaded.summary };
+  context.testNewGeneration = { ...loaded.summary, refreshGeneration: 'run-2' };
+  context.testNewVersion = { ...loaded.summary, qualityDipScoringVersion: 'quality-dip-v2' };
+
+  assert.equal(run('stockMetadataRequiresBatch(testSameMetadata, testLoadedPart)'), false);
+  assert.equal(run('stockMetadataRequiresBatch(testNewGeneration, testLoadedPart)'), true);
+  assert.equal(run('stockMetadataRequiresBatch(testNewVersion, testLoadedPart)'), true);
+  assert.equal(run('stockMetadataRequiresBatch(testSameMetadata, null)'), true);
+});
+
+test('stock polling delay resets after changes and backs off to a bounded maximum', () => {
+  assert.equal(run('nextStockBatchPollDelay(15000, true)'), 15000);
+  assert.equal(run('nextStockBatchPollDelay(15000, false)'), 30000);
+  assert.equal(run('nextStockBatchPollDelay(120000, false)'), 120000);
+  assert.equal(run('nextStockBatchPollDelay(999999, false)'), 120000);
+});
+
+test('stock polling uses one non-overlapping timeout and schedules the next pass after completion', async () => {
+  scheduledTimeouts.length = 0;
+  let finishPoll;
+  context.testPoll = () => new Promise(resolve => { finishPoll = resolve; });
+  run(`
+    testOriginalMetadataPoll = pollStockBatchMetadata;
+    pollStockBatchMetadata = testPoll;
+    stockBatchPollTimer = null;
+    stockBatchPollDelayMs = stockBatchPollMinDelayMs;
+    refreshIsBusy = true;
+    scheduleStockBatchPolling(['stocks-000.enc.json'], 250);
+    scheduleStockBatchPolling(['stocks-000.enc.json'], 250);
+  `);
+
+  assert.equal(scheduledTimeouts.length, 1);
+  assert.equal(scheduledTimeouts[0].delay, 15000);
+  const firstPass = scheduledTimeouts.shift().callback();
+  run("scheduleStockBatchPolling(['stocks-000.enc.json'], 250)");
+  assert.equal(scheduledTimeouts.length, 0);
+
+  finishPoll({ changed: false });
+  await firstPass;
+
+  assert.equal(scheduledTimeouts.length, 1);
+  assert.equal(scheduledTimeouts[0].delay, 30000);
+  run(`
+    pollStockBatchMetadata = testOriginalMetadataPoll;
+    stockBatchPollTimer = null;
+    refreshIsBusy = false;
+  `);
+  scheduledTimeouts.length = 0;
 });
 
 test('Quality Dip sort uses score, discount magnitude then score, and stabilization rules', () => {
@@ -359,21 +421,23 @@ test('ETF and Sector cards omit the Quality Dip block', () => {
   assert.doesNotMatch(sectorHtml, /quality-dip|Quality dip/);
 });
 
-let failures = 0;
-for (const { name, callback } of tests) {
-  try {
-    callback();
-    console.log(`ok - ${name}`);
-  } catch (error) {
-    failures += 1;
-    console.error(`not ok - ${name}`);
-    console.error(error.stack);
+(async () => {
+  let failures = 0;
+  for (const { name, callback } of tests) {
+    try {
+      await callback();
+      console.log(`ok - ${name}`);
+    } catch (error) {
+      failures += 1;
+      console.error(`not ok - ${name}`);
+      console.error(error.stack);
+    }
   }
-}
 
-if (failures) {
-  console.error(`\n${failures} of ${tests.length} tests failed`);
-  process.exitCode = 1;
-} else {
-  console.log(`\n${tests.length} tests passed`);
-}
+  if (failures) {
+    console.error(`\n${failures} of ${tests.length} tests failed`);
+    process.exitCode = 1;
+  } else {
+    console.log(`\n${tests.length} tests passed`);
+  }
+})();

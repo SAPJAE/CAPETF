@@ -82,10 +82,13 @@ def _parse_date(value):
 
 
 def _is_eligible(weekly):
+    if not weekly:
+        return False
+    age = (date.today() - weekly[-1]["date"]).days
     return (
         len(weekly) >= 120
         and (weekly[-1]["date"] - weekly[0]["date"]).days >= 1095
-        and (date.today() - weekly[-1]["date"]).days <= 10
+        and 0 <= age <= 10
     )
 
 

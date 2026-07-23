@@ -280,11 +280,14 @@
     const stockBatchCount = 11;
     const stockBatchSize = 250;
     const qualityDipScoringVersion = 'quality-dip-v1';
+    const stockBatchPollMinDelayMs = 15000;
+    const stockBatchPollMaxDelayMs = 120000;
     const stockBatchFiles = Array.from({ length: stockBatchCount }, (_, index) => `data/stocks-${String(index).padStart(3, '0')}.enc.json`);
     const datasetLabels = { sectors: 'sector', etfs: 'ETF', stocks: 'stock' };
     const datasets = {};
     const loadingDatasets = {};
     const stockPartsByFile = {};
+    const stockInitialLoadsAttempted = new Set();
     let activeDataset = 'etfs';
     const expandedGroupKeys = new Set();
     let dashboardPassword = '';
@@ -292,6 +295,7 @@
     let renderToken = 0;
     let refreshPollTimer = null;
     let stockBatchPollTimer = null;
+    let stockBatchPollDelayMs = stockBatchPollMinDelayMs;
     let refreshIsBusy = false;
 
     const fmtPct = value => value == null ? 'n/a' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
@@ -932,10 +936,40 @@
       return decrypt(await response.json(), dashboardPassword);
     }
 
+    async function loadJsonFile(file) {
+      const response = await fetch(file, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`${file} is not ready yet.`);
+      return response.json();
+    }
+
+    function stockMetadataFileFor(file) {
+      return file.replace(/\.enc\.json$/, '.meta.json');
+    }
+
+    function stockMetadataIsUsable(metadata) {
+      return typeof metadata?.refreshGeneration === 'string'
+        && metadata.refreshGeneration.length > 0
+        && typeof metadata?.qualityDipScoringVersion === 'string'
+        && Number.isInteger(metadata?.chunkIndex)
+        && Number.isInteger(metadata?.chunkCount);
+    }
+
+    function stockMetadataRequiresBatch(metadata, part) {
+      if (!stockMetadataIsUsable(metadata)) return false;
+      if (!part) return true;
+      const summary = part.summary || {};
+      return metadata.refreshGeneration !== summary.refreshGeneration
+        || metadata.qualityDipScoringVersion !== summary.qualityDipScoringVersion;
+    }
+
     function cacheStockPart(file, nextPart) {
-      const previousGeneration = stockPartsByFile[file]?.summary?.refreshGeneration;
-      const nextGeneration = nextPart?.summary?.refreshGeneration;
-      if (stockPartsByFile[file] && previousGeneration === nextGeneration) return false;
+      const previousSummary = stockPartsByFile[file]?.summary || {};
+      const nextSummary = nextPart?.summary || {};
+      if (
+        stockPartsByFile[file]
+        && previousSummary.refreshGeneration === nextSummary.refreshGeneration
+        && previousSummary.qualityDipScoringVersion === nextSummary.qualityDipScoringVersion
+      ) return false;
       stockPartsByFile[file] = nextPart;
       return true;
     }
@@ -967,10 +1001,10 @@
       return datasets.stocks;
     }
 
-    async function loadAvailableStockBatches(files, expectedCount) {
-      const refetchCached = refreshIsBusy || !stockBatchesComplete(datasets.stocks?.summary);
+    async function loadInitialStockBatches(files, expectedCount) {
       for (const file of files) {
-        if (stockPartsByFile[file] && !refetchCached) continue;
+        if (stockPartsByFile[file] || stockInitialLoadsAttempted.has(file)) continue;
+        stockInitialLoadsAttempted.add(file);
         try {
           cacheStockPart(file, await loadEncryptedFile(file));
           const loaded = updateStocksFromParts(files, expectedCount);
@@ -983,21 +1017,52 @@
       return updateStocksFromParts(files, expectedCount);
     }
 
+    async function pollStockBatchMetadata(files, expectedCount) {
+      let changed = false;
+      for (const file of files) {
+        try {
+          const metadata = await loadJsonFile(stockMetadataFileFor(file));
+          if (!stockMetadataRequiresBatch(metadata, stockPartsByFile[file])) continue;
+          const nextPart = await loadEncryptedFile(file);
+          if (stockMetadataRequiresBatch(metadata, nextPart)) continue;
+          changed = cacheStockPart(file, nextPart) || changed;
+        } catch {
+          // Sidecars are optional during deployment and batches publish independently.
+        }
+      }
+      const loaded = changed
+        ? updateStocksFromParts(files, expectedCount)
+        : datasets.stocks || updateStocksFromParts(files, expectedCount);
+      return { changed, loaded };
+    }
+
     function stockBatchPollingNeeded(files) {
       return refreshIsBusy
         || !files.every(file => stockPartsByFile[file])
         || !stockBatchesComplete(datasets.stocks?.summary);
     }
 
+    function nextStockBatchPollDelay(currentDelay, changed) {
+      if (changed) return stockBatchPollMinDelayMs;
+      return Math.min(stockBatchPollMaxDelayMs, Math.max(stockBatchPollMinDelayMs, currentDelay) * 2);
+    }
+
     function scheduleStockBatchPolling(files, expectedCount) {
       if (stockBatchPollTimer || !stockBatchPollingNeeded(files)) return;
-      stockBatchPollTimer = setInterval(async () => {
-        await loadAvailableStockBatches(files, expectedCount);
-        if (!stockBatchPollingNeeded(files)) {
-          clearInterval(stockBatchPollTimer);
+      stockBatchPollTimer = setTimeout(async () => {
+        let result = { changed: false };
+        try {
+          result = await pollStockBatchMetadata(files, expectedCount);
+        } finally {
+          stockBatchPollDelayMs = nextStockBatchPollDelay(stockBatchPollDelayMs, result.changed);
           stockBatchPollTimer = null;
+          if (stockBatchPollingNeeded(files)) {
+            scheduleStockBatchPolling(files, expectedCount);
+          } else {
+            stockBatchPollDelayMs = stockBatchPollMinDelayMs;
+          }
         }
-      }, 60000);
+      }, stockBatchPollDelayMs);
     }
 
     async function loadChunkedStocks() {
@@ -1007,7 +1072,7 @@
       if (loadingDatasets.stocks) return loadingDatasets.stocks;
       loadingDatasets.stocks = (async () => {
         try {
-          const loaded = await loadAvailableStockBatches(files, expectedCount);
+          const loaded = await loadInitialStockBatches(files, expectedCount);
           scheduleStockBatchPolling(files, expectedCount);
           if (loaded) return loaded;
           if (refreshIsBusy) {

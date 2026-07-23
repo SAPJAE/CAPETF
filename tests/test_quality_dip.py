@@ -84,6 +84,14 @@ class QualityDipMetricsTests(unittest.TestCase):
         self.assertEqual("Unrated", result["qualityDipLabel"])
         self.assertIsNone(result["qualityDipScore"])
 
+    def test_returns_unrated_when_latest_week_is_in_the_future(self):
+        future_end = date.today() + timedelta(days=1)
+
+        result = quality_dip_metrics(weekly_rows(smooth_uptrend(), end=future_end))
+
+        self.assertEqual("Unrated", result["qualityDipLabel"])
+        self.assertIsNone(result["qualityDipScore"])
+
     def test_stabilizing_dip_outranks_a_near_high_uptrend_and_collapse(self):
         near_high = quality_dip_metrics(weekly_rows(smooth_uptrend()))
         dip = quality_dip_metrics(weekly_rows(stabilizing_dip()))
