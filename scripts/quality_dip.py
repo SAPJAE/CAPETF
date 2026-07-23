@@ -18,7 +18,7 @@ def quality_dip_metrics(rows: list[dict], bid: float | None = None, offer: float
     trend_distance_pct = _trend_distance(closes[-1], regression, len(closes) - 1)
     discount_score = _discount_score(weekly, drawdown_pct, trend_distance_pct)
     stabilization_score = _stabilization_score(closes)
-    risk_score = _risk_score(closes, drawdown_pct, bid, offer)
+    risk_score = _risk_score(closes, bid, offer)
 
     score = trend_score + discount_score + stabilization_score + risk_score
     if _sharply_falling_average(closes):
@@ -159,8 +159,8 @@ def _pullback_points(pullback_pct, maximum):
 
 
 def _stabilization_score(closes):
-    recent_13_low = min(closes[-13:])
-    no_new_low = 6 if closes[-1] >= recent_13_low * 1.02 else 0
+    prior_13_week_low = min(closes[-14:-1])
+    no_new_low = 6 if closes[-1] > prior_13_week_low else 0
     current_four_week_return = closes[-1] / closes[-5] - 1
     prior_four_week_return = closes[-5] / closes[-9] - 1
     improving_return = 5 if current_four_week_return >= prior_four_week_return + 0.002 else 0
@@ -172,9 +172,10 @@ def _stabilization_score(closes):
     return no_new_low + improving_return + average_points + average_slope_points
 
 
-def _risk_score(closes, drawdown_pct, bid, offer):
+def _risk_score(closes, bid, offer):
     historical_drawdown = _worst_drawdown(closes)
-    drawdown_points = 4 if historical_drawdown == 0 or drawdown_pct < historical_drawdown * 0.8 else 0
+    current_drawdown = _all_time_drawdown(closes)
+    drawdown_points = 4 if historical_drawdown == 0 or current_drawdown < historical_drawdown * 0.8 else 0
     log_returns = [math.log(current / previous) for previous, current in zip(closes, closes[1:])]
     recent_volatility = _stdev(log_returns[-13:])
     historical_volatility = _stdev(log_returns[:-13])
@@ -198,6 +199,11 @@ def _worst_drawdown(closes):
         peak = max(peak, close)
         worst = max(worst, (peak - close) / peak * 100)
     return worst
+
+
+def _all_time_drawdown(closes):
+    peak = max(closes)
+    return (peak - closes[-1]) / peak * 100
 
 
 def _stdev(values):

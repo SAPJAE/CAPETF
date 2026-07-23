@@ -34,6 +34,13 @@ def persistent_collapse(weeks=190):
     return [160 * math.exp(-0.012 * week) for week in range(weeks)]
 
 
+def older_peak_then_flat(weeks=190):
+    closes = [100 + 5 * week for week in range(21)]
+    closes.extend(200 - 5 * week for week in range(1, 21))
+    closes.extend([100] * (weeks - len(closes)))
+    return closes
+
+
 class QualityDipMetricsTests(unittest.TestCase):
     def test_returns_unrated_for_fewer_than_120_weekly_observations(self):
         result = quality_dip_metrics(weekly_rows(smooth_uptrend(119)))
@@ -93,6 +100,35 @@ class QualityDipMetricsTests(unittest.TestCase):
         result = quality_dip_metrics(weekly_rows(smooth_uptrend()), bid=None, offer=None)
 
         self.assertEqual(10.0, result["qualityDipRiskScore"])
+
+    def test_risk_uses_drawdown_from_the_all_time_peak_after_52_flat_weeks(self):
+        result = quality_dip_metrics(weekly_rows(older_peak_then_flat()), bid=100, offer=100.1)
+
+        self.assertEqual(0.0, result["qualityDipDrawdownPct"])
+        self.assertEqual(6.0, result["qualityDipRiskScore"])
+
+    def test_no_new_13_week_low_awards_a_one_percent_rebound(self):
+        result = quality_dip_metrics(weekly_rows([100] * 189 + [101]))
+
+        self.assertEqual(20.0, result["qualityDipStabilizationScore"])
+
+    def test_missing_spread_normalizes_a_partial_risk_subtotal(self):
+        result = quality_dip_metrics(weekly_rows(older_peak_then_flat()), bid=None, offer=None)
+
+        self.assertEqual(4.29, result["qualityDipRiskScore"])
+
+    def test_daily_rows_use_the_final_valid_observation_of_each_iso_week(self):
+        baseline = weekly_rows(smooth_uptrend())
+        earlier_same_week = {
+            "date": "2019-01-01",
+            "close": 1,
+            "high": 1.01,
+            "low": 0.99,
+        }
+
+        result = quality_dip_metrics([earlier_same_week, *reversed(baseline)])
+
+        self.assertEqual(quality_dip_metrics(baseline), result)
 
 
 if __name__ == "__main__":
