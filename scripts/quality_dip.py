@@ -160,7 +160,7 @@ def _pullback_points(pullback_pct, maximum):
 
 def _stabilization_score(closes):
     prior_13_week_low = min(closes[-14:-1])
-    no_new_low = 6 if closes[-1] > prior_13_week_low else 0
+    no_new_low = 6 if closes[-1] >= prior_13_week_low else 0
     current_four_week_return = closes[-1] / closes[-5] - 1
     prior_four_week_return = closes[-5] / closes[-9] - 1
     improving_return = 5 if current_four_week_return >= prior_four_week_return + 0.002 else 0

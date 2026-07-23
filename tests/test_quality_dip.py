@@ -112,6 +112,11 @@ class QualityDipMetricsTests(unittest.TestCase):
 
         self.assertEqual(20.0, result["qualityDipStabilizationScore"])
 
+    def test_no_new_13_week_low_awards_an_equal_close(self):
+        result = quality_dip_metrics(weekly_rows([100] * 190))
+
+        self.assertEqual(15.0, result["qualityDipStabilizationScore"])
+
     def test_missing_spread_normalizes_a_partial_risk_subtotal(self):
         result = quality_dip_metrics(weekly_rows(older_peak_then_flat()), bid=None, offer=None)
 
