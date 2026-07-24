@@ -324,6 +324,30 @@ test('Quality Dip sort uses score, discount magnitude then score, and stabilizat
   assert.deepEqual(namesFor(items, 'qualityStabilizing'), ['Beta', 'Gamma', 'Alpha', 'Unrated']);
 });
 
+test('Dip inside uptrend sort prefers quality dip candidates over plain uptrends', () => {
+  const items = [
+    {
+      name: 'Plain uptrend',
+      distanceFromPreviousYearLowPct: 200,
+      ma200SlopePct: 40,
+      return1m: 50,
+      qualityDipScore: 38,
+      qualityDipTrendDistancePct: 0,
+      qualityDipStabilizationScore: 25,
+    },
+    {
+      name: 'Discounted uptrend',
+      distanceFromPreviousYearLowPct: 15,
+      ma200SlopePct: 10,
+      return1m: 4,
+      qualityDipScore: 70,
+      qualityDipTrendDistancePct: 18,
+      qualityDipStabilizationScore: 17,
+    },
+  ];
+  assert.deepEqual(namesFor(items, 'dipUptrend'), ['Discounted uptrend', 'Plain uptrend']);
+});
+
 test('Quality Dip sort controls are Stocks-only and repair selection outside Stocks', () => {
   assert.match(
     dashboardSource,
