@@ -47,7 +47,7 @@ public static class SyntheticBasketBuilder
             {
                 var clusterSize = PreferredClusterSize(remaining.Count);
                 var cluster = SelectMostSimilarCluster(remaining, clusterSize);
-                var weights = CalculateInverseVolatilityWeights(cluster.Select(item => item.VolatilityPct).ToList());
+                var weights = CalculateEqualWeights(cluster.Count);
                 var syntheticCandles = BuildCandles(cluster, weights).ToList();
                 var basket = new SyntheticBasket
                 {
@@ -91,6 +91,15 @@ public static class SyntheticBasketBuilder
         var sum = raw.Sum();
         var weights = sum == 0 ? Enumerable.Repeat(100m / volatilities.Count, volatilities.Count).ToList() : raw.Select(value => value / sum * 100m).ToList();
         return ApplyWeightBounds(weights, 10m, 45m);
+    }
+
+    public static IReadOnlyList<decimal> CalculateEqualWeights(int count)
+    {
+        if (count <= 0) return [];
+        var rounded = decimal.Round(100m / count, 4);
+        var weights = Enumerable.Repeat(rounded, count).ToList();
+        weights[^1] = decimal.Round(100m - weights.Take(count - 1).Sum(), 4);
+        return weights;
     }
 
     private static IReadOnlyList<decimal> ApplyWeightBounds(IReadOnlyList<decimal> source, decimal minimum, decimal maximum)
