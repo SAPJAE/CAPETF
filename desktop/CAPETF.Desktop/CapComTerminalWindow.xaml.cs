@@ -146,6 +146,7 @@ public partial class CapComTerminalWindow : Window
             : await Task.Run(() => SyntheticTerminalSelector.SelectBest(block, selectionCandidates, candles, periodsPerYear));
         if (_basket is null)
         {
+            await ClearTerminalChartAsync();
             StatusText.Text = $"No synthetic basket could be built. {candles.Count} symbols had usable history.";
             return;
         }
@@ -444,6 +445,17 @@ public partial class CapComTerminalWindow : Window
         {
             await InvokeTerminalScriptAsync($"window.renderTerminal && window.renderTerminal({json});");
         }
+    }
+
+    private async Task ClearTerminalChartAsync()
+    {
+        _pendingPayload = null;
+        SymbolText.Text = "No synthetic symbol";
+        ChartMetaText.Text = "No synthetic basket could be built for the current seed and block.";
+        SyntheticFormulaText.Text = "No formula yet.";
+        OrderPreviewText.Text = "Preview only. No live orders are sent.";
+        _components.Clear();
+        await InvokeTerminalScriptAsync("window.clearTerminal && window.clearTerminal();");
     }
 
     private async Task InvokeTerminalScriptAsync(string script)

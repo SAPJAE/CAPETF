@@ -86,11 +86,13 @@ public static class SeededSyntheticSelector
             .Where(item => candles.TryGetValue(item.Epic, out var rows) && rows.Count >= 120)
             .ToList();
 
-        return eligible.FirstOrDefault(item => ExactMatch(item.Epic, query)) ??
-               eligible.FirstOrDefault(item => ExactMatch(item.Symbol, query)) ??
-               eligible
-                   .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
-                   .FirstOrDefault(item => ContainsMatch(item.Name, query));
+        var exact = eligible.FirstOrDefault(item => ExactMatch(item.Epic, query)) ??
+                    eligible.FirstOrDefault(item => ExactMatch(item.Symbol, query));
+        if (exact is not null || IsTickerLikeQuery(query)) return exact;
+
+        return eligible
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(item => ContainsMatch(item.Name, query));
     }
 
     private static decimal PeerScore(
@@ -140,6 +142,10 @@ public static class SeededSyntheticSelector
 
     private static bool ContainsMatch(string value, string query) =>
         !string.IsNullOrWhiteSpace(value) && value.Contains(query, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsTickerLikeQuery(string query) =>
+        query.Trim().Length <= 5 &&
+        query.All(character => char.IsLetterOrDigit(character) || character is '.' or '-');
 
     private static decimal AnnualizedVolatilityPct(IReadOnlyList<OhlcPoint> candles, int periodsPerYear)
     {
