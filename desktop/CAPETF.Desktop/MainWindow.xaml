@@ -79,9 +79,9 @@
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="292"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="380"/>
+                <ColumnDefinition x:Name="LeftColumn" Width="292"/>
+                <ColumnDefinition x:Name="CenterColumn" Width="*"/>
+                <ColumnDefinition x:Name="RightColumn" Width="380"/>
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,10,0">
@@ -282,7 +282,27 @@
                                     <TextBlock x:Name="TerminalHeaderText" Text="Synthetic terminal" FontSize="16" FontWeight="SemiBold"/>
                                     <TextBlock Text="Chart-first synthetic instrument. Buy/Sell remains preview-only." Foreground="{StaticResource MutedBrush}"/>
                                 </StackPanel>
-                                <Button Grid.Column="1" Content="Build Terminal" Click="OpenTerminal_Click" MinWidth="120"/>
+                                <WrapPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <ComboBox x:Name="TerminalTimeframeBox" SelectionChanged="TerminalTimeframeBox_SelectionChanged" MinWidth="92" Margin="0,0,8,0">
+                                        <ComboBoxItem Content="Weekly" IsSelected="True"/>
+                                        <ComboBoxItem Content="Daily"/>
+                                        <ComboBoxItem Content="4H"/>
+                                        <ComboBoxItem Content="2H"/>
+                                        <ComboBoxItem Content="6H"/>
+                                    </ComboBox>
+                                    <ComboBox x:Name="TerminalCandleTypeBox" SelectionChanged="TerminalCandleTypeBox_SelectionChanged" MinWidth="112" Margin="0,0,8,0">
+                                        <ComboBoxItem Content="Candles" IsSelected="True"/>
+                                        <ComboBoxItem Content="Heikin Ashi"/>
+                                        <ComboBoxItem Content="Line"/>
+                                    </ComboBox>
+                                    <CheckBox x:Name="TerminalMa20Check" Content="MA20" IsChecked="True" Checked="TerminalMaCheck_Changed" Unchecked="TerminalMaCheck_Changed" Foreground="{StaticResource InkBrush}" Margin="0,0,8,0"/>
+                                    <CheckBox x:Name="TerminalMa50Check" Content="MA50" IsChecked="True" Checked="TerminalMaCheck_Changed" Unchecked="TerminalMaCheck_Changed" Foreground="{StaticResource InkBrush}" Margin="0,0,8,0"/>
+                                    <CheckBox x:Name="TerminalMa200Check" Content="MA200" IsChecked="True" Checked="TerminalMaCheck_Changed" Unchecked="TerminalMaCheck_Changed" Foreground="{StaticResource InkBrush}" Margin="0,0,8,0"/>
+                                    <Button Content="Components" Click="ToggleTerminalComponents_Click" Margin="0,0,8,0"/>
+                                    <Button Content="Fit" Click="FitTerminalChart_Click" Margin="0,0,8,0"/>
+                                    <Button Content="Stream" Click="StreamTerminal_Click" Background="#216E8A" BorderBrush="#216E8A" Margin="0,0,8,0"/>
+                                    <Button Content="Build Terminal" Click="OpenTerminal_Click" MinWidth="120"/>
+                                </WrapPanel>
                             </Grid>
                             <wv2:WebView2 Grid.Row="1" x:Name="TerminalChartWebView" DefaultBackgroundColor="#050914"/>
                             <TextBlock Grid.Row="2" x:Name="TerminalStatusText" Text="Load stocks, then build terminal." Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>

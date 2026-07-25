@@ -13,27 +13,55 @@
       overflow: hidden;
       font-family: Segoe UI, Arial, sans-serif;
     }
+    button {
+      border: 1px solid #263246;
+      background: #111827;
+      color: #d8e1f0;
+      padding: 5px 9px;
+      cursor: pointer;
+    }
+    button.active {
+      border-color: #60a5fa;
+      color: #f8fafc;
+      background: #1d4ed8;
+    }
     #terminal {
       display: grid;
-      grid-template-rows: 42px 1fr 34px;
+      grid-template-rows: auto 1fr auto;
       width: 100%;
       height: 100%;
     }
     #top, #bottom {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      padding: 0 14px;
+      display: grid;
+      gap: 8px;
+      padding: 8px 12px;
       background: #0b1220;
       border-color: #263246;
-      white-space: nowrap;
     }
     #top { border-bottom: 1px solid #263246; }
-    #bottom { border-top: 1px solid #263246; color: #94a3b8; }
+    #bottom {
+      grid-template-columns: repeat(3, max-content) 1fr;
+      align-items: center;
+      border-top: 1px solid #263246;
+      color: #94a3b8;
+      font-size: 12px;
+      min-height: 28px;
+    }
+    #identity, #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    #toolbar { gap: 6px; }
     #body {
       display: grid;
-      grid-template-columns: 1fr 280px;
+      grid-template-columns: 1fr 300px;
       min-height: 0;
+    }
+    #body.components-hidden {
+      grid-template-columns: 1fr 0;
     }
     #chart {
       min-width: 0;
@@ -45,71 +73,68 @@
       padding: 10px;
       overflow: auto;
     }
+    #body.components-hidden #components {
+      display: none;
+    }
     .component {
       border-bottom: 1px solid #263246;
       padding: 8px 0;
     }
     .muted { color: #94a3b8; }
     .strong { color: #f8fafc; font-weight: 600; }
+    .spacer { flex: 1; }
   </style>
   <script src="lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
   <div id="terminal">
     <div id="top">
-      <span id="symbol" class="strong">No synthetic</span>
-      <span id="block" class="muted"></span>
-      <span id="currency" class="muted"></span>
+      <div id="identity">
+        <span id="symbol" class="strong">No synthetic</span>
+        <span id="block" class="muted"></span>
+        <span id="currency" class="muted"></span>
+        <span id="last-price" class="strong"></span>
+      </div>
+      <div id="toolbar">
+        <button type="button" data-mode="candles" class="chart-mode active">Candles</button>
+        <button type="button" data-mode="heikin" class="chart-mode">Heikin Ashi</button>
+        <button type="button" data-mode="line" class="chart-mode">Line</button>
+        <span class="spacer"></span>
+        <button type="button" data-ma="20" class="ma-toggle active">MA20</button>
+        <button type="button" data-ma="50" class="ma-toggle active">MA50</button>
+        <button type="button" data-ma="200" class="ma-toggle active">MA200</button>
+        <button type="button" id="components-toggle">Components</button>
+        <button type="button" id="fit-chart">Fit</button>
+      </div>
     </div>
-    <div id="body">
+    <div id="body" class="components-hidden">
       <div id="chart"></div>
       <div id="components"></div>
     </div>
     <div id="bottom">
       <span id="ohlc">OHLC n/a</span>
       <span id="mas">MA n/a</span>
+      <span id="crosshair">Crosshair n/a</span>
+      <span id="status"></span>
     </div>
   </div>
   <script>
     const chartElement = document.getElementById('chart');
+    const bodyElement = document.getElementById('body');
+    const modeButtons = Array.from(document.querySelectorAll('.chart-mode'));
+    const maButtons = Array.from(document.querySelectorAll('.ma-toggle'));
+    const maVisibility = { 20: true, 50: true, 200: true };
     let chart;
-    let candleSeries;
+    let priceSeries;
     let ma20Series;
     let ma50Series;
     let ma200Series;
+    let lastPayload = null;
+    let chartMode = 'candles';
 
     function setStatus(message) {
-      document.getElementById('symbol').textContent = message;
-    }
-
-    function resizeTerminal() {
-      if (!chart) return;
-      const width = Math.max(1, chartElement.clientWidth);
-      const height = Math.max(1, chartElement.clientHeight);
-      chart.resize(width, height);
-    }
-
-    if (!window.LightweightCharts) {
-      setStatus('Chart library failed to load');
-    } else {
-      chart = LightweightCharts.createChart(chartElement, {
-      layout: { background: { color: '#050914' }, textColor: '#cbd5e1' },
-      grid: { vertLines: { color: '#111827' }, horzLines: { color: '#111827' } },
-      rightPriceScale: { borderColor: '#334155' },
-      timeScale: { borderColor: '#334155', timeVisible: true, secondsVisible: false },
-      crosshair: { mode: LightweightCharts.CrosshairMode.Normal }
-      });
-      candleSeries = chart.addCandlestickSeries({
-        upColor: '#22c55e',
-        downColor: '#ef4444',
-        borderUpColor: '#22c55e',
-        borderDownColor: '#ef4444',
-        wickUpColor: '#86efac',
-        wickDownColor: '#fca5a5'
-      });
-      ma20Series = chart.addLineSeries({ color: '#60a5fa', lineWidth: 1 });
-      ma50Series = chart.addLineSeries({ color: '#fbbf24', lineWidth: 1 });
-      ma200Series = chart.addLineSeries({ color: '#f472b6', lineWidth: 1 });
+      document.getElementById('status').textContent = message || '';
+      if (message) document.getElementById('symbol').textContent = message;
     }
 
     function money(value) {
@@ -118,10 +143,16 @@
       return Number.isFinite(numeric) ? numeric.toFixed(4) : String(value);
     }
 
+    function timeText(time) {
+      if (!time) return 'n/a';
+      const date = new Date(Number(time) * 1000);
+      return Number.isNaN(date.getTime()) ? String(time) : date.toLocaleString();
+    }
+
     function componentRow(component) {
       return `<div class="component">
         <div class="strong">${component.Name}</div>
-        <div class="muted">${component.Epic}</div>
+        <div class="muted">${component.Epic} ${component.Currency || ''}</div>
         <div>${Number(component.Weight).toFixed(2)}% | last ${money(component.Last)}</div>
         <div class="muted">bid ${money(component.Bid)} | offer ${money(component.Offer)} | ${component.LastTickText}</div>
       </div>`;
@@ -144,35 +175,160 @@
       };
     }
 
+    function heikinAshi(candles) {
+      let previousOpen = null;
+      let previousClose = null;
+      return candles.map((candle, index) => {
+        const close = (candle.open + candle.high + candle.low + candle.close) / 4;
+        const open = index === 0 ? (candle.open + candle.close) / 2 : (previousOpen + previousClose) / 2;
+        const high = Math.max(candle.high, open, close);
+        const low = Math.min(candle.low, open, close);
+        previousOpen = open;
+        previousClose = close;
+        return { time: candle.time, open, high, low, close };
+      });
+    }
+
+    function removePriceSeries() {
+      if (!priceSeries || !chart) return;
+      chart.removeSeries(priceSeries);
+      priceSeries = null;
+    }
+
+    function createPriceSeries() {
+      removePriceSeries();
+      if (chartMode === 'line') {
+        priceSeries = chart.addLineSeries({ color: '#22c55e', lineWidth: 2, priceLineVisible: true });
+        return;
+      }
+      priceSeries = chart.addCandlestickSeries({
+        upColor: '#22c55e',
+        downColor: '#ef4444',
+        borderUpColor: '#22c55e',
+        borderDownColor: '#ef4444',
+        wickUpColor: '#86efac',
+        wickDownColor: '#fca5a5',
+        priceLineVisible: true
+      });
+    }
+
+    function applyMaVisibility() {
+      if (ma20Series) ma20Series.applyOptions({ visible: maVisibility[20] });
+      if (ma50Series) ma50Series.applyOptions({ visible: maVisibility[50] });
+      if (ma200Series) ma200Series.applyOptions({ visible: maVisibility[200] });
+      maButtons.forEach(button => button.classList.toggle('active', maVisibility[button.dataset.ma]));
+    }
+
+    function resizeTerminal() {
+      if (!chart) return;
+      const width = Math.max(1, chartElement.clientWidth);
+      const height = Math.max(1, chartElement.clientHeight);
+      chart.resize(width, height);
+    }
+
+    function fitTerminalChart() {
+      if (!chart) return;
+      resizeTerminal();
+      chart.timeScale().fitContent();
+    }
+
     function apply(payload, fit) {
       if (!chart) return;
       payload = payload || {};
+      lastPayload = payload;
       resizeTerminal();
+
+      const candles = (payload.Candles || []).map(normalizeCandle).filter(candle =>
+        Number.isFinite(candle.open) &&
+        Number.isFinite(candle.high) &&
+        Number.isFinite(candle.low) &&
+        Number.isFinite(candle.close));
+      const ma20 = (payload.Ma20 || []).map(normalizeLine);
+      const ma50 = (payload.Ma50 || []).map(normalizeLine);
+      const ma200 = (payload.Ma200 || []).map(normalizeLine);
+      const plottedCandles = chartMode === 'heikin' ? heikinAshi(candles) : candles;
+
       document.getElementById('symbol').textContent = payload.Symbol || 'No synthetic';
       document.getElementById('block').textContent = payload.Block || '';
       document.getElementById('currency').textContent = payload.CurrencyLabel || '';
       document.getElementById('components').innerHTML = (payload.Components || []).map(componentRow).join('');
 
-      const candles = (payload.Candles || []).map(normalizeCandle);
-      const ma20 = (payload.Ma20 || []).map(normalizeLine);
-      const ma50 = (payload.Ma50 || []).map(normalizeLine);
-      const ma200 = (payload.Ma200 || []).map(normalizeLine);
-      candleSeries.setData(candles);
+      createPriceSeries();
+      if (chartMode === 'line') {
+        priceSeries.setData(candles.map(candle => ({ time: candle.time, value: candle.close })));
+      } else {
+        priceSeries.setData(plottedCandles);
+      }
       ma20Series.setData(ma20);
       ma50Series.setData(ma50);
       ma200Series.setData(ma200);
+      applyMaVisibility();
 
       const last = candles[candles.length - 1];
+      document.getElementById('last-price').textContent = last ? `Last ${money(last.close)}` : '';
       document.getElementById('ohlc').textContent = last ? `O ${money(last.open)} H ${money(last.high)} L ${money(last.low)} C ${money(last.close)}` : 'OHLC n/a';
       document.getElementById('mas').textContent = `MA20 ${ma20.length ? money(ma20[ma20.length - 1].value) : 'n/a'} | MA50 ${ma50.length ? money(ma50[ma50.length - 1].value) : 'n/a'} | MA200 ${ma200.length ? money(ma200[ma200.length - 1].value) : 'n/a'}`;
-      if (fit) chart.timeScale().fitContent();
+      setStatus(candles.length < 2 ? 'No chart data for selected timeframe' : '');
+      if (fit) fitTerminalChart();
       requestAnimationFrame(resizeTerminal);
+    }
+
+    if (!window.LightweightCharts) {
+      setStatus('Chart library failed to load');
+    } else {
+      chart = LightweightCharts.createChart(chartElement, {
+        layout: { background: { color: '#050914' }, textColor: '#cbd5e1' },
+        grid: { vertLines: { color: '#111827' }, horzLines: { color: '#111827' } },
+        rightPriceScale: { borderColor: '#334155', visible: true },
+        timeScale: { borderColor: '#334155', timeVisible: true, secondsVisible: false },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        localization: { priceFormatter: money }
+      });
+      createPriceSeries();
+      ma20Series = chart.addLineSeries({ color: '#60a5fa', lineWidth: 1, visible: true });
+      ma50Series = chart.addLineSeries({ color: '#fbbf24', lineWidth: 1, visible: true });
+      ma200Series = chart.addLineSeries({ color: '#f472b6', lineWidth: 1, visible: true });
+      chart.subscribeCrosshairMove(param => {
+        if (!param || !param.time || !param.seriesData || !priceSeries) {
+          document.getElementById('crosshair').textContent = 'Crosshair n/a';
+          return;
+        }
+        const price = param.seriesData.get(priceSeries);
+        if (!price) return;
+        if (chartMode === 'line') {
+          document.getElementById('crosshair').textContent = `${timeText(param.time)} | ${money(price.value)}`;
+          return;
+        }
+        document.getElementById('crosshair').textContent = `${timeText(param.time)} | O ${money(price.open)} H ${money(price.high)} L ${money(price.low)} C ${money(price.close)}`;
+      });
     }
 
     window.renderTerminal = function(payload) { apply(payload, true); };
     window.updateTerminal = function(payload) { apply(payload, false); };
     window.clearTerminal = function() { apply({ Candles: [], Ma20: [], Ma50: [], Ma200: [], Components: [] }, true); };
     window.resizeTerminal = resizeTerminal;
+    window.fitTerminalChart = fitTerminalChart;
+    window.setTerminalChartMode = function(mode) {
+      chartMode = ['candles', 'heikin', 'line'].includes(String(mode).toLowerCase()) ? String(mode).toLowerCase() : 'candles';
+      modeButtons.forEach(button => button.classList.toggle('active', button.dataset.mode === chartMode));
+      if (lastPayload) apply(lastPayload, false);
+    };
+    window.toggleTerminalMa = function(period, visible) {
+      maVisibility[period] = visible === true || visible === 'true';
+      applyMaVisibility();
+    };
+    window.toggleTerminalComponents = function() {
+      bodyElement.classList.toggle('components-hidden');
+      requestAnimationFrame(resizeTerminal);
+    };
+
+    modeButtons.forEach(button => button.addEventListener('click', () => window.setTerminalChartMode(button.dataset.mode)));
+    maButtons.forEach(button => button.addEventListener('click', () => {
+      const period = Number(button.dataset.ma);
+      window.toggleTerminalMa(period, !maVisibility[period]);
+    }));
+    document.getElementById('components-toggle').addEventListener('click', window.toggleTerminalComponents);
+    document.getElementById('fit-chart').addEventListener('click', window.fitTerminalChart);
     window.addEventListener('resize', resizeTerminal);
     resizeTerminal();
   </script>
