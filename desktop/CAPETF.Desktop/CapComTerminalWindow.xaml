@@ -51,10 +51,11 @@
                     <TextBlock x:Name="ConnectionText" Text="saved keys required" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
                 </StackPanel>
                 <WrapPanel Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <TextBox x:Name="SearchBox" Width="180" Text="" ToolTip="Capital.com search text. Blank loads the default stock set." Margin="0,0,8,0"/>
+                    <TextBox x:Name="SearchBox" AutomationProperties.Name="Seed symbol" Width="180" Text="" ToolTip="Seed symbol or name, for example NKE." Margin="0,0,8,0"/>
                     <Button Content="Connect" Click="Connect_Click"/>
                     <Button Content="Load Stocks" Click="LoadStocks_Click"/>
                     <Button Content="Build Synthetic" Click="BuildSynthetic_Click" Background="#1D4ED8" BorderBrush="#60A5FA"/>
+                    <Button Content="Nike Sample" Click="BuildNikeSample_Click" Background="#334155" BorderBrush="#64748B"/>
                     <Button Content="Stream" Click="StreamSynthetic_Click" Background="#216E8A" BorderBrush="#38BDF8"/>
                 </WrapPanel>
                 <WrapPanel Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center">
