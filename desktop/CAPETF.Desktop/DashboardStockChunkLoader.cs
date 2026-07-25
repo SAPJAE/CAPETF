@@ -20,7 +20,7 @@ public static class DashboardStockChunkLoader
 
     public static StockChunkLoadResult LoadStocks(string? password = null)
     {
-        var files = FindStockChunkFiles();
+        var files = FindStockDataFiles();
         if (files.Count == 0)
         {
             return new StockChunkLoadResult([], new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase), 0, null, null);
@@ -102,7 +102,7 @@ public static class DashboardStockChunkLoader
         return new StockChunkLoadResult(distinct, OhlcByEpic, files.Count, refreshedAt, sourceAsOf, OhlcByEpicAndResolution);
     }
 
-    private static IReadOnlyList<string> FindStockChunkFiles()
+    private static IReadOnlyList<string> FindStockDataFiles()
     {
         foreach (var directory in CandidateDataDirectories())
         {
@@ -110,6 +110,12 @@ public static class DashboardStockChunkLoader
             var files = Directory.GetFiles(directory, "stocks-*.enc.json")
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+            var legacyFile = Path.Combine(directory, "stocks.enc.json");
+            if (File.Exists(legacyFile))
+            {
+                files.Add(legacyFile);
+            }
+
             if (files.Count > 0) return files;
         }
 
