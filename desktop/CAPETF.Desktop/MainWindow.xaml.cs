@@ -217,6 +217,8 @@ public partial class MainWindow : Window
         {
             await TerminalChartWebView.EnsureCoreWebView2Async();
             _terminalChartReady = false;
+            TerminalChartWebView.CoreWebView2.ProcessFailed += (_, args) =>
+                TerminalStatusText.Text = $"Terminal WebView failed: {args.ProcessFailedKind}";
             TerminalChartWebView.NavigationCompleted += TerminalChartWebView_NavigationCompleted;
             var chartPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
             TerminalChartWebView.Source = new Uri(chartPath);
@@ -472,10 +474,24 @@ public partial class MainWindow : Window
             var json = JsonSerializer.Serialize(payload);
             var function = fit ? "renderTerminal" : "updateTerminal";
             await TerminalChartWebView.ExecuteScriptAsync($"window.{function}({json});");
+            await ResizeTerminalChartAsync();
         }
         catch
         {
             TerminalStatusText.Text = "Terminal chart update failed.";
+        }
+    }
+
+    private async Task ResizeTerminalChartAsync()
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null) return;
+        try
+        {
+            await TerminalChartWebView.ExecuteScriptAsync("window.resizeTerminal && window.resizeTerminal();");
+        }
+        catch
+        {
+            TerminalStatusText.Text = "Terminal chart resize failed.";
         }
     }
 
@@ -840,7 +856,12 @@ public partial class MainWindow : Window
         DashboardScrollViewer.Visibility = mode == SyntheticTerminalWorkspace.ModeName ? Visibility.Collapsed : Visibility.Visible;
         TerminalPanel.Visibility = mode == SyntheticTerminalWorkspace.ModeName ? Visibility.Visible : Visibility.Collapsed;
         if (mode == "Synthetic") RefreshSyntheticBlocks();
-        if (mode == SyntheticTerminalWorkspace.ModeName) RefreshSyntheticBlocks();
+        if (mode == SyntheticTerminalWorkspace.ModeName)
+        {
+            RefreshSyntheticBlocks();
+            _ = ResizeTerminalChartAsync();
+            if (_terminalBasket is not null) _ = RenderTerminalAsync(_terminalBasket, fit: true);
+        }
         ResultText.Text = mode switch
         {
             "Portfolio" => $"{_workspace.WatchlistEpics.Count} watchlist markets saved locally.",
