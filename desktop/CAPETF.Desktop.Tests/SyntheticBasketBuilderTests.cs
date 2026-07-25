@@ -31,6 +31,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalSelectorChoosesHighestSimilarityBasket();
         SyntheticTerminalSelectorUsesThreeYearComparisonWindow();
         SyntheticTerminalSelectorPenalizesVolatilityMismatch();
+        SyntheticTerminalHistoryLoadCandidatesScanPastTheFirstSparseRows();
         SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
         SyntheticTerminalHtmlExposesRequiredFunctions();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
@@ -594,6 +595,24 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception("terminal selector must penalize materially different component volatility");
         }
+    }
+
+    private static void SyntheticTerminalHistoryLoadCandidatesScanPastTheFirstSparseRows()
+    {
+        var instruments = Enumerable.Range(0, 80)
+            .Select(index => new MarketInstrument
+            {
+                Epic = $"SCAN-{index:000}",
+                Name = $"Scan {index:000}",
+                Type = "SHARES",
+            })
+            .ToList();
+
+        var selected = SyntheticTerminalSelector.HistoryLoadCandidates("Other / Currency / Sector", instruments, limit: 64);
+
+        if (selected.Count != 64) throw new Exception("terminal history loading should scan past the first 36 broad search results");
+        if (!selected.Any(item => item.Epic == "SCAN-063")) throw new Exception("terminal history loading should include deeper candidates in broad groups");
+        if (selected.Any(item => item.Epic == "SCAN-064")) throw new Exception("terminal history loading should respect the requested scan limit");
     }
 
     private static void SyntheticTerminalLiveUpdateReturnsPayloadImmediately()

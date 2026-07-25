@@ -338,19 +338,20 @@ public partial class MainWindow : Window
         {
             _terminalBasket = null;
             await ClearTerminalAsync();
-            TerminalStatusText.Text = $"Loading three-year weekly candles for {block}...";
-            var instruments = _instruments
-                .Where(item => item.Group == block && CapitalInstrumentTypes.IsStock(item))
-                .Take(36)
-                .ToList();
+            var instruments = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments);
+            TerminalStatusText.Text = $"Loading three-year weekly candles for {block}: scanning up to {instruments.Count} stocks...";
             var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>();
+            var checkedCount = 0;
             foreach (var item in instruments)
             {
+                checkedCount++;
                 try
                 {
                     var rows = await _api.GetOhlcPricesAsync(item.Epic, "WEEK", 260, operation.Token);
                     if (!_dataOperations.IsCurrent(operation)) return;
                     if (rows.Count >= 120) candles[item.Epic] = rows;
+                    TerminalStatusText.Text = $"Loading three-year weekly candles for {block}: {candles.Count} usable of {checkedCount} checked...";
+                    if (candles.Count >= 32 && checkedCount >= 40) break;
                 }
                 catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
                 {
@@ -367,7 +368,7 @@ public partial class MainWindow : Window
             var basket = SyntheticTerminalSelector.SelectBest(block, instruments, candles, periodsPerYear: 52);
             if (basket is null)
             {
-                TerminalStatusText.Text = $"No terminal synthetic instrument could be built for {block}.";
+                TerminalStatusText.Text = $"No terminal synthetic instrument could be built for {block}. Checked {checkedCount} stocks; {candles.Count} had enough weekly history.";
                 return;
             }
 
