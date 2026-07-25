@@ -269,14 +269,13 @@ public partial class MainWindow : Window
 
         var timeframe = (SyntheticTimeframeBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Weekly";
         var resolution = timeframe == "Daily" ? "DAY" : "WEEK";
-        var maxCandles = timeframe == "Daily" ? 1000 : 260;
         var periodsPerYear = timeframe == "Daily" ? 252 : 52;
         var operation = _dataOperations.Begin();
 
         try
         {
             ClearSyntheticResults();
-            SyntheticStatusText.Text = $"Loading {timeframe.ToLowerInvariant()} four-year candles...";
+            SyntheticStatusText.Text = $"Loading all available {timeframe.ToLowerInvariant()} candles...";
             var instruments = _instruments
                 .Where(item => item.Group == block && CapitalInstrumentTypes.IsStock(item))
                 .Take(36)
@@ -286,7 +285,7 @@ public partial class MainWindow : Window
             {
                 try
                 {
-                    var rows = await _api.GetOhlcPricesAsync(item.Epic, resolution, maxCandles, operation.Token);
+                    var rows = await _api.GetAllAvailableOhlcPricesAsync(item.Epic, resolution, operation.Token);
                     if (!_dataOperations.IsCurrent(operation)) return;
                     if (rows.Count >= 120) candles[item.Epic] = rows;
                 }
@@ -345,7 +344,6 @@ public partial class MainWindow : Window
             var instruments = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments);
             var terminalResolution = SelectedTerminalResolution();
             var requestResolution = TerminalRequestResolution(terminalResolution);
-            var maxCandles = TerminalMaxCandles(terminalResolution);
             var minimumCandles = TerminalMinimumCandles(terminalResolution);
             var periodsPerYear = TerminalPeriodsPerYear(terminalResolution);
             TerminalStatusText.Text = $"Loading {TerminalTimeframeText().ToLowerInvariant()} candles for {block}: scanning up to {instruments.Count} stocks...";
@@ -356,7 +354,7 @@ public partial class MainWindow : Window
                 checkedCount++;
                 try
                 {
-                    var rows = await _api.GetOhlcPricesAsync(item.Epic, requestResolution, maxCandles, operation.Token);
+                    var rows = await _api.GetAllAvailableOhlcPricesAsync(item.Epic, requestResolution, operation.Token);
                     rows = TransformTerminalCandles(rows, terminalResolution);
                     if (!_dataOperations.IsCurrent(operation)) return;
                     if (rows.Count >= minimumCandles) candles[item.Epic] = rows;
@@ -416,16 +414,6 @@ public partial class MainWindow : Window
 
     private static string TerminalRequestResolution(string terminalResolution) =>
         terminalResolution is "HOUR_2" or "HOUR_6" ? "HOUR" : terminalResolution;
-
-    private static int TerminalMaxCandles(string terminalResolution) =>
-        terminalResolution switch
-        {
-            "WEEK" => 260,
-            "DAY" => 780,
-            "HOUR_4" => 600,
-            "HOUR_2" or "HOUR_6" => 720,
-            _ => 260,
-        };
 
     private static int TerminalMinimumCandles(string terminalResolution) =>
         terminalResolution == "WEEK" ? 120 : 120;

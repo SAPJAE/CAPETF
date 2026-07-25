@@ -9,6 +9,7 @@ public static class SyntheticBasketBuilderTests
     {
         NewOperationCancelsAndSupersedesEarlierWork();
         IncompleteOhlcRowsAreExcluded();
+        CapitalPricePathSupportsDatedHistoryWindows();
         InverseVolatilityWeightsSumToOneHundred();
         InverseVolatilityWeightsRespectCapsAndMinimums();
         SyntheticCandlesUseWeightedOhlc();
@@ -92,6 +93,31 @@ public static class SyntheticBasketBuilderTests
         AssertNear(102m, rows[0].High, "complete OHLC high should be retained");
         AssertNear(98m, rows[0].Low, "complete OHLC low should be retained");
         AssertNear(101m, rows[0].Close, "complete OHLC close should be retained");
+    }
+
+    private static void CapitalPricePathSupportsDatedHistoryWindows()
+    {
+        var path = CapitalApiClient.BuildPricesPath(
+            "NKE",
+            "DAY",
+            1000,
+            DateTimeOffset.Parse("2020-01-01T00:00:00Z"),
+            DateTimeOffset.Parse("2022-01-01T00:00:00Z"));
+
+        foreach (var required in new[]
+        {
+            "api/v1/prices/NKE?",
+            "resolution=DAY",
+            "max=1000",
+            "from=2020-01-01T00%3A00%3A00",
+            "to=2022-01-01T00%3A00%3A00",
+        })
+        {
+            if (!path.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"dated history price path missing {required}: {path}");
+            }
+        }
     }
 
     private static void InverseVolatilityWeightsSumToOneHundred()
