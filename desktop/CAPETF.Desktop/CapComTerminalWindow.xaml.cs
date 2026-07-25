@@ -57,6 +57,11 @@ public partial class CapComTerminalWindow : Window
 
     private async void LoadStocks_Click(object sender, RoutedEventArgs e)
     {
+        await LoadStocksAsync();
+    }
+
+    private async Task LoadStocksAsync()
+    {
         try
         {
             StatusText.Text = "Loading cached stock chunks...";
@@ -83,7 +88,22 @@ public partial class CapComTerminalWindow : Window
 
     private async void BuildSynthetic_Click(object sender, RoutedEventArgs e)
     {
-        await EnsureConnectedAsync();
+        await BuildSyntheticAsync();
+    }
+
+    private async void BuildNikeSample_Click(object sender, RoutedEventArgs e)
+    {
+        SearchBox.Text = "NKE";
+        if (_instruments.Count == 0)
+        {
+            await LoadStocksAsync();
+        }
+
+        await BuildSyntheticAsync();
+    }
+
+    private async Task BuildSyntheticAsync()
+    {
         if (_instruments.Count == 0)
         {
             StatusText.Text = "Load stocks before building a synthetic symbol.";
@@ -105,8 +125,18 @@ public partial class CapComTerminalWindow : Window
             selectionCandidates = SelectSyntheticCandidates(candidates, candles, maxSelection: 36);
         }
 
-        StatusText.Text = $"Selecting basket from {selectionCandidates.Count} similar-history candidates...";
-        _basket = await Task.Run(() => SyntheticTerminalSelector.SelectBest(block, selectionCandidates, candles, periodsPerYear));
+        var seedText = SearchBox.Text.Trim();
+        StatusText.Text = string.IsNullOrWhiteSpace(seedText)
+            ? $"Selecting basket from {selectionCandidates.Count} similar-history candidates..."
+            : $"Selecting seeded basket for {seedText}...";
+        _basket = !string.IsNullOrWhiteSpace(seedText)
+            ? await Task.Run(() => SeededSyntheticSelector.SelectSeededBasket(
+                seedText,
+                block,
+                _instruments,
+                _cachedCandlesByEpic.Count > 0 ? _cachedCandlesByEpic : candles,
+                periodsPerYear))
+            : await Task.Run(() => SyntheticTerminalSelector.SelectBest(block, selectionCandidates, candles, periodsPerYear));
         if (_basket is null)
         {
             StatusText.Text = $"No synthetic basket could be built. {candles.Count} symbols had usable history.";

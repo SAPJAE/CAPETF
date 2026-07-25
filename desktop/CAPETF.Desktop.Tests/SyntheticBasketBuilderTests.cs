@@ -33,6 +33,8 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalSelectorUsesThreeYearComparisonWindow();
         SyntheticTerminalSelectorPenalizesVolatilityMismatch();
         SyntheticTerminalHistoryLoadCandidatesScanPastTheFirstSparseRows();
+        SeededSyntheticSelectorBuildsNikeBasket();
+        SeededSyntheticSelectorPrefersExactNikeTickerOverNameContains();
         SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
         SyntheticTerminalHtmlExposesRequiredFunctions();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
@@ -680,6 +682,53 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void SeededSyntheticSelectorBuildsNikeBasket()
+    {
+        var day = DateTimeOffset.Parse("2024-01-01T00:00:00Z");
+        var instruments = new[]
+        {
+            CreateSeedStock("NKE", "Nike Inc"),
+            CreateSeedStock("LULU", "Lululemon Athletica"),
+            CreateSeedStock("DECK", "Deckers Outdoor"),
+            CreateSeedStock("ADBE", "Adobe Systems Inc"),
+            CreateSeedStock("BAH", "Booz Allen Hamilton"),
+        };
+        var candles = instruments.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => CreateVariableCandles(day, 100m));
+
+        var basket = SeededSyntheticSelector.SelectSeededBasket("NKE", "US / USD / All", instruments, candles, periodsPerYear: 52);
+
+        if (basket is null) throw new Exception("Nike seed should build a synthetic basket");
+        if (basket.Symbol != "SYN-NKE-01") throw new Exception("Nike seeded basket should use an NKE synthetic symbol");
+        if (basket.Components.Count != 3) throw new Exception("Nike seeded basket should contain exactly three legs");
+        if (basket.Components.All(component => component.Instrument.Epic != "NKE")) throw new Exception("Nike seeded basket must include NKE");
+        if (basket.Components.Any(component => component.Instrument.Epic == "ADBE")) throw new Exception("Nike seeded basket should prefer apparel peers over unrelated software stocks");
+        if (basket.Components.Any(component => component.Instrument.Epic == "BAH")) throw new Exception("Nike seeded basket should not treat generic holding-company names as apparel peers");
+    }
+
+    private static void SeededSyntheticSelectorPrefersExactNikeTickerOverNameContains()
+    {
+        var day = DateTimeOffset.Parse("2024-01-01T00:00:00Z");
+        var instruments = new[]
+        {
+            CreateSeedStock("EAT", "Brinker"),
+            CreateSeedStock("AZO", "AutoZone Inc"),
+            CreateSeedStock("NKE", "Nike Inc"),
+            CreateSeedStock("LULU", "Lululemon Athletica"),
+            CreateSeedStock("DECK", "Deckers Outdoor"),
+        };
+        var candles = instruments.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => CreateVariableCandles(day, 100m));
+
+        var basket = SeededSyntheticSelector.SelectSeededBasket("NKE", "US / USD / All", instruments, candles, periodsPerYear: 52);
+
+        if (basket is null) throw new Exception("exact NKE seed should build a basket");
+        if (basket.Symbol != "SYN-NKE-01") throw new Exception("exact ticker match must outrank name contains match like Brinker");
+        if (basket.Components.All(component => component.Instrument.Epic != "NKE")) throw new Exception("exact NKE seed must include Nike");
+    }
+
     private static void SyntheticTerminalHtmlUsesPackagedChartLibrary()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
@@ -899,6 +948,8 @@ public static class SyntheticBasketBuilderTests
             "Click=\"SellPreview_Click\"",
             "x:Name=\"CandleTypeBox\"",
             "CandleType_SelectionChanged",
+            "AutomationProperties.Name=\"Seed symbol\"",
+            "Click=\"BuildNikeSample_Click\"",
         })
         {
             if (!xaml.Contains(required, StringComparison.Ordinal))
@@ -987,6 +1038,8 @@ public static class SyntheticBasketBuilderTests
             "CapitalStreamingClient",
             "SubscribeQuotesAsync",
             "SyntheticTerminalLiveUpdate.Apply",
+            "BuildNikeSample_Click",
+            "SearchBox.Text = \"NKE\"",
         })
         {
             if (!terminal.Contains(required, StringComparison.Ordinal))
@@ -1073,6 +1126,17 @@ public static class SyntheticBasketBuilderTests
         Currency = "USD",
         Region = "US",
         Sector = "Tech",
+    };
+
+    private static MarketInstrument CreateSeedStock(string epic, string name) => new()
+    {
+        Epic = epic,
+        Name = name,
+        Symbol = epic,
+        Type = "SHARES",
+        Currency = "USD",
+        Region = "US",
+        Sector = "All",
     };
 
     private static void AssertNear(decimal expected, decimal actual, string message, decimal tolerance = 0.0001m)
