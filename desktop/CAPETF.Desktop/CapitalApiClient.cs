@@ -83,6 +83,41 @@ public sealed class CapitalApiClient : IDisposable
         return points.OrderBy(point => point.Time).ToList();
     }
 
+    public async Task<IReadOnlyList<OhlcPoint>> GetOhlcPricesAsync(string epic, string resolution, int max, CancellationToken cancellationToken = default)
+    {
+        EnsureSession();
+        using var doc = await GetJsonAsync($"api/v1/prices/{Uri.EscapeDataString(epic)}?resolution={resolution}&max={max}", cancellationToken);
+        return ParseOhlcPrices(doc.RootElement);
+    }
+
+    internal static IReadOnlyList<OhlcPoint> ParseOhlcPrices(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return ParseOhlcPrices(document.RootElement);
+    }
+
+    private static IReadOnlyList<OhlcPoint> ParseOhlcPrices(JsonElement root)
+    {
+        if (!root.TryGetProperty("prices", out var prices) || prices.ValueKind != JsonValueKind.Array) return [];
+        var rows = new List<OhlcPoint>();
+        foreach (var row in prices.EnumerateArray())
+        {
+            var time = ReadString(row, "snapshotTimeUTC") ?? ReadString(row, "snapshotTime") ?? ReadString(row, "time");
+            var close = ReadPrice(row, "closePrice") ?? ReadPrice(row, "lastTradedPrice");
+            var open = ReadPrice(row, "openPrice");
+            var high = ReadPrice(row, "highPrice");
+            var low = ReadPrice(row, "lowPrice");
+            if (time is null || open is null || high is null || low is null || close is null) continue;
+            if (open <= 0 || high <= 0 || low <= 0 || close <= 0) continue;
+            if (DateTimeOffset.TryParse(time, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
+            {
+                rows.Add(new OhlcPoint(parsed, open.Value, high.Value, low.Value, close.Value));
+            }
+        }
+
+        return rows.OrderBy(point => point.Time).ToList();
+    }
+
     private async Task<JsonDocument> GetJsonAsync(string uri, CancellationToken cancellationToken)
     {
         EnsureSession();

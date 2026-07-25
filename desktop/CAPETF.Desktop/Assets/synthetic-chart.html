@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://unpkg.com; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'unsafe-inline';">
+  <style>
+    html, body, #chart { width: 100%; height: 100%; margin: 0; background: #0f172a; overflow: hidden; }
+  </style>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <div id="chart"></div>
+  <script>
+    const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+      layout: { background: { color: '#0f172a' }, textColor: '#cbd5e1' },
+      grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
+      rightPriceScale: { borderColor: '#334155' },
+      timeScale: { borderColor: '#334155', timeVisible: false },
+    });
+    const candles = chart.addCandlestickSeries({
+      upColor: '#22c55e',
+      downColor: '#ef4444',
+      borderUpColor: '#22c55e',
+      borderDownColor: '#ef4444',
+      wickUpColor: '#86efac',
+      wickDownColor: '#fca5a5',
+    });
+    window.renderSyntheticCandles = function (rows) {
+      candles.setData(rows || []);
+      chart.timeScale().fitContent();
+    };
+    window.addEventListener('resize', () => chart.resize(window.innerWidth, window.innerHeight));
+  </script>
+</body>
+</html>

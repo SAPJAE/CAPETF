@@ -1,0 +1,38 @@
+namespace CAPETF.Desktop;
+
+public sealed record TerminalCandle(long Time, decimal Open, decimal High, decimal Low, decimal Close);
+
+public sealed record TerminalLinePoint(long Time, decimal Value);
+
+public sealed record TerminalComponentRow(
+    string Name,
+    string Epic,
+    string Currency,
+    decimal Weight,
+    decimal? Bid,
+    decimal? Offer,
+    decimal? Last,
+    string LastTickText);
+
+public sealed record SyntheticTerminalPayload(
+    string Symbol,
+    string Block,
+    string CurrencyLabel,
+    IReadOnlyList<TerminalCandle> Candles,
+    IReadOnlyList<TerminalLinePoint> Ma20,
+    IReadOnlyList<TerminalLinePoint> Ma50,
+    IReadOnlyList<TerminalLinePoint> Ma200,
+    IReadOnlyList<TerminalComponentRow> Components);
+
+public static class SyntheticTerminalWorkspace
+{
+    public const string ModeName = "Terminal";
+
+    public static IReadOnlyList<string> StreamingEpics(SyntheticBasket basket) =>
+        basket.Components
+            .Select(component => component.Instrument.Epic)
+            .Where(epic => !string.IsNullOrWhiteSpace(epic))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(40)
+            .ToList();
+}

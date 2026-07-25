@@ -1,0 +1,155 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://unpkg.com; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'unsafe-inline';">
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: #050914;
+      color: #d8e1f0;
+      overflow: hidden;
+      font-family: Segoe UI, Arial, sans-serif;
+    }
+    #terminal {
+      display: grid;
+      grid-template-rows: 42px 1fr 34px;
+      width: 100%;
+      height: 100%;
+    }
+    #top, #bottom {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 0 14px;
+      background: #0b1220;
+      border-color: #263246;
+      white-space: nowrap;
+    }
+    #top { border-bottom: 1px solid #263246; }
+    #bottom { border-top: 1px solid #263246; color: #94a3b8; }
+    #body {
+      display: grid;
+      grid-template-columns: 1fr 280px;
+      min-height: 0;
+    }
+    #chart {
+      min-width: 0;
+      min-height: 0;
+    }
+    #components {
+      border-left: 1px solid #263246;
+      background: #0b1220;
+      padding: 10px;
+      overflow: auto;
+    }
+    .component {
+      border-bottom: 1px solid #263246;
+      padding: 8px 0;
+    }
+    .muted { color: #94a3b8; }
+    .strong { color: #f8fafc; font-weight: 600; }
+  </style>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <div id="terminal">
+    <div id="top">
+      <span id="symbol" class="strong">No synthetic</span>
+      <span id="block" class="muted"></span>
+      <span id="currency" class="muted"></span>
+    </div>
+    <div id="body">
+      <div id="chart"></div>
+      <div id="components"></div>
+    </div>
+    <div id="bottom">
+      <span id="ohlc">OHLC n/a</span>
+      <span id="mas">MA n/a</span>
+    </div>
+  </div>
+  <script>
+    const chartElement = document.getElementById('chart');
+    const chart = LightweightCharts.createChart(chartElement, {
+      layout: { background: { color: '#050914' }, textColor: '#cbd5e1' },
+      grid: { vertLines: { color: '#111827' }, horzLines: { color: '#111827' } },
+      rightPriceScale: { borderColor: '#334155' },
+      timeScale: { borderColor: '#334155', timeVisible: true, secondsVisible: false },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal }
+    });
+    const candleSeries = chart.addCandlestickSeries({
+      upColor: '#22c55e',
+      downColor: '#ef4444',
+      borderUpColor: '#22c55e',
+      borderDownColor: '#ef4444',
+      wickUpColor: '#86efac',
+      wickDownColor: '#fca5a5'
+    });
+    const ma20Series = chart.addLineSeries({ color: '#60a5fa', lineWidth: 1 });
+    const ma50Series = chart.addLineSeries({ color: '#fbbf24', lineWidth: 1 });
+    const ma200Series = chart.addLineSeries({ color: '#f472b6', lineWidth: 1 });
+
+    function money(value) {
+      if (value === null || value === undefined) return 'n/a';
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? numeric.toFixed(4) : String(value);
+    }
+
+    function componentRow(component) {
+      return `<div class="component">
+        <div class="strong">${component.Name}</div>
+        <div class="muted">${component.Epic}</div>
+        <div>${Number(component.Weight).toFixed(2)}% | last ${money(component.Last)}</div>
+        <div class="muted">bid ${money(component.Bid)} | offer ${money(component.Offer)} | ${component.LastTickText}</div>
+      </div>`;
+    }
+
+    function normalizeCandle(candle) {
+      return {
+        time: candle.Time ?? candle.time,
+        open: Number(candle.Open ?? candle.open),
+        high: Number(candle.High ?? candle.high),
+        low: Number(candle.Low ?? candle.low),
+        close: Number(candle.Close ?? candle.close)
+      };
+    }
+
+    function normalizeLine(point) {
+      return {
+        time: point.Time ?? point.time,
+        value: Number(point.Value ?? point.value)
+      };
+    }
+
+    function apply(payload, fit) {
+      payload = payload || {};
+      document.getElementById('symbol').textContent = payload.Symbol || 'No synthetic';
+      document.getElementById('block').textContent = payload.Block || '';
+      document.getElementById('currency').textContent = payload.CurrencyLabel || '';
+      document.getElementById('components').innerHTML = (payload.Components || []).map(componentRow).join('');
+
+      const candles = (payload.Candles || []).map(normalizeCandle);
+      const ma20 = (payload.Ma20 || []).map(normalizeLine);
+      const ma50 = (payload.Ma50 || []).map(normalizeLine);
+      const ma200 = (payload.Ma200 || []).map(normalizeLine);
+      candleSeries.setData(candles);
+      ma20Series.setData(ma20);
+      ma50Series.setData(ma50);
+      ma200Series.setData(ma200);
+
+      const last = candles[candles.length - 1];
+      document.getElementById('ohlc').textContent = last ? `O ${money(last.open)} H ${money(last.high)} L ${money(last.low)} C ${money(last.close)}` : 'OHLC n/a';
+      document.getElementById('mas').textContent = `MA20 ${ma20.length ? money(ma20[ma20.length - 1].value) : 'n/a'} | MA50 ${ma50.length ? money(ma50[ma50.length - 1].value) : 'n/a'} | MA200 ${ma200.length ? money(ma200[ma200.length - 1].value) : 'n/a'}`;
+      if (fit) chart.timeScale().fitContent();
+    }
+
+    window.renderTerminal = function(payload) { apply(payload, true); };
+    window.updateTerminal = function(payload) { apply(payload, false); };
+    window.clearTerminal = function() { apply({ Candles: [], Ma20: [], Ma50: [], Ma200: [], Components: [] }, true); };
+    window.addEventListener('resize', () => chart.resize(chartElement.clientWidth, chartElement.clientHeight));
+    chart.resize(chartElement.clientWidth, chartElement.clientHeight);
+  </script>
+</body>
+</html>
