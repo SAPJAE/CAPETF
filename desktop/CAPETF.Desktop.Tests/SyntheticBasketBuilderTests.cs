@@ -35,11 +35,14 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
         SyntheticTerminalHtmlExposesRequiredFunctions();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
+        SyntheticTerminalHtmlUsesPackagedKLineChartLibrary();
         SyntheticTerminalHtmlExposesResizeFunction();
         SyntheticTerminalHtmlExposesDecisionChartControls();
+        SyntheticTerminalHtmlExposesV2TerminalControls();
         DesktopDefaultSearchDoesNotFilterStocksByEtf();
         DesktopResizesTerminalChartWhenWorkspaceOpens();
         DesktopTerminalWorkspaceExposesChartFirstControls();
+        DesktopTerminalWorkspaceExposesV2ProfessionalControls();
         TerminalWorkspaceModeNameIsAvailable();
         TerminalStreamingEpicsUseOnlySelectedSyntheticComponents();
     }
@@ -664,6 +667,23 @@ public static class SyntheticBasketBuilderTests
         if (!File.Exists(scriptPath)) throw new Exception("packaged Lightweight Charts script must be copied to output");
     }
 
+    private static void SyntheticTerminalHtmlUsesPackagedKLineChartLibrary()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
+        var html = File.ReadAllText(path);
+        if (!html.Contains("klinecharts.min.js", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal V2 HTML must use the packaged KLineChart asset");
+        }
+
+        var scriptPath = Path.Combine(AppContext.BaseDirectory, "Assets", "klinecharts.min.js");
+        if (!File.Exists(scriptPath))
+        {
+            throw new Exception("packaged KLineChart asset must be copied to output");
+        }
+    }
+
     private static void SyntheticTerminalHtmlExposesResizeFunction()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
@@ -697,6 +717,30 @@ public static class SyntheticBasketBuilderTests
             if (!html.Contains(required, StringComparison.OrdinalIgnoreCase))
             {
                 throw new Exception($"terminal chart HTML missing decision-chart control {required}");
+            }
+        }
+    }
+
+    private static void SyntheticTerminalHtmlExposesV2TerminalControls()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
+        var html = File.ReadAllText(path);
+        foreach (var required in new[]
+        {
+            "klinecharts.init",
+            "window.setTerminalInterval",
+            "window.setTerminalIndicator",
+            "window.setTerminalDrawingTool",
+            "window.placeSyntheticPreviewOrder",
+            "terminal-order-ticket",
+            "SYNTHETIC FORMULA",
+            "VOL MATCH"
+        })
+        {
+            if (!html.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal V2 HTML missing expected control {required}");
             }
         }
     }
@@ -761,6 +805,42 @@ public static class SyntheticBasketBuilderTests
             if (!source.Contains(required, StringComparison.Ordinal))
             {
                 throw new Exception($"desktop terminal source missing chart-first wiring {required}");
+            }
+        }
+    }
+
+    private static void DesktopTerminalWorkspaceExposesV2ProfessionalControls()
+    {
+        var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml"));
+        foreach (var required in new[]
+        {
+            "x:Name=\"TerminalIntervalBox\"",
+            "x:Name=\"TerminalIndicatorBox\"",
+            "Click=\"TerminalBuyPreview_Click\"",
+            "Click=\"TerminalSellPreview_Click\"",
+            "Click=\"TerminalResetView_Click\"",
+        })
+        {
+            if (!xaml.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"desktop terminal V2 XAML missing expected control {required}");
+            }
+        }
+
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "SetTerminalIntervalAsync",
+            "SetTerminalIndicatorAsync",
+            "PlaceSyntheticPreviewOrderAsync",
+            "window.setTerminalInterval",
+            "window.setTerminalIndicator",
+            "window.placeSyntheticPreviewOrder",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"desktop terminal V2 source missing expected wiring {required}");
             }
         }
     }

@@ -387,6 +387,8 @@ public partial class MainWindow : Window
             TerminalStatusText.Text = $"{basket.Symbol}: {basket.Components.Count} components, {TerminalTimeframeText()} chart, similarity {basket.SimilarityScore:0.##}, avg vol {basket.AverageVolatilityPct:0.##}%.";
             await RenderTerminalAsync(basket, fit: true);
             await SetTerminalChartModeAsync();
+            await SetTerminalIntervalAsync();
+            await SetTerminalIndicatorAsync();
         }
         catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
         {
@@ -594,6 +596,46 @@ public partial class MainWindow : Window
     private async void TerminalCandleTypeBox_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
         await SetTerminalChartModeAsync();
 
+    private string TerminalIntervalText() =>
+        (TerminalIntervalBox?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "1W";
+
+    private string TerminalIndicatorText() =>
+        (TerminalIndicatorBox?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "MA";
+
+    private async Task SetTerminalIntervalAsync()
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null || TerminalIntervalBox is null) return;
+        var json = JsonSerializer.Serialize(TerminalIntervalText());
+        await TerminalChartWebView.ExecuteScriptAsync($"window.setTerminalInterval && window.setTerminalInterval({json});");
+    }
+
+    private async Task SetTerminalIndicatorAsync()
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null || TerminalIndicatorBox is null) return;
+        var json = JsonSerializer.Serialize(TerminalIndicatorText());
+        await TerminalChartWebView.ExecuteScriptAsync($"window.setTerminalIndicator && window.setTerminalIndicator({json});");
+    }
+
+    private async Task SetTerminalDrawingToolAsync(string tool)
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null) return;
+        var json = JsonSerializer.Serialize(tool);
+        await TerminalChartWebView.ExecuteScriptAsync($"window.setTerminalDrawingTool && window.setTerminalDrawingTool({json});");
+    }
+
+    private async Task PlaceSyntheticPreviewOrderAsync(string side)
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null) return;
+        var json = JsonSerializer.Serialize(side);
+        await TerminalChartWebView.ExecuteScriptAsync($"window.placeSyntheticPreviewOrder && window.placeSyntheticPreviewOrder({json}, 1);");
+    }
+
+    private async void TerminalIntervalBox_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        await SetTerminalIntervalAsync();
+
+    private async void TerminalIndicatorBox_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        await SetTerminalIndicatorAsync();
+
     private async void TerminalMaCheck_Changed(object sender, RoutedEventArgs e)
     {
         if (sender is not CheckBox checkBox) return;
@@ -612,6 +654,24 @@ public partial class MainWindow : Window
     {
         if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null) return;
         await TerminalChartWebView.ExecuteScriptAsync("window.fitTerminalChart && window.fitTerminalChart();");
+    }
+
+    private async void TerminalBuyPreview_Click(object sender, RoutedEventArgs e) =>
+        await PlaceSyntheticPreviewOrderAsync("buy");
+
+    private async void TerminalSellPreview_Click(object sender, RoutedEventArgs e) =>
+        await PlaceSyntheticPreviewOrderAsync("sell");
+
+    private async void TerminalResetView_Click(object sender, RoutedEventArgs e)
+    {
+        await SetTerminalDrawingToolAsync("");
+        await SetTerminalIntervalAsync();
+        await SetTerminalIndicatorAsync();
+        await ResizeTerminalChartAsync();
+        if (_terminalChartReady && TerminalChartWebView.CoreWebView2 is not null)
+        {
+            await TerminalChartWebView.ExecuteScriptAsync("window.fitTerminalChart && window.fitTerminalChart();");
+        }
     }
 
     private async void TerminalTimeframeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)

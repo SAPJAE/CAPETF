@@ -295,9 +295,24 @@
                                         <ComboBoxItem Content="Heikin Ashi"/>
                                         <ComboBoxItem Content="Line"/>
                                     </ComboBox>
+                                    <ComboBox x:Name="TerminalIntervalBox" SelectionChanged="TerminalIntervalBox_SelectionChanged" MinWidth="76" Margin="0,0,8,0">
+                                        <ComboBoxItem Content="1W" IsSelected="True"/>
+                                        <ComboBoxItem Content="1D"/>
+                                        <ComboBoxItem Content="6H"/>
+                                        <ComboBoxItem Content="4H"/>
+                                        <ComboBoxItem Content="2H"/>
+                                    </ComboBox>
+                                    <ComboBox x:Name="TerminalIndicatorBox" SelectionChanged="TerminalIndicatorBox_SelectionChanged" MinWidth="86" Margin="0,0,8,0">
+                                        <ComboBoxItem Content="MA" IsSelected="True"/>
+                                        <ComboBoxItem Content="EMA"/>
+                                        <ComboBoxItem Content="MACD"/>
+                                    </ComboBox>
                                     <CheckBox x:Name="TerminalMa20Check" Content="MA20" IsChecked="True" Checked="TerminalMaCheck_Changed" Unchecked="TerminalMaCheck_Changed" Foreground="{StaticResource InkBrush}" Margin="0,0,8,0"/>
                                     <CheckBox x:Name="TerminalMa50Check" Content="MA50" IsChecked="True" Checked="TerminalMaCheck_Changed" Unchecked="TerminalMaCheck_Changed" Foreground="{StaticResource InkBrush}" Margin="0,0,8,0"/>
                                     <CheckBox x:Name="TerminalMa200Check" Content="MA200" IsChecked="True" Checked="TerminalMaCheck_Changed" Unchecked="TerminalMaCheck_Changed" Foreground="{StaticResource InkBrush}" Margin="0,0,8,0"/>
+                                    <Button Content="Buy" Click="TerminalBuyPreview_Click" Background="#14532D" BorderBrush="#22C55E" Margin="0,0,8,0"/>
+                                    <Button Content="Sell" Click="TerminalSellPreview_Click" Background="#7F1D1D" BorderBrush="#EF4444" Margin="0,0,8,0"/>
+                                    <Button Content="Reset" Click="TerminalResetView_Click" Margin="0,0,8,0"/>
                                     <Button Content="Components" Click="ToggleTerminalComponents_Click" Margin="0,0,8,0"/>
                                     <Button Content="Fit" Click="FitTerminalChart_Click" Margin="0,0,8,0"/>
                                     <Button Content="Stream" Click="StreamTerminal_Click" Background="#216E8A" BorderBrush="#216E8A" Margin="0,0,8,0"/>
