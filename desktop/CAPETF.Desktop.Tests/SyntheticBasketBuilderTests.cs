@@ -36,8 +36,10 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlExposesRequiredFunctions();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
         SyntheticTerminalHtmlExposesResizeFunction();
+        SyntheticTerminalHtmlExposesDecisionChartControls();
         DesktopDefaultSearchDoesNotFilterStocksByEtf();
         DesktopResizesTerminalChartWhenWorkspaceOpens();
+        DesktopTerminalWorkspaceExposesChartFirstControls();
         TerminalWorkspaceModeNameIsAvailable();
         TerminalStreamingEpicsUseOnlySelectedSyntheticComponents();
     }
@@ -673,6 +675,32 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void SyntheticTerminalHtmlExposesDecisionChartControls()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
+        var html = File.ReadAllText(path);
+        foreach (var required in new[]
+        {
+            "window.setTerminalChartMode",
+            "window.toggleTerminalMa",
+            "window.toggleTerminalComponents",
+            "window.fitTerminalChart",
+            "heikin",
+            "line",
+            "subscribeCrosshairMove",
+            "MA20",
+            "MA50",
+            "MA200",
+        })
+        {
+            if (!html.Contains(required, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new Exception($"terminal chart HTML missing decision-chart control {required}");
+            }
+        }
+    }
+
     private static void DesktopDefaultSearchDoesNotFilterStocksByEtf()
     {
         var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml"));
@@ -692,6 +720,48 @@ public static class SyntheticBasketBuilderTests
             !source.Contains("_ = ResizeTerminalChartAsync();", StringComparison.Ordinal))
         {
             throw new Exception("desktop must resize the terminal chart after making the hidden terminal workspace visible");
+        }
+    }
+
+    private static void DesktopTerminalWorkspaceExposesChartFirstControls()
+    {
+        var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml"));
+        foreach (var required in new[]
+        {
+            "x:Name=\"LeftColumn\"",
+            "x:Name=\"RightColumn\"",
+            "x:Name=\"TerminalTimeframeBox\"",
+            "x:Name=\"TerminalCandleTypeBox\"",
+            "x:Name=\"TerminalMa20Check\"",
+            "x:Name=\"TerminalMa50Check\"",
+            "x:Name=\"TerminalMa200Check\"",
+            "Click=\"StreamTerminal_Click\"",
+            "Click=\"FitTerminalChart_Click\"",
+            "Click=\"ToggleTerminalComponents_Click\"",
+        })
+        {
+            if (!xaml.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"desktop terminal XAML missing chart-first control {required}");
+            }
+        }
+
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "ApplyTerminalLayout",
+            "SelectedTerminalResolution",
+            "SetTerminalChartModeAsync",
+            "window.setTerminalChartMode",
+            "window.toggleTerminalMa",
+            "window.toggleTerminalComponents",
+            "window.fitTerminalChart",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"desktop terminal source missing chart-first wiring {required}");
+            }
         }
     }
 

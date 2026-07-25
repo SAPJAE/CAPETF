@@ -25,6 +25,8 @@ public partial class MainWindow : Window
     private readonly LatestOperationCoordinator _dataOperations = new();
     private SyntheticBasket? _selectedSyntheticBasket;
     private SyntheticBasket? _terminalBasket;
+    private static readonly GridLength NormalLeftWidth = new(292);
+    private static readonly GridLength NormalRightWidth = new(380);
 
     public MainWindow()
     {
@@ -318,7 +320,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void OpenTerminal_Click(object sender, RoutedEventArgs e)
+    private async void OpenTerminal_Click(object sender, RoutedEventArgs e) => await BuildTerminalAsync();
+
+    private async Task BuildTerminalAsync()
     {
         if (_api.Session is null)
         {
@@ -339,7 +343,12 @@ public partial class MainWindow : Window
             _terminalBasket = null;
             await ClearTerminalAsync();
             var instruments = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments);
-            TerminalStatusText.Text = $"Loading three-year weekly candles for {block}: scanning up to {instruments.Count} stocks...";
+            var terminalResolution = SelectedTerminalResolution();
+            var requestResolution = TerminalRequestResolution(terminalResolution);
+            var maxCandles = TerminalMaxCandles(terminalResolution);
+            var minimumCandles = TerminalMinimumCandles(terminalResolution);
+            var periodsPerYear = TerminalPeriodsPerYear(terminalResolution);
+            TerminalStatusText.Text = $"Loading {TerminalTimeframeText().ToLowerInvariant()} candles for {block}: scanning up to {instruments.Count} stocks...";
             var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>();
             var checkedCount = 0;
             foreach (var item in instruments)
@@ -347,10 +356,11 @@ public partial class MainWindow : Window
                 checkedCount++;
                 try
                 {
-                    var rows = await _api.GetOhlcPricesAsync(item.Epic, "WEEK", 260, operation.Token);
+                    var rows = await _api.GetOhlcPricesAsync(item.Epic, requestResolution, maxCandles, operation.Token);
+                    rows = TransformTerminalCandles(rows, terminalResolution);
                     if (!_dataOperations.IsCurrent(operation)) return;
-                    if (rows.Count >= 120) candles[item.Epic] = rows;
-                    TerminalStatusText.Text = $"Loading three-year weekly candles for {block}: {candles.Count} usable of {checkedCount} checked...";
+                    if (rows.Count >= minimumCandles) candles[item.Epic] = rows;
+                    TerminalStatusText.Text = $"Loading {TerminalTimeframeText().ToLowerInvariant()} candles for {block}: {candles.Count} usable of {checkedCount} checked...";
                     if (candles.Count >= 32 && checkedCount >= 40) break;
                 }
                 catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
@@ -365,17 +375,18 @@ public partial class MainWindow : Window
             }
 
             if (!_dataOperations.IsCurrent(operation)) return;
-            var basket = SyntheticTerminalSelector.SelectBest(block, instruments, candles, periodsPerYear: 52);
+            var basket = SyntheticTerminalSelector.SelectBest(block, instruments, candles, periodsPerYear);
             if (basket is null)
             {
-                TerminalStatusText.Text = $"No terminal synthetic instrument could be built for {block}. Checked {checkedCount} stocks; {candles.Count} had enough weekly history.";
+                TerminalStatusText.Text = $"No terminal synthetic instrument could be built for {block}. Checked {checkedCount} stocks; {candles.Count} had enough {TerminalTimeframeText().ToLowerInvariant()} history.";
                 return;
             }
 
             _terminalBasket = basket;
             TerminalHeaderText.Text = $"{basket.Symbol} | {basket.Block}";
-            TerminalStatusText.Text = $"{basket.Symbol}: {basket.Components.Count} components, similarity {basket.SimilarityScore:0.##}, avg vol {basket.AverageVolatilityPct:0.##}%.";
+            TerminalStatusText.Text = $"{basket.Symbol}: {basket.Components.Count} components, {TerminalTimeframeText()} chart, similarity {basket.SimilarityScore:0.##}, avg vol {basket.AverageVolatilityPct:0.##}%.";
             await RenderTerminalAsync(basket, fit: true);
+            await SetTerminalChartModeAsync();
         }
         catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
         {
@@ -386,6 +397,70 @@ public partial class MainWindow : Window
             TerminalStatusText.Text = "Terminal build failed.";
             MessageBox.Show(ex.Message, "Synthetic terminal", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    private string TerminalTimeframeText() =>
+        (TerminalTimeframeBox?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Weekly";
+
+    private string SelectedTerminalResolution() =>
+        TerminalTimeframeText() switch
+        {
+            "Daily" => "DAY",
+            "4H" => "HOUR_4",
+            "2H" => "HOUR_2",
+            "6H" => "HOUR_6",
+            _ => "WEEK",
+        };
+
+    private static string TerminalRequestResolution(string terminalResolution) =>
+        terminalResolution is "HOUR_2" or "HOUR_6" ? "HOUR" : terminalResolution;
+
+    private static int TerminalMaxCandles(string terminalResolution) =>
+        terminalResolution switch
+        {
+            "WEEK" => 260,
+            "DAY" => 780,
+            "HOUR_4" => 600,
+            "HOUR_2" or "HOUR_6" => 720,
+            _ => 260,
+        };
+
+    private static int TerminalMinimumCandles(string terminalResolution) =>
+        terminalResolution == "WEEK" ? 120 : 120;
+
+    private static int TerminalPeriodsPerYear(string terminalResolution) =>
+        terminalResolution switch
+        {
+            "DAY" => 252,
+            "HOUR_2" => 252 * 12,
+            "HOUR_4" => 252 * 6,
+            "HOUR_6" => 252 * 4,
+            _ => 52,
+        };
+
+    private static IReadOnlyList<OhlcPoint> TransformTerminalCandles(IReadOnlyList<OhlcPoint> source, string terminalResolution) =>
+        terminalResolution switch
+        {
+            "HOUR_2" => AggregateCandles(source, 2),
+            "HOUR_6" => AggregateCandles(source, 6),
+            _ => source.OrderBy(candle => candle.Time).ToList(),
+        };
+
+    private static IReadOnlyList<OhlcPoint> AggregateCandles(IReadOnlyList<OhlcPoint> source, int bucketSize)
+    {
+        var ordered = source.OrderBy(candle => candle.Time).ToList();
+        var result = new List<OhlcPoint>();
+        for (var index = 0; index + bucketSize <= ordered.Count; index += bucketSize)
+        {
+            var bucket = ordered.Skip(index).Take(bucketSize).ToList();
+            result.Add(new OhlcPoint(
+                bucket[^1].Time,
+                bucket[0].Open,
+                bucket.Max(candle => candle.High),
+                bucket.Min(candle => candle.Low),
+                bucket[^1].Close));
+        }
+        return result;
     }
 
     private string? SelectedTerminalBlock()
@@ -496,6 +571,55 @@ public partial class MainWindow : Window
         }
     }
 
+    private async Task SetTerminalChartModeAsync()
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null || TerminalCandleTypeBox is null) return;
+        var selected = (TerminalCandleTypeBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Candles";
+        var mode = selected switch
+        {
+            "Heikin Ashi" => "heikin",
+            "Line" => "line",
+            _ => "candles",
+        };
+        var json = JsonSerializer.Serialize(mode);
+        await TerminalChartWebView.ExecuteScriptAsync($"window.setTerminalChartMode && window.setTerminalChartMode({json});");
+    }
+
+    private async Task ToggleTerminalMaAsync(int period, bool visible)
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null) return;
+        await TerminalChartWebView.ExecuteScriptAsync($"window.toggleTerminalMa && window.toggleTerminalMa({period}, {visible.ToString().ToLowerInvariant()});");
+    }
+
+    private async void TerminalCandleTypeBox_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        await SetTerminalChartModeAsync();
+
+    private async void TerminalMaCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (sender is not CheckBox checkBox) return;
+        var period = checkBox == TerminalMa20Check ? 20 : checkBox == TerminalMa50Check ? 50 : 200;
+        await ToggleTerminalMaAsync(period, checkBox.IsChecked == true);
+    }
+
+    private async void ToggleTerminalComponents_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null) return;
+        await TerminalChartWebView.ExecuteScriptAsync("window.toggleTerminalComponents && window.toggleTerminalComponents();");
+        await ResizeTerminalChartAsync();
+    }
+
+    private async void FitTerminalChart_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null) return;
+        await TerminalChartWebView.ExecuteScriptAsync("window.fitTerminalChart && window.fitTerminalChart();");
+    }
+
+    private async void TerminalTimeframeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded || _terminalBasket is null || CurrentWorkspaceMode() != SyntheticTerminalWorkspace.ModeName) return;
+        await BuildTerminalAsync();
+    }
+
     private IEnumerable<MarketInstrument> FilterDataset(IEnumerable<MarketInstrument> markets)
     {
         var selected = (DatasetBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Stocks";
@@ -528,17 +652,7 @@ public partial class MainWindow : Window
 
         if (CurrentWorkspaceMode() == SyntheticTerminalWorkspace.ModeName)
         {
-            if (_terminalBasket is null)
-            {
-                TerminalStatusText.Text = "Build a terminal synthetic instrument before streaming.";
-                return;
-            }
-
-            var terminalEpics = SyntheticTerminalWorkspace.StreamingEpics(_terminalBasket);
-            await _streaming.SubscribeQuotesAsync(_api.Session, terminalEpics);
-            await _streaming.SubscribeOhlcAsync(_api.Session, terminalEpics, "WEEK");
-            ConnectionText.Text = $"Streaming synthetic {_terminalBasket.Symbol}";
-            TerminalStatusText.Text = $"Streaming {_terminalBasket.Symbol}: {terminalEpics.Count} component epics.";
+            await StartTerminalStreamingAsync();
             return;
         }
 
@@ -552,6 +666,41 @@ public partial class MainWindow : Window
         await _streaming.SubscribeQuotesAsync(_api.Session, epics);
         await _streaming.SubscribeOhlcAsync(_api.Session, epics, SelectedResolution());
         ConnectionText.Text = $"Streaming {epics.Count} instruments";
+    }
+
+    private async void StreamTerminal_Click(object sender, RoutedEventArgs e)
+    {
+        if (_api.Session is null)
+        {
+            MessageBox.Show("Connect to Capital.com first.", "Realtime", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_streaming is null)
+        {
+            _streaming = new CapitalStreamingClient();
+            _streaming.QuoteReceived += Streaming_QuoteReceived;
+            _streaming.StatusChanged += (_, message) => Dispatcher.Invoke(() => ConnectionText.Text = message);
+            await _streaming.ConnectAsync(_api.Session);
+        }
+
+        await StartTerminalStreamingAsync();
+    }
+
+    private async Task StartTerminalStreamingAsync()
+    {
+        if (_api.Session is null) return;
+        if (_terminalBasket is null)
+        {
+            TerminalStatusText.Text = "Build a terminal synthetic instrument before streaming.";
+            return;
+        }
+
+        var terminalEpics = SyntheticTerminalWorkspace.StreamingEpics(_terminalBasket);
+        await _streaming!.SubscribeQuotesAsync(_api.Session, terminalEpics);
+        await _streaming.SubscribeOhlcAsync(_api.Session, terminalEpics, TerminalRequestResolution(SelectedTerminalResolution()));
+        ConnectionText.Text = $"Streaming synthetic {_terminalBasket.Symbol}";
+        TerminalStatusText.Text = $"Streaming {_terminalBasket.Symbol}: {terminalEpics.Count} component epics.";
     }
 
     private void UpdateSyntheticBasketsForQuote(QuoteUpdate update)
@@ -856,6 +1005,7 @@ public partial class MainWindow : Window
         SyntheticPanel.Visibility = mode == "Synthetic" ? Visibility.Visible : Visibility.Collapsed;
         DashboardScrollViewer.Visibility = mode == SyntheticTerminalWorkspace.ModeName ? Visibility.Collapsed : Visibility.Visible;
         TerminalPanel.Visibility = mode == SyntheticTerminalWorkspace.ModeName ? Visibility.Visible : Visibility.Collapsed;
+        ApplyTerminalLayout(mode == SyntheticTerminalWorkspace.ModeName);
         if (mode == "Synthetic") RefreshSyntheticBlocks();
         if (mode == SyntheticTerminalWorkspace.ModeName)
         {
@@ -874,6 +1024,14 @@ public partial class MainWindow : Window
             "Terminal" => "Load stocks, open Terminal, then build one chart-first synthetic instrument.",
             _ => ResultText.Text,
         };
+    }
+
+    private void ApplyTerminalLayout(bool terminalMode)
+    {
+        if (LeftColumn is null || CenterColumn is null || RightColumn is null) return;
+        LeftColumn.Width = terminalMode ? new GridLength(0) : NormalLeftWidth;
+        RightColumn.Width = terminalMode ? new GridLength(0) : NormalRightWidth;
+        CenterColumn.Width = new GridLength(1, GridUnitType.Star);
     }
 
     private string CurrentWorkspaceMode() =>
