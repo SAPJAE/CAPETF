@@ -13,6 +13,7 @@ public static class SyntheticBasketBuilderTests
         InverseVolatilityWeightsSumToOneHundred();
         InverseVolatilityWeightsRespectCapsAndMinimums();
         SyntheticCandlesUseWeightedOhlc();
+        SyntheticFormulaUsesEqualNotionalWeights();
         SyntheticCandlesHandleDuplicateCachedDates();
         SyntheticBasketsDoNotMixCurrencies();
         SyntheticBasketsKeepBlankCurrenciesTogether();
@@ -156,6 +157,28 @@ public static class SyntheticBasketBuilderTests
         AssertNear(22m, first.High, "weighted high should use component highs");
         AssertNear(19m, first.Low, "weighted low should use component lows");
         AssertNear(21m, first.Close, "weighted close should use component closes");
+    }
+
+    private static void SyntheticFormulaUsesEqualNotionalWeights()
+    {
+        var a = CreateStock("EQ-A", "Equal A");
+        var b = CreateStock("EQ-B", "Equal B");
+        var c = CreateStock("EQ-C", "Equal C");
+        var day = DateTimeOffset.Parse("2024-01-01T00:00:00Z");
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>
+        {
+            ["EQ-A"] = CreateReturnCandles(day, [0.01m, -0.01m, 0.02m]),
+            ["EQ-B"] = CreateReturnCandles(day, [0.04m, -0.04m, 0.02m]),
+            ["EQ-C"] = CreateReturnCandles(day, [0.10m, -0.10m, 0.02m]),
+        };
+
+        var result = SyntheticBasketBuilder.Build("US / USD / Tech", [a, b, c], candles, maxBaskets: 1);
+        var basket = result.Baskets.Single();
+
+        foreach (var component in basket.Components)
+        {
+            AssertNear(100m / 3m, component.Weight, "synthetic price formula should equal-weight every leg", 0.0001m);
+        }
     }
 
     private static void SyntheticCandlesHandleDuplicateCachedDates()
