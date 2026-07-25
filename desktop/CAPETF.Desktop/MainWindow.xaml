@@ -106,7 +106,7 @@
 
                         <TextBlock Text="Markets" FontSize="16" FontWeight="SemiBold"/>
                         <TextBlock Text="Search" Foreground="{StaticResource MutedBrush}"/>
-                        <TextBox x:Name="SearchBox" Text="ETF" KeyDown="SearchBox_KeyDown"/>
+                        <TextBox x:Name="SearchBox" KeyDown="SearchBox_KeyDown"/>
 
                         <Grid>
                             <Grid.ColumnDefinitions>

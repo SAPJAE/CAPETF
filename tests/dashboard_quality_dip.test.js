@@ -445,6 +445,12 @@ test('ETF and Sector cards omit the Quality Dip block', () => {
   assert.doesNotMatch(sectorHtml, /quality-dip|Quality dip/);
 });
 
+test('dashboard exposes Terminal tab and renderer', () => {
+  assert.match(dashboardSource, /data-dataset="terminal">Terminal<\/button>/);
+  assert.match(dashboardSource, /function renderTerminalWorkspace\(items\)/);
+  assert.match(dashboardSource, /if \(activeDataset === 'terminal'\)/);
+});
+
 (async () => {
   let failures = 0;
   for (const { name, callback } of tests) {

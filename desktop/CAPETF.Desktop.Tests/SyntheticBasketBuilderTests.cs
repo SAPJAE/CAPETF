@@ -34,6 +34,9 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
         SyntheticTerminalHtmlExposesRequiredFunctions();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
+        SyntheticTerminalHtmlExposesResizeFunction();
+        DesktopDefaultSearchDoesNotFilterStocksByEtf();
+        DesktopResizesTerminalChartWhenWorkspaceOpens();
         TerminalWorkspaceModeNameIsAvailable();
         TerminalStreamingEpicsUseOnlySelectedSyntheticComponents();
     }
@@ -640,6 +643,39 @@ public static class SyntheticBasketBuilderTests
         if (!File.Exists(scriptPath)) throw new Exception("packaged Lightweight Charts script must be copied to output");
     }
 
+    private static void SyntheticTerminalHtmlExposesResizeFunction()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
+        var html = File.ReadAllText(path);
+        if (!html.Contains("window.resizeTerminal", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal chart HTML must expose window.resizeTerminal so WPF can resize a chart initialized while hidden");
+        }
+    }
+
+    private static void DesktopDefaultSearchDoesNotFilterStocksByEtf()
+    {
+        var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml"));
+        if (xaml.Contains("x:Name=\"DatasetBox\"", StringComparison.Ordinal) &&
+            xaml.Contains("<ComboBoxItem Content=\"Stocks\" IsSelected=\"True\"/>", StringComparison.Ordinal) &&
+            xaml.Contains("x:Name=\"SearchBox\" Text=\"ETF\"", StringComparison.Ordinal))
+        {
+            throw new Exception("desktop default search must not use ETF while the selected dataset is Stocks");
+        }
+    }
+
+    private static void DesktopResizesTerminalChartWhenWorkspaceOpens()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml.cs"));
+        if (!source.Contains("ResizeTerminalChartAsync", StringComparison.Ordinal) ||
+            !source.Contains("window.resizeTerminal", StringComparison.Ordinal) ||
+            !source.Contains("_ = ResizeTerminalChartAsync();", StringComparison.Ordinal))
+        {
+            throw new Exception("desktop must resize the terminal chart after making the hidden terminal workspace visible");
+        }
+    }
+
     private static void TerminalWorkspaceModeNameIsAvailable()
     {
         if (SyntheticTerminalWorkspace.ModeName != "Terminal")
@@ -722,5 +758,17 @@ public static class SyntheticBasketBuilderTests
     private static void AssertNear(decimal expected, decimal actual, string message, decimal tolerance = 0.0001m)
     {
         if (Math.Abs(expected - actual) > tolerance) throw new Exception($"{message}. Expected {expected}, got {actual}");
+    }
+
+    private static string SourcePath(params string[] parts)
+    {
+        var directory = new DirectoryInfo(Directory.GetCurrentDirectory());
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "index.html")))
+        {
+            directory = directory.Parent;
+        }
+
+        if (directory is null) throw new Exception("repository root could not be located");
+        return Path.Combine([directory.FullName, .. parts]);
     }
 }
