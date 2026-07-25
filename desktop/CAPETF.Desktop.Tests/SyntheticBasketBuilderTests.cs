@@ -36,6 +36,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHistoryLoadCandidatesScanPastTheFirstSparseRows();
         SeededSyntheticSelectorBuildsNikeBasket();
         SeededSyntheticSelectorPrefersExactNikeTickerOverNameContains();
+        SeededSyntheticSelectorDoesNotResolveShortTickersByLooseNameContains();
         SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
         SyntheticTerminalHtmlExposesRequiredFunctions();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
@@ -756,6 +757,24 @@ public static class SyntheticBasketBuilderTests
         if (basket.Components.All(component => component.Instrument.Epic != "NKE")) throw new Exception("exact NKE seed must include Nike");
     }
 
+    private static void SeededSyntheticSelectorDoesNotResolveShortTickersByLooseNameContains()
+    {
+        var day = DateTimeOffset.Parse("2024-01-01T00:00:00Z");
+        var instruments = new[]
+        {
+            CreateSeedStock("AAA", "Sapphire Holdings"),
+            CreateSeedStock("BBB", "Comparable One"),
+            CreateSeedStock("CCC", "Comparable Two"),
+        };
+        var candles = instruments.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => CreateVariableCandles(day, 100m));
+
+        var basket = SeededSyntheticSelector.SelectSeededBasket("SAP", "US / USD / All", instruments, candles, periodsPerYear: 52);
+
+        if (basket is not null) throw new Exception("short ticker-like seeds must not resolve by loose company-name contains matches");
+    }
+
     private static void SyntheticTerminalHtmlUsesPackagedChartLibrary()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
@@ -1038,6 +1057,8 @@ public static class SyntheticBasketBuilderTests
             "SendTerminalPayloadAsync",
             "window.renderTerminal",
             "window.updateTerminal",
+            "window.clearTerminal",
+            "ClearTerminalChartAsync",
             "window.fitTerminalChart",
             "Heikin Ashi",
         })
