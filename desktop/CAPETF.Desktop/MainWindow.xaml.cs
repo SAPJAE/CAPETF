@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -18,12 +19,21 @@ public partial class MainWindow : Window
     private readonly List<MarketInstrument> _instruments = [];
     private readonly WorkspaceState _workspace;
     private MarketInstrument? _selected;
+    private bool _syntheticChartReady;
+    private bool _terminalChartReady;
+    private readonly ObservableCollection<SyntheticBasket> _syntheticBaskets = [];
+    private readonly LatestOperationCoordinator _dataOperations = new();
+    private SyntheticBasket? _selectedSyntheticBasket;
+    private SyntheticBasket? _terminalBasket;
 
     public MainWindow()
     {
         InitializeComponent();
         _workspace = _workspaceStore.Load();
         GroupList.ItemsSource = _groups;
+        SyntheticBasketList.ItemsSource = _syntheticBaskets;
+        InitializeSyntheticChartAsync();
+        InitializeTerminalChartAsync();
         LoadSavedCredentials();
         UpdateStats();
         ApplyWorkspaceMode();
@@ -90,13 +100,17 @@ public partial class MainWindow : Window
 
     private async Task SearchAsync()
     {
+        var operation = _dataOperations.Begin();
         try
         {
             ResultText.Text = "Searching Capital.com...";
+            SyntheticStatusText.Text = "Synthetic baskets cleared for new search.";
             _groups.Clear();
+            ClearSyntheticResults();
             _instruments.Clear();
 
-            var markets = await _api.SearchMarketsAsync(SearchBox.Text.Trim());
+            var markets = await _api.SearchMarketsAsync(SearchBox.Text.Trim(), operation.Token);
+            if (!_dataOperations.IsCurrent(operation)) return;
             var filtered = FilterDataset(markets).Take(240).ToList();
             foreach (var item in filtered)
             {
@@ -104,36 +118,54 @@ public partial class MainWindow : Window
                 _instruments.Add(item);
             }
 
-            await LoadHistoryForVisibleAsync(_instruments.Take(40));
+            await LoadHistoryForVisibleAsync(_instruments.Take(40), operation);
+            if (!_dataOperations.IsCurrent(operation)) return;
             RebuildGroups();
+            RefreshSyntheticBlocks();
             ResultText.Text = _instruments.Count == 0
                 ? "0 instruments found. Check Dataset vs Search, for example use Dataset ETFs with search ETF."
                 : $"{_instruments.Count} instruments loaded. Expand a group, then start realtime for visible.";
             UpdatedText.Text = DateTime.Now.ToString("HH:mm:ss");
             UpdateDiscoveryStrip();
             UpdateStats();
+            SyntheticStatusText.Text = _instruments.Any(CapitalInstrumentTypes.IsStock)
+                ? "Stocks loaded. Choose a block and build synthetic baskets."
+                : "No stock candidates found in this search.";
+        }
+        catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
+            if (!_dataOperations.IsCurrent(operation)) return;
             ResultText.Text = "Search failed";
             MessageBox.Show(ex.Message, "Search", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
-    private async Task LoadHistoryForVisibleAsync(IEnumerable<MarketInstrument> instruments)
+    private async Task LoadHistoryForVisibleAsync(
+        IEnumerable<MarketInstrument> instruments,
+        OperationTicket? operation = null)
     {
         var resolution = SelectedResolution();
+        var cancellationToken = operation?.Token ?? CancellationToken.None;
         foreach (var item in instruments)
         {
             try
             {
-                var points = await _api.GetPricesAsync(item.Epic, resolution, resolution == "DAY" ? 260 : 96);
+                var points = await _api.GetPricesAsync(item.Epic, resolution, resolution == "DAY" ? 260 : 96, cancellationToken);
+                if (operation is { } current && !_dataOperations.IsCurrent(current)) return;
                 item.Points.Clear();
                 foreach (var point in points) item.Points.Add(point);
                 UpdateDerivedValues(item);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch
             {
+                if (operation is { } current && !_dataOperations.IsCurrent(current)) return;
                 item.Status = "History n/a";
             }
         }
@@ -148,11 +180,310 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void InitializeSyntheticChartAsync()
+    {
+        try
+        {
+            await SyntheticChartWebView.EnsureCoreWebView2Async();
+            _syntheticChartReady = false;
+            SyntheticChartWebView.NavigationCompleted += SyntheticChartWebView_NavigationCompleted;
+            var chartPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-chart.html");
+            SyntheticChartWebView.Source = new Uri(chartPath);
+        }
+        catch (Exception ex)
+        {
+            SyntheticStatusText.Text = $"Synthetic chart unavailable: {ex.Message}";
+        }
+    }
+
+    private void SyntheticChartWebView_NavigationCompleted(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs e)
+    {
+        _syntheticChartReady = e.IsSuccess;
+        if (!e.IsSuccess)
+        {
+            SyntheticStatusText.Text = "Synthetic chart navigation failed.";
+            return;
+        }
+
+        if (_selectedSyntheticBasket is not null)
+        {
+            RenderSyntheticCandlesAsync(_selectedSyntheticBasket);
+        }
+    }
+
+    private async void InitializeTerminalChartAsync()
+    {
+        try
+        {
+            await TerminalChartWebView.EnsureCoreWebView2Async();
+            _terminalChartReady = false;
+            TerminalChartWebView.NavigationCompleted += TerminalChartWebView_NavigationCompleted;
+            var chartPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+            TerminalChartWebView.Source = new Uri(chartPath);
+        }
+        catch (Exception ex)
+        {
+            TerminalStatusText.Text = $"Terminal chart unavailable: {ex.Message}";
+        }
+    }
+
+    private async void TerminalChartWebView_NavigationCompleted(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs e)
+    {
+        _terminalChartReady = e.IsSuccess;
+        if (!e.IsSuccess)
+        {
+            TerminalStatusText.Text = "Terminal chart navigation failed.";
+            return;
+        }
+
+        if (_terminalBasket is not null)
+        {
+            await RenderTerminalAsync(_terminalBasket, fit: true);
+        }
+    }
+
+    private void RefreshSyntheticBlocks()
+    {
+        if (SyntheticBlockBox is null) return;
+        var selected = SyntheticBlockBox.SelectedItem?.ToString();
+        SyntheticBlockBox.Items.Clear();
+        foreach (var block in _instruments.Where(CapitalInstrumentTypes.IsStock).Select(item => item.Group).Distinct().OrderBy(value => value))
+        {
+            SyntheticBlockBox.Items.Add(block);
+        }
+        if (selected is not null && SyntheticBlockBox.Items.Contains(selected)) SyntheticBlockBox.SelectedItem = selected;
+        else if (SyntheticBlockBox.Items.Count > 0) SyntheticBlockBox.SelectedIndex = 0;
+    }
+
+    private async void BuildSynthetic_Click(object sender, RoutedEventArgs e)
+    {
+        if (SyntheticBlockBox.SelectedItem is not string block)
+        {
+            SyntheticStatusText.Text = "Select a block first.";
+            return;
+        }
+
+        var timeframe = (SyntheticTimeframeBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Weekly";
+        var resolution = timeframe == "Daily" ? "DAY" : "WEEK";
+        var maxCandles = timeframe == "Daily" ? 1000 : 260;
+        var periodsPerYear = timeframe == "Daily" ? 252 : 52;
+        var operation = _dataOperations.Begin();
+
+        try
+        {
+            ClearSyntheticResults();
+            SyntheticStatusText.Text = $"Loading {timeframe.ToLowerInvariant()} four-year candles...";
+            var instruments = _instruments
+                .Where(item => item.Group == block && CapitalInstrumentTypes.IsStock(item))
+                .Take(36)
+                .ToList();
+            var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>();
+            foreach (var item in instruments)
+            {
+                try
+                {
+                    var rows = await _api.GetOhlcPricesAsync(item.Epic, resolution, maxCandles, operation.Token);
+                    if (!_dataOperations.IsCurrent(operation)) return;
+                    if (rows.Count >= 120) candles[item.Epic] = rows;
+                }
+                catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch
+                {
+                    if (!_dataOperations.IsCurrent(operation)) return;
+                    item.Status = "Synthetic history n/a";
+                }
+            }
+
+            if (!_dataOperations.IsCurrent(operation)) return;
+            var result = SyntheticBasketBuilder.Build(block, instruments, candles, periodsPerYear: periodsPerYear);
+            if (!_dataOperations.IsCurrent(operation)) return;
+            if (result.Baskets.Count == 0) ClearSyntheticResults();
+            foreach (var basket in result.Baskets) _syntheticBaskets.Add(basket);
+            SyntheticStatusText.Text = result.Message;
+            if (_syntheticBaskets.Count > 0) SyntheticBasketList.SelectedIndex = 0;
+        }
+        catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            if (!_dataOperations.IsCurrent(operation)) return;
+            SyntheticStatusText.Text = "Synthetic build failed.";
+            MessageBox.Show(ex.Message, "Synthetic baskets", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private async void OpenTerminal_Click(object sender, RoutedEventArgs e)
+    {
+        if (_api.Session is null)
+        {
+            MessageBox.Show("Connect to Capital.com first.", "Synthetic terminal", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var block = SelectedTerminalBlock();
+        if (block is null)
+        {
+            TerminalStatusText.Text = "Load stock markets before building the terminal.";
+            return;
+        }
+
+        var operation = _dataOperations.Begin();
+        try
+        {
+            _terminalBasket = null;
+            await ClearTerminalAsync();
+            TerminalStatusText.Text = $"Loading three-year weekly candles for {block}...";
+            var instruments = _instruments
+                .Where(item => item.Group == block && CapitalInstrumentTypes.IsStock(item))
+                .Take(36)
+                .ToList();
+            var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>();
+            foreach (var item in instruments)
+            {
+                try
+                {
+                    var rows = await _api.GetOhlcPricesAsync(item.Epic, "WEEK", 260, operation.Token);
+                    if (!_dataOperations.IsCurrent(operation)) return;
+                    if (rows.Count >= 120) candles[item.Epic] = rows;
+                }
+                catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch
+                {
+                    if (!_dataOperations.IsCurrent(operation)) return;
+                    item.Status = "Terminal history n/a";
+                }
+            }
+
+            if (!_dataOperations.IsCurrent(operation)) return;
+            var basket = SyntheticTerminalSelector.SelectBest(block, instruments, candles, periodsPerYear: 52);
+            if (basket is null)
+            {
+                TerminalStatusText.Text = $"No terminal synthetic instrument could be built for {block}.";
+                return;
+            }
+
+            _terminalBasket = basket;
+            TerminalHeaderText.Text = $"{basket.Symbol} | {basket.Block}";
+            TerminalStatusText.Text = $"{basket.Symbol}: {basket.Components.Count} components, similarity {basket.SimilarityScore:0.##}, avg vol {basket.AverageVolatilityPct:0.##}%.";
+            await RenderTerminalAsync(basket, fit: true);
+        }
+        catch (OperationCanceledException) when (operation.Token.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            if (!_dataOperations.IsCurrent(operation)) return;
+            TerminalStatusText.Text = "Terminal build failed.";
+            MessageBox.Show(ex.Message, "Synthetic terminal", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private string? SelectedTerminalBlock()
+    {
+        if (SyntheticBlockBox.SelectedItem is string selected && _instruments.Any(item => item.Group == selected))
+        {
+            return selected;
+        }
+        return _instruments
+            .Where(CapitalInstrumentTypes.IsStock)
+            .GroupBy(item => item.Group)
+            .OrderByDescending(group => group.Count())
+            .Select(group => group.Key)
+            .FirstOrDefault();
+    }
+
+    private void ClearSyntheticResults()
+    {
+        _selectedSyntheticBasket = null;
+        SyntheticBasketList.SelectedItem = null;
+        _syntheticBaskets.Clear();
+        SyntheticDetailText.Text = "Select a synthetic symbol.";
+        SyntheticComponentList.ItemsSource = null;
+        ClearSyntheticCandlesAsync();
+    }
+
+    private async void ClearSyntheticCandlesAsync()
+    {
+        if (!_syntheticChartReady || SyntheticChartWebView.CoreWebView2 is null) return;
+        await SyntheticChartWebView.ExecuteScriptAsync("window.renderSyntheticCandles([]);");
+    }
+
+    private void SyntheticBasketList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (SyntheticBasketList.SelectedItem is not SyntheticBasket basket) return;
+        _selectedSyntheticBasket = basket;
+        SyntheticComponentList.ItemsSource = basket.Components;
+        ShowSyntheticDetails(basket);
+        RenderSyntheticCandlesAsync(basket);
+    }
+
+    private void ShowSyntheticDetails(SyntheticBasket basket)
+    {
+        var updated = basket.LastUpdated?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "n/a";
+        SyntheticDetailText.Text =
+            $"{basket.Symbol} | {basket.Block} | {basket.BasketPrice:0.####} | avg vol {basket.AverageVolatilityPct:0.##}% | similarity {basket.SimilarityScore:0.##} | updated {updated}";
+    }
+
+    private async void RenderSyntheticCandlesAsync(SyntheticBasket basket)
+    {
+        if (!_syntheticChartReady || SyntheticChartWebView.CoreWebView2 is null) return;
+        try
+        {
+            var rows = basket.Candles.Select(candle => new
+            {
+                time = candle.Time.ToUnixTimeSeconds(),
+                open = candle.Open,
+                high = candle.High,
+                low = candle.Low,
+                close = candle.Close,
+            });
+            var json = System.Text.Json.JsonSerializer.Serialize(rows);
+            await SyntheticChartWebView.ExecuteScriptAsync($"window.renderSyntheticCandles({json});");
+        }
+        catch
+        {
+            SyntheticStatusText.Text = "Synthetic chart update failed.";
+        }
+    }
+
+    private async Task ClearTerminalAsync()
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null) return;
+        await TerminalChartWebView.ExecuteScriptAsync("window.clearTerminal();");
+    }
+
+    private async Task RenderTerminalAsync(SyntheticBasket basket, bool fit)
+    {
+        await RenderTerminalPayloadAsync(SyntheticTerminalChartPayload.Build(basket), fit);
+    }
+
+    private async Task RenderTerminalPayloadAsync(SyntheticTerminalPayload payload, bool fit)
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null) return;
+        try
+        {
+            var json = JsonSerializer.Serialize(payload);
+            var function = fit ? "renderTerminal" : "updateTerminal";
+            await TerminalChartWebView.ExecuteScriptAsync($"window.{function}({json});");
+        }
+        catch
+        {
+            TerminalStatusText.Text = "Terminal chart update failed.";
+        }
+    }
+
     private IEnumerable<MarketInstrument> FilterDataset(IEnumerable<MarketInstrument> markets)
     {
         var selected = (DatasetBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Stocks";
         if (selected == "ETFs") return markets.Where(IsEtf);
-        if (selected == "Stocks") return markets.Where(item => !IsEtf(item));
+        if (selected == "Stocks") return markets.Where(CapitalInstrumentTypes.IsStock);
         return markets.Where(item => _workspace.WatchlistEpics.Contains(item.Epic));
     }
 
@@ -178,39 +509,96 @@ public partial class MainWindow : Window
             await _streaming.ConnectAsync(_api.Session);
         }
 
+        if (CurrentWorkspaceMode() == SyntheticTerminalWorkspace.ModeName)
+        {
+            if (_terminalBasket is null)
+            {
+                TerminalStatusText.Text = "Build a terminal synthetic instrument before streaming.";
+                return;
+            }
+
+            var terminalEpics = SyntheticTerminalWorkspace.StreamingEpics(_terminalBasket);
+            await _streaming.SubscribeQuotesAsync(_api.Session, terminalEpics);
+            await _streaming.SubscribeOhlcAsync(_api.Session, terminalEpics, "WEEK");
+            ConnectionText.Text = $"Streaming synthetic {_terminalBasket.Symbol}";
+            TerminalStatusText.Text = $"Streaming {_terminalBasket.Symbol}: {terminalEpics.Count} component epics.";
+            return;
+        }
+
         var visible = _groups.Where(group => group.IsExpanded).SelectMany(group => group.Instruments).Take(40).ToList();
         if (!visible.Any())
         {
             visible = _instruments.Take(40).ToList();
         }
 
-        await _streaming.SubscribeQuotesAsync(_api.Session, visible.Select(item => item.Epic));
-        await _streaming.SubscribeOhlcAsync(_api.Session, visible.Select(item => item.Epic), SelectedResolution());
-        ConnectionText.Text = $"Streaming {visible.Count} instruments";
+        var epics = SyntheticLiveUpdate.PrioritizedEpics(visible, _syntheticBaskets);
+        await _streaming.SubscribeQuotesAsync(_api.Session, epics);
+        await _streaming.SubscribeOhlcAsync(_api.Session, epics, SelectedResolution());
+        ConnectionText.Text = $"Streaming {epics.Count} instruments";
     }
 
-    private void Streaming_QuoteReceived(object? sender, QuoteUpdate update)
+    private void UpdateSyntheticBasketsForQuote(QuoteUpdate update)
     {
-        Dispatcher.Invoke(() =>
+        var selectedBasketMatched = false;
+        var selectedBasketChanged = false;
+        foreach (var basket in _syntheticBaskets)
         {
-            var item = _instruments.FirstOrDefault(instrument => instrument.Epic == update.Epic);
-            if (item is null) return;
-            item.Bid = update.Bid;
-            item.Offer = update.Offer;
-            item.Price = update.Price;
-            item.LastTickAt = update.Time;
-            item.Status = "Live";
-            if (update.Price is not null)
+            var result = SyntheticLiveUpdate.ApplyQuote(basket, update);
+            if (!ReferenceEquals(basket, _selectedSyntheticBasket)) continue;
+            selectedBasketMatched |= result.Matched;
+            selectedBasketChanged |= result.CandleChanged;
+        }
+        if (_selectedSyntheticBasket is not null && selectedBasketMatched)
+        {
+            ShowSyntheticDetails(_selectedSyntheticBasket);
+            if (selectedBasketChanged) RenderSyntheticCandlesAsync(_selectedSyntheticBasket);
+        }
+    }
+
+    private async void Streaming_QuoteReceived(object? sender, QuoteUpdate update)
+    {
+        SyntheticTerminalPayload? terminalPayload = null;
+        await Dispatcher.InvokeAsync(() =>
+        {
+            if (CurrentWorkspaceMode() == SyntheticTerminalWorkspace.ModeName && _terminalBasket is not null)
             {
-                item.Points.Add(new ChartPoint(update.Time, update.Price.Value));
-                TrimPoints(item);
-                UpdateDerivedValues(item);
-                CheckAlert(item);
+                var result = SyntheticTerminalLiveUpdate.Apply(_terminalBasket, update);
+                if (result.Matched)
+                {
+                    terminalPayload = result.Payload;
+                    TerminalHeaderText.Text = $"{_terminalBasket.Symbol} | {_terminalBasket.Block}";
+                    TerminalStatusText.Text = $"{_terminalBasket.Symbol}: last {_terminalBasket.BasketPrice:0.####}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
+                }
+                return;
             }
-            if (_selected == item) ShowSelected(item);
-            RedrawCharts();
-            UpdateStats();
+
+            var item = _instruments.FirstOrDefault(instrument => instrument.Epic == update.Epic);
+            if (item is not null)
+            {
+                item.Bid = update.Bid;
+                item.Offer = update.Offer;
+                item.Price = update.Price;
+                item.LastTickAt = update.Time;
+                item.Status = "Live";
+                if (update.Price is not null)
+                {
+                    item.Points.Add(new ChartPoint(update.Time, update.Price.Value));
+                    TrimPoints(item);
+                    UpdateDerivedValues(item);
+                    CheckAlert(item);
+                }
+                if (_selected == item) ShowSelected(item);
+                RedrawCharts();
+                UpdateStats();
+            }
+            UpdateSyntheticBasketsForQuote(update);
         });
+
+        if (terminalPayload is not null)
+        {
+            var renderTask = await Dispatcher.InvokeAsync(() => RenderTerminalPayloadAsync(terminalPayload, fit: false));
+            await renderTask;
+        }
     }
 
     private string SelectedResolution()
@@ -434,11 +822,13 @@ public partial class MainWindow : Window
 
     private void ApplyWorkspaceMode()
     {
-        if (WorkspaceTitleText is null || DiscoverStrip is null || ResultText is null) return;
-        var mode = (WorkspaceModeBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Trade";
+        if (WorkspaceTitleText is null || DiscoverStrip is null || ResultText is null || SyntheticPanel is null) return;
+        var mode = CurrentWorkspaceMode();
         WorkspaceTitleText.Text = mode switch
         {
             "Discover" => "Discover | movers, volatility, categories",
+            "Synthetic" => "Synthetic | volatility-weighted stock baskets",
+            "Terminal" => "Terminal | full-screen synthetic instrument",
             "Charts" => "Charts | select any market row",
             "Portfolio" => "Portfolio | local watchlist and live exposure",
             "Calendar" => "Calendar | market events placeholder",
@@ -446,6 +836,11 @@ public partial class MainWindow : Window
             _ => "Trade",
         };
         DiscoverStrip.Visibility = mode is "Trade" or "Discover" ? Visibility.Visible : Visibility.Collapsed;
+        SyntheticPanel.Visibility = mode == "Synthetic" ? Visibility.Visible : Visibility.Collapsed;
+        DashboardScrollViewer.Visibility = mode == SyntheticTerminalWorkspace.ModeName ? Visibility.Collapsed : Visibility.Visible;
+        TerminalPanel.Visibility = mode == SyntheticTerminalWorkspace.ModeName ? Visibility.Visible : Visibility.Collapsed;
+        if (mode == "Synthetic") RefreshSyntheticBlocks();
+        if (mode == SyntheticTerminalWorkspace.ModeName) RefreshSyntheticBlocks();
         ResultText.Text = mode switch
         {
             "Portfolio" => $"{_workspace.WatchlistEpics.Count} watchlist markets saved locally.",
@@ -453,9 +848,14 @@ public partial class MainWindow : Window
             "Alerts" => $"{_workspace.Alerts.Count} local price alerts saved.",
             "Charts" => "Select a market row to inspect the chart panel.",
             "Discover" => "Discovery strip uses loaded markets: top traded, riser, faller, volatility.",
+            "Synthetic" => "Load stocks, choose a block, then build synthetic baskets.",
+            "Terminal" => "Load stocks, open Terminal, then build one chart-first synthetic instrument.",
             _ => ResultText.Text,
         };
     }
+
+    private string CurrentWorkspaceMode() =>
+        (WorkspaceModeBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Trade";
 
     private static void DrawChart(Canvas canvas, IReadOnlyList<ChartPoint> points)
     {
@@ -489,6 +889,12 @@ public partial class MainWindow : Window
 
         canvas.Children.Add(new Line { X1 = pad, X2 = width - pad, Y1 = height - pad, Y2 = height - pad, Stroke = Brushes.LightGray, StrokeThickness = 1 });
         canvas.Children.Add(polyline);
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _dataOperations.Dispose();
+        base.OnClosed(e);
     }
 }
 
