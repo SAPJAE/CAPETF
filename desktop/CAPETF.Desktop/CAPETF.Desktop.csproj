@@ -16,6 +16,8 @@
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 
+  <!-- StockSharp.Xaml.Charting was tested for cap.com Terminal and rejected on .NET 8 because its DevExpress dependency crashes during WPF window load. -->
+
   <ItemGroup>
     <Content Include="Assets\synthetic-chart.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

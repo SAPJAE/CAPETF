@@ -43,6 +43,7 @@ public static class SyntheticBasketBuilderTests
         DesktopResizesTerminalChartWhenWorkspaceOpens();
         DesktopTerminalWorkspaceExposesChartFirstControls();
         DesktopTerminalWorkspaceExposesV2ProfessionalControls();
+        CapComTerminalStartsWithoutDevExpressStockSharpRuntimeCrash();
         TerminalWorkspaceModeNameIsAvailable();
         TerminalStreamingEpicsUseOnlySelectedSyntheticComponents();
     }
@@ -841,6 +842,78 @@ public static class SyntheticBasketBuilderTests
             if (!source.Contains(required, StringComparison.Ordinal))
             {
                 throw new Exception($"desktop terminal V2 source missing expected wiring {required}");
+            }
+        }
+    }
+
+    private static void CapComTerminalStartsWithoutDevExpressStockSharpRuntimeCrash()
+    {
+        var app = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "App.xaml"));
+        if (!app.Contains("StartupUri=\"CapComTerminalWindow.xaml\"", StringComparison.Ordinal))
+        {
+            throw new Exception("cap.com Terminal must start in the native terminal window");
+        }
+
+        var project = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CAPETF.Desktop.csproj"));
+        if (!project.Contains("StockSharp.Xaml.Charting", StringComparison.Ordinal))
+        {
+            throw new Exception("cap.com Terminal must keep StockSharp documented as the rejected DevExpress-backed option");
+        }
+
+        var xamlPath = SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml");
+        if (!File.Exists(xamlPath)) throw new Exception("cap.com Terminal window XAML must exist");
+        var xaml = File.ReadAllText(xamlPath);
+        foreach (var required in new[]
+        {
+            "Title=\"cap.com Terminal\"",
+            "WindowState=\"Maximized\"",
+            "x:Name=\"StockSharpChartHost\"",
+            "x:Name=\"SyntheticFormulaText\"",
+            "Click=\"BuildSynthetic_Click\"",
+            "Click=\"BuyPreview_Click\"",
+            "Click=\"SellPreview_Click\"",
+            "x:Name=\"CandleTypeBox\"",
+            "CandleType_SelectionChanged",
+        })
+        {
+            if (!xaml.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal XAML missing {required}");
+            }
+        }
+
+        var sourcePath = SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs");
+        if (!File.Exists(sourcePath)) throw new Exception("cap.com Terminal code-behind must exist");
+        var source = File.ReadAllText(sourcePath);
+        foreach (var rejected in new[]
+        {
+            "using StockSharp.",
+            "new StockSharp.Xaml.Charting.Chart",
+            ".TimeFrame()",
+            "CandleStates.Finished",
+        })
+        {
+            if (source.Contains(rejected, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal must not load DevExpress-backed StockSharp runtime path: {rejected}");
+            }
+        }
+
+        foreach (var required in new[]
+        {
+            "RenderSyntheticChart",
+            "SyntheticTerminalChartPayload.Build",
+            "PreviewSyntheticOrder",
+            "DisplayCandles",
+            "DrawPriceAxisLabels",
+            "DrawDateAxisLabels",
+            "NativeCandleCanvas is null",
+            "Heikin Ashi",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal source missing {required}");
             }
         }
     }
