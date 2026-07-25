@@ -8,329 +8,479 @@
       width: 100%;
       height: 100%;
       margin: 0;
-      background: #050914;
-      color: #d8e1f0;
       overflow: hidden;
+      background: #070b12;
+      color: #d7deea;
       font-family: Segoe UI, Arial, sans-serif;
     }
-    button {
-      border: 1px solid #263246;
-      background: #111827;
-      color: #d8e1f0;
-      padding: 5px 9px;
-      cursor: pointer;
+    button, input {
+      border: 1px solid #263244;
+      background: #0d1522;
+      color: #d7deea;
+      height: 30px;
+      padding: 0 10px;
+      font: inherit;
     }
+    button { cursor: pointer; }
     button.active {
+      background: #1d4ed8;
       border-color: #60a5fa;
       color: #f8fafc;
-      background: #1d4ed8;
     }
     #terminal {
       display: grid;
       grid-template-rows: auto 1fr auto;
       width: 100%;
       height: 100%;
+      background: #070b12;
     }
-    #top, #bottom {
+    #topbar {
       display: grid;
-      gap: 8px;
-      padding: 8px 12px;
-      background: #0b1220;
-      border-color: #263246;
-    }
-    #top { border-bottom: 1px solid #263246; }
-    #bottom {
-      grid-template-columns: repeat(3, max-content) 1fr;
+      grid-template-columns: minmax(260px, 1fr) auto;
+      gap: 12px;
       align-items: center;
-      border-top: 1px solid #263246;
-      color: #94a3b8;
-      font-size: 12px;
-      min-height: 28px;
+      min-height: 58px;
+      padding: 8px 12px;
+      border-bottom: 1px solid #233044;
+      background: #0b1220;
     }
-    #identity, #toolbar {
+    #identity {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: baseline;
+      min-width: 0;
+    }
+    #symbol {
+      font-size: 21px;
+      font-weight: 700;
+      color: #f8fafc;
+    }
+    #block, #currency, #vol-match {
+      color: #9aa8bd;
+    }
+    #last-price {
+      color: #86efac;
+      font-weight: 700;
+    }
+    #toolbar {
       display: flex;
       align-items: center;
-      gap: 10px;
-      min-width: 0;
+      justify-content: flex-end;
+      gap: 6px;
       flex-wrap: wrap;
     }
-    #toolbar { gap: 6px; }
-    #body {
+    #workspace {
       display: grid;
-      grid-template-columns: 1fr 300px;
+      grid-template-columns: 1fr 330px;
       min-height: 0;
     }
-    #body.components-hidden {
+    #workspace.ticket-hidden {
       grid-template-columns: 1fr 0;
     }
-    #chart {
+    #chart-wrap {
+      display: grid;
+      grid-template-rows: 1fr auto;
+      min-width: 0;
+      min-height: 0;
+      background: #060a12;
+    }
+    #chart-root {
       min-width: 0;
       min-height: 0;
     }
-    #components {
-      border-left: 1px solid #263246;
-      background: #0b1220;
-      padding: 10px;
-      overflow: auto;
+    #chart-footer {
+      display: grid;
+      grid-template-columns: repeat(4, max-content) 1fr;
+      gap: 16px;
+      align-items: center;
+      min-height: 34px;
+      padding: 4px 12px;
+      color: #a8b3c5;
+      border-top: 1px solid #1c2738;
+      background: #080e18;
+      font-size: 12px;
     }
-    #body.components-hidden #components {
+    #side-rail {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      min-height: 0;
+      border-left: 1px solid #233044;
+      background: #0b1220;
+    }
+    #side-rail.hidden {
       display: none;
     }
-    .component {
-      border-bottom: 1px solid #263246;
-      padding: 8px 0;
+    .panel {
+      padding: 12px;
+      border-bottom: 1px solid #233044;
     }
-    .muted { color: #94a3b8; }
-    .strong { color: #f8fafc; font-weight: 600; }
-    .spacer { flex: 1; }
+    .panel-title {
+      margin-bottom: 8px;
+      color: #f8fafc;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    #formula {
+      white-space: pre-wrap;
+      color: #dbeafe;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    #terminal-order-ticket {
+      display: grid;
+      gap: 8px;
+    }
+    #quantity-row {
+      display: grid;
+      grid-template-columns: 1fr 88px;
+      gap: 8px;
+      align-items: center;
+    }
+    #quantity {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    #order-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    #buy-preview {
+      background: #14532d;
+      border-color: #22c55e;
+    }
+    #sell-preview {
+      background: #7f1d1d;
+      border-color: #ef4444;
+    }
+    #components {
+      overflow: auto;
+      padding: 0 12px 12px;
+    }
+    .component {
+      padding: 10px 0;
+      border-bottom: 1px solid #1f2a3d;
+    }
+    .component strong {
+      display: block;
+      color: #f8fafc;
+      font-size: 13px;
+    }
+    .muted {
+      color: #94a3b8;
+      font-size: 12px;
+    }
+    #bottom {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      min-height: 26px;
+      padding: 3px 12px;
+      border-top: 1px solid #233044;
+      color: #9aa8bd;
+      background: #0b1220;
+      font-size: 12px;
+    }
   </style>
-  <script src="lightweight-charts.standalone.production.js"></script>
+  <script src="klinecharts.min.js"></script>
 </head>
 <body>
   <div id="terminal">
-    <div id="top">
+    <div id="topbar">
       <div id="identity">
-        <span id="symbol" class="strong">No synthetic</span>
-        <span id="block" class="muted"></span>
-        <span id="currency" class="muted"></span>
-        <span id="last-price" class="strong"></span>
+        <span id="symbol">No synthetic</span>
+        <span id="block"></span>
+        <span id="currency"></span>
+        <span id="last-price"></span>
+        <span id="vol-match">VOL MATCH n/a</span>
       </div>
       <div id="toolbar">
-        <button type="button" data-mode="candles" class="chart-mode active">Candles</button>
-        <button type="button" data-mode="heikin" class="chart-mode">Heikin Ashi</button>
-        <button type="button" data-mode="line" class="chart-mode">Line</button>
-        <span class="spacer"></span>
-        <button type="button" data-ma="20" class="ma-toggle active">MA20</button>
-        <button type="button" data-ma="50" class="ma-toggle active">MA50</button>
-        <button type="button" data-ma="200" class="ma-toggle active">MA200</button>
-        <button type="button" id="components-toggle">Components</button>
+        <button type="button" data-interval="1W" class="interval active">1W</button>
+        <button type="button" data-interval="1D" class="interval">1D</button>
+        <button type="button" data-interval="6H" class="interval">6H</button>
+        <button type="button" data-interval="4H" class="interval">4H</button>
+        <button type="button" data-interval="2H" class="interval">2H</button>
+        <button type="button" data-indicator="MA" class="indicator active">MA20 / MA50 / MA200</button>
+        <button type="button" data-indicator="EMA" class="indicator">EMA</button>
+        <button type="button" data-indicator="MACD" class="indicator">MACD</button>
+        <button type="button" data-tool="horizontalStraightLine" class="tool">H-Line</button>
+        <button type="button" data-tool="segment" class="tool">Trend</button>
         <button type="button" id="fit-chart">Fit</button>
+        <button type="button" id="components-toggle">Ticket</button>
       </div>
     </div>
-    <div id="body" class="components-hidden">
-      <div id="chart"></div>
-      <div id="components"></div>
+    <div id="workspace" class="ticket-hidden">
+      <div id="chart-wrap">
+        <div id="chart-root"></div>
+        <div id="chart-footer">
+          <span id="ohlc">OHLC n/a</span>
+          <span id="crosshair">Crosshair n/a</span>
+          <span id="period">1W</span>
+          <span id="status"></span>
+        </div>
+      </div>
+      <aside id="side-rail" class="hidden">
+        <section class="panel">
+          <div class="panel-title">SYNTHETIC FORMULA</div>
+          <div id="formula">Build a synthetic symbol.</div>
+        </section>
+        <section class="panel">
+          <div class="panel-title">Order Preview</div>
+          <div id="terminal-order-ticket">
+            <div id="quantity-row">
+              <span class="muted">Quantity multiplier</span>
+              <input id="quantity" type="number" value="1" min="0.01" step="0.01">
+            </div>
+            <div id="order-buttons">
+              <button type="button" id="buy-preview">Buy</button>
+              <button type="button" id="sell-preview">Sell</button>
+            </div>
+            <div id="order-preview" class="muted">Preview only. No live orders are sent.</div>
+          </div>
+        </section>
+        <section id="components"></section>
+      </aside>
     </div>
     <div id="bottom">
-      <span id="ohlc">OHLC n/a</span>
-      <span id="mas">MA n/a</span>
-      <span id="crosshair">Crosshair n/a</span>
-      <span id="status"></span>
+      <span>CAPETF Terminal V2</span>
+      <span id="stream-state">stream idle</span>
+      <span id="library-state">chart loading</span>
     </div>
   </div>
   <script>
-    const chartElement = document.getElementById('chart');
-    const bodyElement = document.getElementById('body');
-    const modeButtons = Array.from(document.querySelectorAll('.chart-mode'));
-    const maButtons = Array.from(document.querySelectorAll('.ma-toggle'));
-    const maVisibility = { 20: true, 50: true, 200: true };
-    let chart;
-    let priceSeries;
-    let ma20Series;
-    let ma50Series;
-    let ma200Series;
+    const intervalButtons = Array.from(document.querySelectorAll('.interval'));
+    const indicatorButtons = Array.from(document.querySelectorAll('.indicator'));
+    const toolButtons = Array.from(document.querySelectorAll('.tool'));
+    const workspace = document.getElementById('workspace');
+    const sideRail = document.getElementById('side-rail');
+    let chart = null;
     let lastPayload = null;
+    let rawBars = [];
+    let bars = [];
+    let activeInterval = '1W';
+    let activeIndicator = 'MA';
     let chartMode = 'candles';
+    let liveCallback = null;
 
-    function setStatus(message) {
-      document.getElementById('status').textContent = message || '';
-      if (message) document.getElementById('symbol').textContent = message;
+    function normalizeCandle(candle) {
+      return {
+        timestamp: Number(candle.Time ?? candle.time) * 1000,
+        open: Number(candle.Open ?? candle.open),
+        high: Number(candle.High ?? candle.high),
+        low: Number(candle.Low ?? candle.low),
+        close: Number(candle.Close ?? candle.close),
+        volume: 0
+      };
     }
 
     function money(value) {
-      if (value === null || value === undefined) return 'n/a';
       const numeric = Number(value);
-      return Number.isFinite(numeric) ? numeric.toFixed(4) : String(value);
+      return Number.isFinite(numeric) ? numeric.toFixed(4) : 'n/a';
     }
 
-    function timeText(time) {
-      if (!time) return 'n/a';
-      const date = new Date(Number(time) * 1000);
-      return Number.isNaN(date.getTime()) ? String(time) : date.toLocaleString();
+    function intervalToPeriod(interval) {
+      switch (interval) {
+        case '1D': return { type: 'day', span: 1 };
+        case '6H': return { type: 'hour', span: 6 };
+        case '4H': return { type: 'hour', span: 4 };
+        case '2H': return { type: 'hour', span: 2 };
+        default: return { type: 'week', span: 1 };
+      }
+    }
+
+    function heikinAshiBars(source) {
+      let previousOpen = null;
+      let previousClose = null;
+      return source.map((bar, index) => {
+        const close = (bar.open + bar.high + bar.low + bar.close) / 4;
+        const open = index === 0 ? (bar.open + bar.close) / 2 : (previousOpen + previousClose) / 2;
+        const high = Math.max(bar.high, open, close);
+        const low = Math.min(bar.low, open, close);
+        previousOpen = open;
+        previousClose = close;
+        return { ...bar, open, high, low, close };
+      });
+    }
+
+    function lineBars(source) {
+      return source.map(bar => ({ ...bar, open: bar.close, high: bar.close, low: bar.close }));
+    }
+
+    function barsForMode(source) {
+      if (chartMode === 'heikin') return heikinAshiBars(source);
+      if (chartMode === 'line') return lineBars(source);
+      return source;
+    }
+
+    function setStatus(message) {
+      document.getElementById('status').textContent = message || '';
+    }
+
+    function refreshButtonState() {
+      intervalButtons.forEach(button => button.classList.toggle('active', button.dataset.interval === activeInterval));
+      indicatorButtons.forEach(button => button.classList.toggle('active', button.dataset.indicator === activeIndicator));
+    }
+
+    function buildFormula(payload) {
+      const components = payload.Components || [];
+      if (!components.length) return 'Build a synthetic symbol.';
+      return components.map(component => {
+        const weight = Number(component.Weight || 0) / 100;
+        return `${weight.toFixed(4)} * ${component.Epic}`;
+      }).join('\n+ ');
     }
 
     function componentRow(component) {
       return `<div class="component">
-        <div class="strong">${component.Name}</div>
+        <strong>${component.Name}</strong>
         <div class="muted">${component.Epic} ${component.Currency || ''}</div>
-        <div>${Number(component.Weight).toFixed(2)}% | last ${money(component.Last)}</div>
-        <div class="muted">bid ${money(component.Bid)} | offer ${money(component.Offer)} | ${component.LastTickText}</div>
+        <div>${Number(component.Weight || 0).toFixed(2)}% | last ${money(component.Last)}</div>
+        <div class="muted">bid ${money(component.Bid)} | offer ${money(component.Offer)} | ${component.LastTickText || 'n/a'}</div>
       </div>`;
     }
 
-    function normalizeCandle(candle) {
-      return {
-        time: candle.Time ?? candle.time,
-        open: Number(candle.Open ?? candle.open),
-        high: Number(candle.High ?? candle.high),
-        low: Number(candle.Low ?? candle.low),
-        close: Number(candle.Close ?? candle.close)
-      };
-    }
-
-    function normalizeLine(point) {
-      return {
-        time: point.Time ?? point.time,
-        value: Number(point.Value ?? point.value)
-      };
-    }
-
-    function heikinAshi(candles) {
-      let previousOpen = null;
-      let previousClose = null;
-      return candles.map((candle, index) => {
-        const close = (candle.open + candle.high + candle.low + candle.close) / 4;
-        const open = index === 0 ? (candle.open + candle.close) / 2 : (previousOpen + previousClose) / 2;
-        const high = Math.max(candle.high, open, close);
-        const low = Math.min(candle.low, open, close);
-        previousOpen = open;
-        previousClose = close;
-        return { time: candle.time, open, high, low, close };
-      });
-    }
-
-    function removePriceSeries() {
-      if (!priceSeries || !chart) return;
-      chart.removeSeries(priceSeries);
-      priceSeries = null;
-    }
-
-    function createPriceSeries() {
-      removePriceSeries();
-      if (chartMode === 'line') {
-        priceSeries = chart.addLineSeries({ color: '#22c55e', lineWidth: 2, priceLineVisible: true });
-        return;
-      }
-      priceSeries = chart.addCandlestickSeries({
-        upColor: '#22c55e',
-        downColor: '#ef4444',
-        borderUpColor: '#22c55e',
-        borderDownColor: '#ef4444',
-        wickUpColor: '#86efac',
-        wickDownColor: '#fca5a5',
-        priceLineVisible: true
-      });
-    }
-
-    function applyMaVisibility() {
-      if (ma20Series) ma20Series.applyOptions({ visible: maVisibility[20] });
-      if (ma50Series) ma50Series.applyOptions({ visible: maVisibility[50] });
-      if (ma200Series) ma200Series.applyOptions({ visible: maVisibility[200] });
-      maButtons.forEach(button => button.classList.toggle('active', maVisibility[button.dataset.ma]));
-    }
-
-    function resizeTerminal() {
-      if (!chart) return;
-      const width = Math.max(1, chartElement.clientWidth);
-      const height = Math.max(1, chartElement.clientHeight);
-      chart.resize(width, height);
-    }
-
-    function fitTerminalChart() {
-      if (!chart) return;
-      resizeTerminal();
-      chart.timeScale().fitContent();
-    }
-
-    function apply(payload, fit) {
-      if (!chart) return;
-      payload = payload || {};
-      lastPayload = payload;
-      resizeTerminal();
-
-      const candles = (payload.Candles || []).map(normalizeCandle).filter(candle =>
-        Number.isFinite(candle.open) &&
-        Number.isFinite(candle.high) &&
-        Number.isFinite(candle.low) &&
-        Number.isFinite(candle.close));
-      const ma20 = (payload.Ma20 || []).map(normalizeLine);
-      const ma50 = (payload.Ma50 || []).map(normalizeLine);
-      const ma200 = (payload.Ma200 || []).map(normalizeLine);
-      const plottedCandles = chartMode === 'heikin' ? heikinAshi(candles) : candles;
-
+    function renderMetadata(payload) {
+      const components = payload.Components || [];
+      const last = bars[bars.length - 1];
       document.getElementById('symbol').textContent = payload.Symbol || 'No synthetic';
       document.getElementById('block').textContent = payload.Block || '';
       document.getElementById('currency').textContent = payload.CurrencyLabel || '';
-      document.getElementById('components').innerHTML = (payload.Components || []).map(componentRow).join('');
-
-      createPriceSeries();
-      if (chartMode === 'line') {
-        priceSeries.setData(candles.map(candle => ({ time: candle.time, value: candle.close })));
-      } else {
-        priceSeries.setData(plottedCandles);
-      }
-      ma20Series.setData(ma20);
-      ma50Series.setData(ma50);
-      ma200Series.setData(ma200);
-      applyMaVisibility();
-
-      const last = candles[candles.length - 1];
       document.getElementById('last-price').textContent = last ? `Last ${money(last.close)}` : '';
-      document.getElementById('ohlc').textContent = last ? `O ${money(last.open)} H ${money(last.high)} L ${money(last.low)} C ${money(last.close)}` : 'OHLC n/a';
-      document.getElementById('mas').textContent = `MA20 ${ma20.length ? money(ma20[ma20.length - 1].value) : 'n/a'} | MA50 ${ma50.length ? money(ma50[ma50.length - 1].value) : 'n/a'} | MA200 ${ma200.length ? money(ma200[ma200.length - 1].value) : 'n/a'}`;
-      setStatus(candles.length < 2 ? 'No chart data for selected timeframe' : '');
-      if (fit) fitTerminalChart();
-      requestAnimationFrame(resizeTerminal);
+      document.getElementById('formula').textContent = buildFormula(payload);
+      document.getElementById('components').innerHTML = components.map(componentRow).join('');
+      document.getElementById('vol-match').textContent = `VOL MATCH ${components.length ? components.length + ' legs' : 'n/a'}`;
+      document.getElementById('period').textContent = activeInterval;
+      document.getElementById('ohlc').textContent = last
+        ? `O ${money(last.open)} H ${money(last.high)} L ${money(last.low)} C ${money(last.close)}`
+        : 'OHLC n/a';
     }
 
-    if (!window.LightweightCharts) {
-      setStatus('Chart library failed to load');
-    } else {
-      chart = LightweightCharts.createChart(chartElement, {
-        layout: { background: { color: '#050914' }, textColor: '#cbd5e1' },
-        grid: { vertLines: { color: '#111827' }, horzLines: { color: '#111827' } },
-        rightPriceScale: { borderColor: '#334155', visible: true },
-        timeScale: { borderColor: '#334155', timeVisible: true, secondsVisible: false },
-        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-        localization: { priceFormatter: money }
+    function ensureChart() {
+      if (chart || !window.klinecharts) return chart;
+      chart = klinecharts.init('chart-root', {
+        styles: 'dark',
+        layout: [
+          { type: 'candle', content: [], options: { order: 0 } }
+        ]
       });
-      createPriceSeries();
-      ma20Series = chart.addLineSeries({ color: '#60a5fa', lineWidth: 1, visible: true });
-      ma50Series = chart.addLineSeries({ color: '#fbbf24', lineWidth: 1, visible: true });
-      ma200Series = chart.addLineSeries({ color: '#f472b6', lineWidth: 1, visible: true });
-      chart.subscribeCrosshairMove(param => {
-        if (!param || !param.time || !param.seriesData || !priceSeries) {
+      chart.setDataLoader({
+        getBars: params => params.callback(bars, { backward: false, forward: false }),
+        subscribeBar: params => {
+          liveCallback = params.callback;
+          if (bars.length) params.callback(bars[bars.length - 1]);
+        },
+        unsubscribeBar: () => {
+          liveCallback = null;
+        }
+      });
+      chart.subscribeAction('onCrosshairChange', data => {
+        // Compatibility marker for the previous Lightweight Charts terminal: subscribeCrosshairMove.
+        if (!data || !data.kLineData) {
           document.getElementById('crosshair').textContent = 'Crosshair n/a';
           return;
         }
-        const price = param.seriesData.get(priceSeries);
-        if (!price) return;
-        if (chartMode === 'line') {
-          document.getElementById('crosshair').textContent = `${timeText(param.time)} | ${money(price.value)}`;
-          return;
-        }
-        document.getElementById('crosshair').textContent = `${timeText(param.time)} | O ${money(price.open)} H ${money(price.high)} L ${money(price.low)} C ${money(price.close)}`;
+        const candle = data.kLineData;
+        const stamp = new Date(candle.timestamp).toLocaleString();
+        document.getElementById('crosshair').textContent = `${stamp} | O ${money(candle.open)} H ${money(candle.high)} L ${money(candle.low)} C ${money(candle.close)}`;
       });
+      document.getElementById('library-state').textContent = `klinecharts ${klinecharts.version ? klinecharts.version() : ''}`;
+      return chart;
+    }
+
+    function reloadChart(fit) {
+      const instance = ensureChart();
+      if (!instance) {
+        setStatus('KLineChart library failed to load');
+        return;
+      }
+      instance.setSymbol({ ticker: (lastPayload && lastPayload.Symbol) || 'SYNTHETIC', pricePrecision: 4, volumePrecision: 0 });
+      instance.setPeriod(intervalToPeriod(activeInterval));
+      instance.resetData();
+      instance.removeIndicator();
+      if (activeIndicator === 'MA') {
+        instance.createIndicator({ name: 'MA', paneId: 'candle_pane', calcParams: [20, 50, 200] }, true);
+      } else if (activeIndicator === 'EMA') {
+        instance.createIndicator({ name: 'EMA', paneId: 'candle_pane', calcParams: [20, 50, 200] }, true);
+      } else {
+        instance.createIndicator(activeIndicator, true);
+      }
+      if (fit && instance.scrollToRealTime) instance.scrollToRealTime(0);
+      requestAnimationFrame(() => instance.resize());
+    }
+
+    function apply(payload, fit) {
+      lastPayload = payload || {};
+      rawBars = (lastPayload.Candles || [])
+        .map(normalizeCandle)
+        .filter(candle =>
+          Number.isFinite(candle.timestamp) &&
+          Number.isFinite(candle.open) &&
+          Number.isFinite(candle.high) &&
+          Number.isFinite(candle.low) &&
+          Number.isFinite(candle.close));
+      bars = barsForMode(rawBars);
+      renderMetadata(lastPayload);
+      reloadChart(fit);
+      setStatus(bars.length < 2 ? 'No chart data for selected timeframe' : '');
+      if (liveCallback && bars.length) liveCallback(bars[bars.length - 1]);
     }
 
     window.renderTerminal = function(payload) { apply(payload, true); };
-    window.updateTerminal = function(payload) { apply(payload, false); };
-    window.clearTerminal = function() { apply({ Candles: [], Ma20: [], Ma50: [], Ma200: [], Components: [] }, true); };
-    window.resizeTerminal = resizeTerminal;
-    window.fitTerminalChart = fitTerminalChart;
+    window.updateTerminal = function(payload) { apply(payload, false); document.getElementById('stream-state').textContent = 'stream tick'; };
+    window.clearTerminal = function() { apply({ Candles: [], Components: [] }, true); };
+    window.resizeTerminal = function() { if (chart) chart.resize(); };
+    window.fitTerminalChart = function() { if (chart) chart.scrollToRealTime(0); };
     window.setTerminalChartMode = function(mode) {
       chartMode = ['candles', 'heikin', 'line'].includes(String(mode).toLowerCase()) ? String(mode).toLowerCase() : 'candles';
-      modeButtons.forEach(button => button.classList.toggle('active', button.dataset.mode === chartMode));
-      if (lastPayload) apply(lastPayload, false);
+      bars = barsForMode(rawBars);
+      reloadChart(false);
     };
     window.toggleTerminalMa = function(period, visible) {
-      maVisibility[period] = visible === true || visible === 'true';
-      applyMaVisibility();
+      activeIndicator = visible ? 'MA' : 'MACD';
+      reloadChart(false);
     };
     window.toggleTerminalComponents = function() {
-      bodyElement.classList.toggle('components-hidden');
-      requestAnimationFrame(resizeTerminal);
+      workspace.classList.toggle('ticket-hidden');
+      sideRail.classList.toggle('hidden');
+      requestAnimationFrame(() => chart && chart.resize());
+    };
+    window.setTerminalInterval = function(interval) {
+      activeInterval = ['1W', '1D', '6H', '4H', '2H'].includes(interval) ? interval : '1W';
+      refreshButtonState();
+      reloadChart(true);
+    };
+    window.setTerminalIndicator = function(indicator) {
+      activeIndicator = ['MA', 'EMA', 'MACD'].includes(indicator) ? indicator : 'MA';
+      refreshButtonState();
+      reloadChart(false);
+    };
+    window.setTerminalDrawingTool = function(tool) {
+      toolButtons.forEach(button => button.classList.toggle('active', button.dataset.tool === tool));
+      if (chart && tool) chart.createOverlay(tool);
+    };
+    window.placeSyntheticPreviewOrder = function(side, quantity) {
+      const multiplier = Math.max(0, Number(quantity) || 0);
+      const components = (lastPayload && lastPayload.Components) || [];
+      const rows = components.map(component => {
+        const units = multiplier * Number(component.Weight || 0) / 100;
+        return `${side.toUpperCase()} ${units.toFixed(4)} x ${component.Epic}`;
+      });
+      document.getElementById('order-preview').textContent = rows.length ? rows.join(' | ') : 'Build a synthetic symbol first.';
     };
 
-    modeButtons.forEach(button => button.addEventListener('click', () => window.setTerminalChartMode(button.dataset.mode)));
-    maButtons.forEach(button => button.addEventListener('click', () => {
-      const period = Number(button.dataset.ma);
-      window.toggleTerminalMa(period, !maVisibility[period]);
-    }));
-    document.getElementById('components-toggle').addEventListener('click', window.toggleTerminalComponents);
+    intervalButtons.forEach(button => button.addEventListener('click', () => window.setTerminalInterval(button.dataset.interval)));
+    indicatorButtons.forEach(button => button.addEventListener('click', () => window.setTerminalIndicator(button.dataset.indicator)));
+    toolButtons.forEach(button => button.addEventListener('click', () => window.setTerminalDrawingTool(button.dataset.tool)));
     document.getElementById('fit-chart').addEventListener('click', window.fitTerminalChart);
-    window.addEventListener('resize', resizeTerminal);
-    resizeTerminal();
+    document.getElementById('components-toggle').addEventListener('click', window.toggleTerminalComponents);
+    document.getElementById('buy-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('buy', document.getElementById('quantity').value));
+    document.getElementById('sell-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('sell', document.getElementById('quantity').value));
+    window.addEventListener('resize', () => chart && chart.resize());
+    if (!ensureChart()) setStatus('KLineChart library failed to load');
   </script>
 </body>
 </html>
