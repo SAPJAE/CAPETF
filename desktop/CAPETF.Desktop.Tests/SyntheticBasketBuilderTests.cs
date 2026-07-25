@@ -36,6 +36,8 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHistoryLoadCandidatesScanPastTheFirstSparseRows();
         SeededSyntheticSelectorBuildsNikeBasket();
         SeededSyntheticSelectorPrefersExactNikeTickerOverNameContains();
+        SeededSyntheticSelectorMatchesCapitalSuffixSymbol();
+        SeededSyntheticSelectorBuildsSapFromEncryptedChunks();
         SeededSyntheticSelectorDoesNotResolveShortTickersByLooseNameContains();
         SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
         SyntheticTerminalHtmlExposesRequiredFunctions();
@@ -775,6 +777,68 @@ public static class SyntheticBasketBuilderTests
         if (basket is not null) throw new Exception("short ticker-like seeds must not resolve by loose company-name contains matches");
     }
 
+    private static void SeededSyntheticSelectorMatchesCapitalSuffixSymbol()
+    {
+        var day = DateTimeOffset.Parse("2024-01-01T00:00:00Z");
+        var sap = new MarketInstrument
+        {
+            Epic = "SAPD",
+            Name = "SAP",
+            Symbol = "SAPd",
+            Type = "SHARES",
+            Currency = "EUR",
+            Region = "Europe",
+            Sector = "All",
+        };
+        var peerOne = new MarketInstrument
+        {
+            Epic = "ADS",
+            Name = "Adidas",
+            Symbol = "ADS",
+            Type = "SHARES",
+            Currency = "EUR",
+            Region = "Europe",
+            Sector = "All",
+        };
+        var peerTwo = new MarketInstrument
+        {
+            Epic = "PUM",
+            Name = "Puma",
+            Symbol = "PUM",
+            Type = "SHARES",
+            Currency = "EUR",
+            Region = "Europe",
+            Sector = "All",
+        };
+        var instruments = new[] { sap, peerOne, peerTwo };
+        var candles = instruments.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => CreateVariableCandles(day, 100m));
+
+        var basket = SeededSyntheticSelector.SelectSeededBasket("sap", "Europe / EUR / All", instruments, candles, periodsPerYear: 52);
+
+        if (basket is null) throw new Exception("SAP seed should resolve Capital.com SAPd symbol");
+        if (basket.Symbol != "SYN-SAPD-01") throw new Exception("SAP seed should build from the Capital.com SAPd instrument");
+        if (basket.Components.All(component => component.Instrument.Epic != "SAPD")) throw new Exception("SAP basket must include SAPD");
+    }
+
+    private static void SeededSyntheticSelectorBuildsSapFromEncryptedChunks()
+    {
+        var cached = DashboardStockChunkLoader.LoadStocks();
+        if (cached.Instruments.Count == 0) return;
+
+        var weekly = cached.OhlcByEpicAndResolution?
+            .Where(pair => pair.Value.TryGetValue("Weekly", out var rows) && rows.Count >= 120)
+            .ToDictionary(pair => pair.Key, pair => pair.Value["Weekly"], StringComparer.OrdinalIgnoreCase)
+            ?? cached.OhlcByEpic;
+
+        var basket = SeededSyntheticSelector.SelectSeededBasket("sap", "Europe / EUR / All", cached.Instruments, weekly, periodsPerYear: 52);
+
+        if (basket is null) throw new Exception("SAP should build from encrypted stock chunks");
+        if (basket.Components.All(component => component.Instrument.Epic != "SAPD")) throw new Exception("encrypted SAP basket must include SAPD");
+        if (!string.Equals(basket.Block, "Europe / EUR / All", StringComparison.OrdinalIgnoreCase)) throw new Exception("SAP basket should remain in Europe / EUR / All");
+    }
+
     private static void SyntheticTerminalHtmlUsesPackagedChartLibrary()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
@@ -1078,6 +1142,7 @@ public static class SyntheticBasketBuilderTests
         foreach (var required in new[]
         {
             "stocks-*.enc.json",
+            "stocks.enc.json",
             "Rfc2898DeriveBytes.Pbkdf2",
             "AesGcm",
             "LoadStocks",
@@ -1096,6 +1161,7 @@ public static class SyntheticBasketBuilderTests
 
         var project = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CAPETF.Desktop.csproj"));
         if (!project.Contains("..\\..\\data\\stocks-*.enc.json", StringComparison.Ordinal) ||
+            !project.Contains("..\\..\\data\\stocks.enc.json", StringComparison.Ordinal) ||
             !project.Contains("Link=\"data\\%(Filename)%(Extension)\"", StringComparison.Ordinal))
         {
             throw new Exception("desktop package must include encrypted stock chunks");

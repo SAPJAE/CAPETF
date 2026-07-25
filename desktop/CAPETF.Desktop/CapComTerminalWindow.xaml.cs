@@ -123,6 +123,10 @@ public partial class CapComTerminalWindow : Window
         var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments, limit: 500);
         var activeCachedCandles = CachedCandlesForResolution(resolution);
         var candles = BuildCachedCandles(candidates, activeCachedCandles, minCandles, candidateLimit: 500);
+        var seedText = SearchBox.Text.Trim();
+        var seededCandles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(
+            activeCachedCandles.Count > 0 ? activeCachedCandles : candles,
+            StringComparer.OrdinalIgnoreCase);
 
         IReadOnlyList<MarketInstrument> selectionCandidates = SelectSyntheticCandidates(candidates, candles, maxSelection: 36);
 
@@ -130,9 +134,29 @@ public partial class CapComTerminalWindow : Window
         {
             candles = await LoadApiCandlesAsync(block, candidates.Take(80).ToList(), resolution, minCandles);
             selectionCandidates = SelectSyntheticCandidates(candidates, candles, maxSelection: 36);
+            seededCandles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(candles, StringComparer.OrdinalIgnoreCase);
         }
 
-        var seedText = SearchBox.Text.Trim();
+        if (!string.IsNullOrWhiteSpace(seedText))
+        {
+            var seed = SeededSyntheticSelector.ResolveSeed(seedText, block, _instruments);
+            if (seed is not null &&
+                (!seededCandles.TryGetValue(seed.Epic, out var seedRows) || seedRows.Count < minCandles))
+            {
+                var seedLabel = string.IsNullOrWhiteSpace(seed.Symbol) ? seed.Epic : seed.Symbol;
+                StatusText.Text = $"Loading Capital.com history for {seedLabel}...";
+                var loadedRows = await LoadApiCandlesForInstrumentAsync(seed, resolution, minCandles);
+                if (loadedRows.Count >= minCandles)
+                {
+                    seededCandles[seed.Epic] = loadedRows;
+                    candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(candles, StringComparer.OrdinalIgnoreCase)
+                    {
+                        [seed.Epic] = loadedRows,
+                    };
+                }
+            }
+        }
+
         StatusText.Text = string.IsNullOrWhiteSpace(seedText)
             ? $"Selecting basket from {selectionCandidates.Count} similar-history candidates..."
             : $"Selecting seeded basket for {seedText}...";
@@ -141,7 +165,7 @@ public partial class CapComTerminalWindow : Window
                 seedText,
                 block,
                 _instruments,
-                activeCachedCandles.Count > 0 ? activeCachedCandles : candles,
+                seededCandles,
                 periodsPerYear))
             : await Task.Run(() => SyntheticTerminalSelector.SelectBest(block, selectionCandidates, candles, periodsPerYear));
         if (_basket is null)
@@ -168,6 +192,25 @@ public partial class CapComTerminalWindow : Window
             .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
             .Take(maxSelection)
             .ToList();
+    }
+
+    private async Task<IReadOnlyList<OhlcPoint>> LoadApiCandlesForInstrumentAsync(
+        MarketInstrument instrument,
+        string resolution,
+        int minCandles)
+    {
+        try
+        {
+            await EnsureConnectedAsync();
+            var rows = await _api.GetAllAvailableOhlcPricesAsync(instrument.Epic, RequestResolution(resolution));
+            rows = TransformCandles(rows, resolution);
+            return rows.Count >= minCandles ? rows : [];
+        }
+        catch (Exception ex)
+        {
+            instrument.Status = $"History n/a: {ex.Message}";
+            return [];
+        }
     }
 
     private async Task LoadStocksFromApiAsync()

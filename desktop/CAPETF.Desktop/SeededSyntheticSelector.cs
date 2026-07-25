@@ -2,6 +2,15 @@ namespace CAPETF.Desktop;
 
 public static class SeededSyntheticSelector
 {
+    public static MarketInstrument? ResolveSeed(
+        string seedText,
+        string preferredBlock,
+        IReadOnlyList<MarketInstrument> instruments)
+    {
+        if (string.IsNullOrWhiteSpace(seedText)) return null;
+        return FindSeed(seedText, preferredBlock, instruments, candles: null, requireCandles: false);
+    }
+
     public static SyntheticBasket? SelectSeededBasket(
         string seedText,
         string fallbackBlock,
@@ -11,7 +20,7 @@ public static class SeededSyntheticSelector
     {
         if (string.IsNullOrWhiteSpace(seedText)) return null;
 
-        var seed = FindSeed(seedText, instruments, candles);
+        var seed = FindSeed(seedText, fallbackBlock, instruments, candles, requireCandles: true);
         if (seed is null || !candles.TryGetValue(seed.Epic, out var seedCandles) || seedCandles.Count < 120) return null;
 
         var peerPool = instruments
@@ -77,17 +86,29 @@ public static class SeededSyntheticSelector
 
     private static MarketInstrument? FindSeed(
         string seedText,
+        string preferredBlock,
         IReadOnlyList<MarketInstrument> instruments,
-        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles)
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>? candles,
+        bool requireCandles)
     {
         var query = seedText.Trim();
         var eligible = instruments
             .Where(CapitalInstrumentTypes.IsStock)
-            .Where(item => candles.TryGetValue(item.Epic, out var rows) && rows.Count >= 120)
+            .Where(item => !requireCandles || (candles is not null && candles.TryGetValue(item.Epic, out var rows) && rows.Count >= 120))
             .ToList();
 
+        var preferred = eligible
+            .Where(item => string.Equals(item.Group, preferredBlock, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return MatchSeed(preferred, query) ?? MatchSeed(eligible, query);
+    }
+
+    private static MarketInstrument? MatchSeed(IReadOnlyList<MarketInstrument> eligible, string query)
+    {
         var exact = eligible.FirstOrDefault(item => ExactMatch(item.Epic, query)) ??
-                    eligible.FirstOrDefault(item => ExactMatch(item.Symbol, query));
+                    eligible.FirstOrDefault(item => ExactMatch(item.Symbol, query)) ??
+                    eligible.FirstOrDefault(item => ExactMatch(item.Name, query)) ??
+                    eligible.FirstOrDefault(item => CapitalSymbolAliasMatch(item.Symbol, query));
         if (exact is not null || IsTickerLikeQuery(query)) return exact;
 
         return eligible
@@ -142,6 +163,17 @@ public static class SeededSyntheticSelector
 
     private static bool ContainsMatch(string value, string query) =>
         !string.IsNullOrWhiteSpace(value) && value.Contains(query, StringComparison.OrdinalIgnoreCase);
+
+    private static bool CapitalSymbolAliasMatch(string value, string query)
+    {
+        var symbol = value?.Trim();
+        var seed = query.Trim();
+        if (string.IsNullOrWhiteSpace(symbol) || !IsTickerLikeQuery(seed)) return false;
+        if (!symbol.StartsWith(seed, StringComparison.OrdinalIgnoreCase)) return false;
+
+        var suffix = symbol[seed.Length..];
+        return suffix.Length is > 0 and <= 2 && suffix.All(char.IsLower);
+    }
 
     private static bool IsTickerLikeQuery(string query) =>
         query.Trim().Length <= 5 &&
