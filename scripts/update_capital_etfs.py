@@ -358,18 +358,65 @@ def parse_intraday_row(row):
     return {"date": timestamp, "close": round(close, 6)}
 
 
-def fetch_prices(client, epic):
-    path = f"/prices/{urllib.parse.quote(epic)}?resolution=DAY&max=1000"
+def capital_time(value):
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def prices_path(epic, resolution, max_points=1000, from_time=None, to_time=None):
+    params = {
+        "resolution": resolution,
+        "max": str(max_points),
+    }
+    if from_time:
+        params["from"] = capital_time(from_time)
+    if to_time:
+        params["to"] = capital_time(to_time)
+    return f"/prices/{urllib.parse.quote(epic)}?{urllib.parse.urlencode(params)}"
+
+
+def fetch_price_window(client, epic, resolution, from_time=None, to_time=None, max_points=1000):
+    path = prices_path(epic, resolution, max_points=max_points, from_time=from_time, to_time=to_time)
     payload = client.get(path)
     prices = payload.get("prices") or []
     rows = [parse_price_row(row) for row in prices]
     rows = [row for row in rows if row]
+    return rows
+
+
+def fetch_prices(client, epic):
+    api_max = 1000
+    window = timedelta(days=730)
+    earliest = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    to_time = datetime.now(timezone.utc) + timedelta(days=1)
+    deduped = {}
+    request_count = 0
+
+    while to_time > earliest and request_count < 120:
+        from_time = max(earliest, to_time - window)
+        rows = fetch_price_window(client, epic, "DAY", from_time=from_time, to_time=to_time, max_points=api_max)
+        request_count += 1
+        if not rows:
+            if deduped:
+                break
+            to_time = from_time - timedelta(seconds=1)
+            continue
+
+        for row in rows:
+            deduped[row["date"]] = row
+        oldest = min(datetime.fromisoformat(row["date"]).replace(tzinfo=timezone.utc) for row in rows)
+        to_time = (oldest if len(rows) >= api_max else from_time) - timedelta(seconds=1)
+
+    return [deduped[key] for key in sorted(deduped)]
+
+
+def fetch_limited_prices(client, epic):
+    rows = fetch_price_window(client, epic, "DAY", max_points=1000)
     deduped = {row["date"]: row for row in rows}
     return [deduped[key] for key in sorted(deduped)]
 
 
 def fetch_hourly_prices(client, epic, max_points=72):
-    path = f"/prices/{urllib.parse.quote(epic)}?resolution=HOUR&max={max_points}"
+    path = prices_path(epic, "HOUR", max_points=max_points)
     payload = client.get(path)
     prices = payload.get("prices") or []
     rows = [parse_intraday_row(row) for row in prices]

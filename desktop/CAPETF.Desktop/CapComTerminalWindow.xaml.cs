@@ -234,7 +234,6 @@ public partial class CapComTerminalWindow : Window
     {
         await EnsureConnectedAsync();
         var requestResolution = RequestResolution(resolution);
-        var maxCandles = MaxCandles(resolution);
         var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>();
         var checkedCount = 0;
 
@@ -244,7 +243,7 @@ public partial class CapComTerminalWindow : Window
             checkedCount++;
             try
             {
-                var rows = await _api.GetOhlcPricesAsync(item.Epic, requestResolution, maxCandles);
+                var rows = await _api.GetAllAvailableOhlcPricesAsync(item.Epic, requestResolution);
                 rows = TransformCandles(rows, resolution);
                 if (rows.Count >= minCandles)
                 {
@@ -345,16 +344,6 @@ public partial class CapComTerminalWindow : Window
         resolution == "4H" ? "HOUR_4" :
         resolution == "Daily" ? "DAY" :
         "WEEK";
-
-    private static int MaxCandles(string resolution) =>
-        resolution switch
-        {
-            "2H" => 540,
-            "4H" => 540,
-            "6H" => 540,
-            "Daily" => 900,
-            _ => 260,
-        };
 
     private static int MinimumCandles(string resolution) => resolution is "2H" or "4H" or "6H" ? 60 : 120;
 

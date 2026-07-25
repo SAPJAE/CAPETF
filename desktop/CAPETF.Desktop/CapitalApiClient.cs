@@ -86,9 +86,74 @@ public sealed class CapitalApiClient : IDisposable
     public async Task<IReadOnlyList<OhlcPoint>> GetOhlcPricesAsync(string epic, string resolution, int max, CancellationToken cancellationToken = default)
     {
         EnsureSession();
-        using var doc = await GetJsonAsync($"api/v1/prices/{Uri.EscapeDataString(epic)}?resolution={resolution}&max={max}", cancellationToken);
+        using var doc = await GetJsonAsync(BuildPricesPath(epic, resolution, max), cancellationToken);
         return ParseOhlcPrices(doc.RootElement);
     }
+
+    public async Task<IReadOnlyList<OhlcPoint>> GetAllAvailableOhlcPricesAsync(string epic, string resolution, CancellationToken cancellationToken = default)
+    {
+        EnsureSession();
+        const int apiMax = 1000;
+        var step = HistoricalWindow(resolution);
+        var earliest = DateTimeOffset.Parse("1970-01-01T00:00:00Z", CultureInfo.InvariantCulture);
+        var to = DateTimeOffset.UtcNow.AddDays(1);
+        var rowsByTime = new Dictionary<DateTimeOffset, OhlcPoint>();
+        var requestCount = 0;
+
+        while (to > earliest && requestCount < 120)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var from = to - step;
+            if (from < earliest) from = earliest;
+
+            using var doc = await GetJsonAsync(BuildPricesPath(epic, resolution, apiMax, from, to), cancellationToken);
+            var rows = ParseOhlcPrices(doc.RootElement);
+            requestCount++;
+
+            if (rows.Count == 0)
+            {
+                if (rowsByTime.Count > 0) break;
+                to = from.AddSeconds(-1);
+                continue;
+            }
+
+            foreach (var row in rows)
+            {
+                rowsByTime[row.Time] = row;
+            }
+
+            var oldest = rows.Min(row => row.Time);
+            to = rows.Count >= apiMax ? oldest.AddSeconds(-1) : from.AddSeconds(-1);
+        }
+
+        return rowsByTime.Values.OrderBy(row => row.Time).ToList();
+    }
+
+    internal static string BuildPricesPath(string epic, string resolution, int max, DateTimeOffset? from = null, DateTimeOffset? to = null)
+    {
+        var parts = new List<string>
+        {
+            $"resolution={Uri.EscapeDataString(resolution)}",
+            $"max={max}",
+        };
+        if (from is not null) parts.Add($"from={Uri.EscapeDataString(FormatCapitalDate(from.Value))}");
+        if (to is not null) parts.Add($"to={Uri.EscapeDataString(FormatCapitalDate(to.Value))}");
+        return $"api/v1/prices/{Uri.EscapeDataString(epic)}?{string.Join("&", parts)}";
+    }
+
+    private static TimeSpan HistoricalWindow(string resolution) =>
+        resolution.ToUpperInvariant() switch
+        {
+            "HOUR" => TimeSpan.FromDays(30),
+            "HOUR_4" => TimeSpan.FromDays(120),
+            "MINUTE" or "MINUTE_5" or "MINUTE_15" or "MINUTE_30" => TimeSpan.FromDays(5),
+            "DAY" => TimeSpan.FromDays(730),
+            "WEEK" => TimeSpan.FromDays(3650),
+            _ => TimeSpan.FromDays(365),
+        };
+
+    private static string FormatCapitalDate(DateTimeOffset value) =>
+        value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
 
     internal static IReadOnlyList<OhlcPoint> ParseOhlcPrices(string json)
     {
