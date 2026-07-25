@@ -38,7 +38,8 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
         SyntheticTerminalHtmlExposesRequiredFunctions();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
-        SyntheticTerminalHtmlUsesPackagedKLineChartLibrary();
+        SyntheticTerminalHtmlRejectsKLineChartRuntime();
+        SyntheticTerminalHtmlUsesV3LightweightChartsTerminal();
         SyntheticTerminalHtmlExposesResizeFunction();
         SyntheticTerminalHtmlExposesDecisionChartControls();
         SyntheticTerminalHtmlExposesV2TerminalControls();
@@ -742,20 +743,45 @@ public static class SyntheticBasketBuilderTests
         if (!File.Exists(scriptPath)) throw new Exception("packaged Lightweight Charts script must be copied to output");
     }
 
-    private static void SyntheticTerminalHtmlUsesPackagedKLineChartLibrary()
+    private static void SyntheticTerminalHtmlRejectsKLineChartRuntime()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
         if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
         var html = File.ReadAllText(path);
-        if (!html.Contains("klinecharts.min.js", StringComparison.Ordinal))
+        if (html.Contains("klinecharts.min.js", StringComparison.Ordinal) ||
+            html.Contains("klinecharts.init", StringComparison.Ordinal))
         {
-            throw new Exception("terminal V2 HTML must use the packaged KLineChart asset");
+            throw new Exception("terminal V3 HTML must not use the previous KLineChart runtime");
         }
+    }
 
-        var scriptPath = Path.Combine(AppContext.BaseDirectory, "Assets", "klinecharts.min.js");
-        if (!File.Exists(scriptPath))
+    private static void SyntheticTerminalHtmlUsesV3LightweightChartsTerminal()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
+        var html = File.ReadAllText(path);
+        foreach (var required in new[]
         {
-            throw new Exception("packaged KLineChart asset must be copied to output");
+            "lightweight-charts.standalone.production.js",
+            "LightweightCharts.createChart",
+            "CandlestickSeries",
+            "LineSeries",
+            "window.renderTerminal",
+            "window.updateTerminal",
+            "window.setTerminalChartMode",
+            "window.setTerminalInterval",
+            "window.fitTerminalChart",
+            "window.placeSyntheticPreviewOrder",
+            "subscribeCrosshairMove",
+            "timeScale",
+            "priceScale",
+            "heikin"
+        })
+        {
+            if (!html.Contains(required, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new Exception($"terminal V3 HTML missing expected control {required}");
+            }
         }
     }
 
@@ -782,7 +808,7 @@ public static class SyntheticBasketBuilderTests
             "window.toggleTerminalComponents",
             "window.fitTerminalChart",
             "heikin",
-            "line",
+            "LineSeries",
             "subscribeCrosshairMove",
             "MA20",
             "MA50",
@@ -803,19 +829,19 @@ public static class SyntheticBasketBuilderTests
         var html = File.ReadAllText(path);
         foreach (var required in new[]
         {
-            "klinecharts.init",
+            "LightweightCharts.createChart",
             "window.setTerminalInterval",
-            "window.setTerminalIndicator",
-            "window.setTerminalDrawingTool",
+            "window.setTerminalChartMode",
+            "window.toggleTerminalMa",
             "window.placeSyntheticPreviewOrder",
-            "terminal-order-ticket",
+            "order-ticket",
             "SYNTHETIC FORMULA",
             "VOL MATCH"
         })
         {
             if (!html.Contains(required, StringComparison.Ordinal))
             {
-                throw new Exception($"terminal V2 HTML missing expected control {required}");
+                throw new Exception($"terminal V3 HTML missing expected control {required}");
             }
         }
     }
@@ -941,13 +967,15 @@ public static class SyntheticBasketBuilderTests
         {
             "Title=\"cap.com Terminal\"",
             "WindowState=\"Maximized\"",
-            "x:Name=\"StockSharpChartHost\"",
+            "x:Name=\"TerminalWebView\"",
             "x:Name=\"SyntheticFormulaText\"",
             "Click=\"BuildSynthetic_Click\"",
             "Click=\"BuyPreview_Click\"",
             "Click=\"SellPreview_Click\"",
             "x:Name=\"CandleTypeBox\"",
             "CandleType_SelectionChanged",
+            "Click=\"FitChart_Click\"",
+            "Click=\"ToggleTicket_Click\"",
             "AutomationProperties.Name=\"Seed symbol\"",
             "Click=\"BuildNikeSample_Click\"",
         })
@@ -980,10 +1008,11 @@ public static class SyntheticBasketBuilderTests
             "RenderSyntheticChart",
             "SyntheticTerminalChartPayload.Build",
             "PreviewSyntheticOrder",
-            "DisplayCandles",
-            "DrawPriceAxisLabels",
-            "DrawDateAxisLabels",
-            "NativeCandleCanvas is null",
+            "InitializeChartHostAsync",
+            "SendTerminalPayloadAsync",
+            "window.renderTerminal",
+            "window.updateTerminal",
+            "window.fitTerminalChart",
             "Heikin Ashi",
         })
         {

@@ -1,8 +1,8 @@
 using System.Collections.ObjectModel;
+using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
-using System.Windows.Shapes;
 
 namespace CAPETF.Desktop;
 
@@ -14,16 +14,20 @@ public partial class CapComTerminalWindow : Window
     private readonly ObservableCollection<TerminalComponentRow> _components = [];
     private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> _cachedCandlesByEpic =
         new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> _cachedCandlesByEpicByResolution =
+        new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
     private CapitalStreamingClient? _streaming;
     private SyntheticBasket? _basket;
+    private SyntheticTerminalPayload? _pendingPayload;
+    private bool _chartReady;
 
     public CapComTerminalWindow()
     {
         InitializeComponent();
         ComponentsList.ItemsSource = _components;
         LoadSavedCredentials();
-        InitializeChartHost();
-        SizeChanged += (_, _) => RenderNativeCandles();
+        _ = InitializeChartHostAsync();
+        SizeChanged += async (_, _) => await InvokeTerminalScriptAsync("window.resizeTerminal && window.resizeTerminal();");
     }
 
     private void LoadSavedCredentials()
@@ -71,6 +75,8 @@ public partial class CapComTerminalWindow : Window
                 _instruments.Clear();
                 _instruments.AddRange(cached.Instruments.Where(CapitalInstrumentTypes.IsStock));
                 _cachedCandlesByEpic = cached.OhlcByEpic;
+                _cachedCandlesByEpicByResolution = cached.OhlcByEpicAndResolution ??
+                    new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
                 RebuildBlocks();
                 var source = cached.SourceAsOf is null ? "" : $" Source date {cached.SourceAsOf:yyyy-MM-dd}.";
                 StatusText.Text = $"{_instruments.Count} stocks loaded from {cached.ChunkCount} cached stock chunks.{source}";
@@ -115,7 +121,8 @@ public partial class CapComTerminalWindow : Window
         var periodsPerYear = PeriodsPerYear(resolution);
         var minCandles = MinimumCandles(resolution);
         var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments, limit: 500);
-        var candles = BuildCachedCandles(candidates, minCandles, candidateLimit: 500);
+        var activeCachedCandles = CachedCandlesForResolution(resolution);
+        var candles = BuildCachedCandles(candidates, activeCachedCandles, minCandles, candidateLimit: 500);
 
         IReadOnlyList<MarketInstrument> selectionCandidates = SelectSyntheticCandidates(candidates, candles, maxSelection: 36);
 
@@ -134,7 +141,7 @@ public partial class CapComTerminalWindow : Window
                 seedText,
                 block,
                 _instruments,
-                _cachedCandlesByEpic.Count > 0 ? _cachedCandlesByEpic : candles,
+                activeCachedCandles.Count > 0 ? activeCachedCandles : candles,
                 periodsPerYear))
             : await Task.Run(() => SyntheticTerminalSelector.SelectBest(block, selectionCandidates, candles, periodsPerYear));
         if (_basket is null)
@@ -143,7 +150,7 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
-        RenderSyntheticChart(_basket);
+        await RenderSyntheticChartAsync(_basket);
         StatusText.Text = $"{_basket.Symbol}: {_basket.Components.Count} legs, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
     }
 
@@ -168,6 +175,8 @@ public partial class CapComTerminalWindow : Window
         StatusText.Text = "Loading Capital.com stocks...";
         _instruments.Clear();
         _cachedCandlesByEpic = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
+        _cachedCandlesByEpicByResolution =
+            new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
         var markets = await _api.SearchMarketsAsync(SearchBox.Text.Trim());
         foreach (var item in markets.Where(CapitalInstrumentTypes.IsStock))
         {
@@ -180,6 +189,7 @@ public partial class CapComTerminalWindow : Window
 
     private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> BuildCachedCandles(
         IReadOnlyList<MarketInstrument> candidates,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> source,
         int minCandles,
         int candidateLimit)
     {
@@ -190,7 +200,7 @@ public partial class CapComTerminalWindow : Window
         foreach (var item in candidates.Take(candidateLimit))
         {
             checkedCount++;
-            if (_cachedCandlesByEpic.TryGetValue(item.Epic, out var rows) && rows.Count >= minCandles)
+            if (source.TryGetValue(item.Epic, out var rows) && rows.Count >= minCandles)
             {
                 candles[item.Epic] = rows;
             }
@@ -198,6 +208,22 @@ public partial class CapComTerminalWindow : Window
 
         StatusText.Text = $"Cached history loaded: {candles.Count} usable of {checkedCount} checked.";
         return candles;
+    }
+
+    private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> CachedCandlesForResolution(string resolution)
+    {
+        if (_cachedCandlesByEpicByResolution.Count == 0) return _cachedCandlesByEpic;
+
+        var result = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (epic, byResolution) in _cachedCandlesByEpicByResolution)
+        {
+            if (byResolution.TryGetValue(resolution, out var rows) && rows.Count >= 2)
+            {
+                result[epic] = rows;
+            }
+        }
+
+        return result.Count > 0 ? result : _cachedCandlesByEpic;
     }
 
     private async Task<IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> LoadApiCandlesAsync(
@@ -263,7 +289,16 @@ public partial class CapComTerminalWindow : Window
 
     private void SellPreview_Click(object sender, RoutedEventArgs e) => PreviewSyntheticOrder("SELL");
 
-    private void CandleType_SelectionChanged(object sender, SelectionChangedEventArgs e) => RenderNativeCandles();
+    private async void CandleType_SelectionChanged(object sender, SelectionChangedEventArgs e) => await SetTerminalChartModeAsync();
+
+    private async void Resolution_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        await SetTerminalIntervalAsync();
+        if (_basket is not null && _instruments.Count > 0)
+        {
+            await BuildSyntheticAsync();
+        }
+    }
 
     private async void Streaming_QuoteReceived(object? sender, QuoteUpdate update)
     {
@@ -272,7 +307,7 @@ public partial class CapComTerminalWindow : Window
             if (_basket is null) return;
             var result = SyntheticTerminalLiveUpdate.Apply(_basket, update);
             if (!result.Matched) return;
-            RenderSyntheticChart(_basket);
+            if (result.Payload is not null) _ = SendTerminalPayloadAsync(result.Payload, liveUpdate: true);
             StatusText.Text = $"{_basket.Symbol}: live {_basket.BasketPrice:0.####}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
         });
     }
@@ -359,13 +394,38 @@ public partial class CapComTerminalWindow : Window
         return result;
     }
 
-    private void InitializeChartHost()
+    private async Task InitializeChartHostAsync()
     {
-        StockSharpChartHost.Children.Clear();
-        StatusText.Text = "Native chart host ready.";
+        try
+        {
+            var terminalPath = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+            if (!File.Exists(terminalPath))
+            {
+                StatusText.Text = $"Chart file missing: {terminalPath}";
+                return;
+            }
+
+            await TerminalWebView.EnsureCoreWebView2Async();
+            TerminalWebView.NavigationCompleted += async (_, _) =>
+            {
+                _chartReady = true;
+                await InvokeTerminalScriptAsync("window.resizeTerminal && window.resizeTerminal();");
+                if (_pendingPayload is not null)
+                {
+                    await SendTerminalPayloadAsync(_pendingPayload, liveUpdate: false);
+                }
+            };
+            TerminalWebView.Source = new Uri(terminalPath);
+            StatusText.Text = "Interactive chart host loading.";
+        }
+        catch (Exception ex)
+        {
+            _chartReady = false;
+            StatusText.Text = $"Interactive chart host failed: {ex.Message}";
+        }
     }
 
-    private void RenderSyntheticChart(SyntheticBasket basket)
+    private async Task RenderSyntheticChartAsync(SyntheticBasket basket)
     {
         var payload = SyntheticTerminalChartPayload.Build(basket);
         SymbolText.Text = $"{payload.Symbol}  {payload.Block}";
@@ -376,135 +436,72 @@ public partial class CapComTerminalWindow : Window
         _components.Clear();
         foreach (var component in payload.Components) _components.Add(component);
 
-        RenderNativeCandles();
+        await SendTerminalPayloadAsync(payload, liveUpdate: false);
+        await SetTerminalChartModeAsync();
+        await SetTerminalIntervalAsync();
     }
 
-    private void RenderNativeCandles()
+    private async Task SendTerminalPayloadAsync(SyntheticTerminalPayload payload, bool liveUpdate)
     {
-        if (NativeCandleCanvas is null) return;
+        _pendingPayload = payload;
+        if (!_chartReady || TerminalWebView.CoreWebView2 is null) return;
 
-        NativeCandleCanvas.Children.Clear();
-        if (_basket is null || _basket.Candles.Count < 2 || NativeCandleCanvas.ActualWidth < 80 || NativeCandleCanvas.ActualHeight < 80) return;
-
-        var candles = DisplayCandles(_basket.Candles);
-        var values = candles.SelectMany(point => new[] { point.High, point.Low }).Select(value => (double)value).ToList();
-        var min = values.Min();
-        var max = values.Max();
-        var range = Math.Max(0.0001, max - min);
-        var width = NativeCandleCanvas.ActualWidth;
-        var height = NativeCandleCanvas.ActualHeight;
-        var chartWidth = Math.Max(100, width - 64);
-        var chartHeight = Math.Max(80, height - 30);
-        var candleWidth = Math.Max(3, chartWidth / candles.Count * 0.58);
-
-        double X(int index) => index * chartWidth / Math.Max(1, candles.Count - 1);
-        double Y(decimal value) => chartHeight - (((double)value - min) / range * (chartHeight - 12)) + 4;
-
-        DrawPriceAxisLabels(min, max, chartWidth, chartHeight);
-        DrawDateAxisLabels(candles, chartWidth, chartHeight);
-
-        for (var index = 0; index < candles.Count; index++)
+        var json = JsonSerializer.Serialize(payload);
+        if (liveUpdate)
         {
-            var candle = candles[index];
-            var x = X(index);
-            var up = candle.Close >= candle.Open;
-            var brush = up ? Brushes.LimeGreen : Brushes.Crimson;
-            var wick = new Line
-            {
-                X1 = x,
-                X2 = x,
-                Y1 = Y(candle.High),
-                Y2 = Y(candle.Low),
-                Stroke = brush,
-                StrokeThickness = 1
-            };
-            NativeCandleCanvas.Children.Add(wick);
-
-            var openY = Y(candle.Open);
-            var closeY = Y(candle.Close);
-            var body = new Rectangle
-            {
-                Width = candleWidth,
-                Height = Math.Max(2, Math.Abs(closeY - openY)),
-                Fill = brush,
-                Stroke = brush,
-                StrokeThickness = 1
-            };
-            Canvas.SetLeft(body, x - candleWidth / 2);
-            Canvas.SetTop(body, Math.Min(openY, closeY));
-            NativeCandleCanvas.Children.Add(body);
+            await InvokeTerminalScriptAsync($"window.updateTerminal && window.updateTerminal({json});");
+        }
+        else
+        {
+            await InvokeTerminalScriptAsync($"window.renderTerminal && window.renderTerminal({json});");
         }
     }
 
-    private List<OhlcPoint> DisplayCandles(IReadOnlyList<OhlcPoint> source)
+    private async Task InvokeTerminalScriptAsync(string script)
     {
-        var ordered = source.OrderBy(point => point.Time).ToList();
-        if (SelectedCandleType() != "Heikin Ashi" || ordered.Count == 0) return ordered;
-
-        var result = new List<OhlcPoint>(ordered.Count);
-        decimal previousOpen = (ordered[0].Open + ordered[0].Close) / 2m;
-        decimal previousClose = (ordered[0].Open + ordered[0].High + ordered[0].Low + ordered[0].Close) / 4m;
-        foreach (var point in ordered)
+        try
         {
-            var close = (point.Open + point.High + point.Low + point.Close) / 4m;
-            var open = (previousOpen + previousClose) / 2m;
-            var high = Math.Max(point.High, Math.Max(open, close));
-            var low = Math.Min(point.Low, Math.Min(open, close));
-            result.Add(new OhlcPoint(point.Time, open, high, low, close));
-            previousOpen = open;
-            previousClose = close;
+            if (_chartReady && TerminalWebView.CoreWebView2 is not null)
+            {
+                await TerminalWebView.ExecuteScriptAsync(script);
+            }
         }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Chart command failed: {ex.Message}";
+        }
+    }
 
-        return result;
+    private async Task SetTerminalChartModeAsync()
+    {
+        var mode = SelectedCandleType() == "Heikin Ashi" ? "heikin" : "candles";
+        await InvokeTerminalScriptAsync($"window.setTerminalChartMode && window.setTerminalChartMode('{mode}');");
     }
 
     private string SelectedCandleType() =>
         (CandleTypeBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Candles";
 
-    private void DrawPriceAxisLabels(double min, double max, double chartWidth, double chartHeight)
+    private async Task SetTerminalIntervalAsync()
     {
-        var range = Math.Max(0.0001, max - min);
-        for (var index = 0; index <= 4; index++)
+        var interval = SelectedResolution() switch
         {
-            var value = min + range * (4 - index) / 4;
-            var y = 4 + index * (chartHeight - 12) / 4;
-            NativeCandleCanvas.Children.Add(new Line
-            {
-                X1 = 0,
-                X2 = chartWidth,
-                Y1 = y,
-                Y2 = y,
-                Stroke = new SolidColorBrush(Color.FromArgb(64, 148, 163, 184)),
-                StrokeThickness = 1
-            });
-
-            var label = new TextBlock
-            {
-                Text = value.ToString("0.####"),
-                Foreground = new SolidColorBrush(Color.FromRgb(147, 164, 186)),
-                FontSize = 11
-            };
-            Canvas.SetLeft(label, chartWidth + 8);
-            Canvas.SetTop(label, y - 8);
-            NativeCandleCanvas.Children.Add(label);
-        }
+            "Daily" => "1D",
+            "6H" => "6H",
+            "4H" => "4H",
+            "2H" => "2H",
+            _ => "1W",
+        };
+        await InvokeTerminalScriptAsync($"window.setTerminalInterval && window.setTerminalInterval('{interval}');");
     }
 
-    private void DrawDateAxisLabels(IReadOnlyList<OhlcPoint> candles, double chartWidth, double chartHeight)
+    private async void FitChart_Click(object sender, RoutedEventArgs e) => await FitTerminalChartAsync();
+
+    private async void ToggleTicket_Click(object sender, RoutedEventArgs e) =>
+        await InvokeTerminalScriptAsync("window.toggleTerminalComponents && window.toggleTerminalComponents();");
+
+    private async Task FitTerminalChartAsync()
     {
-        foreach (var index in new[] { 0, candles.Count / 2, candles.Count - 1 }.Distinct())
-        {
-            var label = new TextBlock
-            {
-                Text = candles[index].Time.ToString("yyyy-MM-dd"),
-                Foreground = new SolidColorBrush(Color.FromRgb(147, 164, 186)),
-                FontSize = 11
-            };
-            var x = index * chartWidth / Math.Max(1, candles.Count - 1);
-            Canvas.SetLeft(label, Math.Max(0, Math.Min(chartWidth - 72, x - 34)));
-            Canvas.SetTop(label, chartHeight + 8);
-            NativeCandleCanvas.Children.Add(label);
-        }
+        await InvokeTerminalScriptAsync("window.fitTerminalChart && window.fitTerminalChart();");
     }
 
     private void PreviewSyntheticOrder(string side)
@@ -519,6 +516,7 @@ public partial class CapComTerminalWindow : Window
         if (quantity <= 0) quantity = 1m;
         OrderPreviewText.Text = string.Join(Environment.NewLine, _basket.Components.Select(component =>
             $"{side} {quantity * component.Weight / 100m:0.####} x {component.Instrument.Epic}"));
+        _ = InvokeTerminalScriptAsync($"window.placeSyntheticPreviewOrder && window.placeSyntheticPreviewOrder('{side}', {quantity});");
     }
 
     protected override async void OnClosed(EventArgs e)
