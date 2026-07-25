@@ -97,17 +97,6 @@ public partial class CapComTerminalWindow : Window
         await BuildSyntheticAsync();
     }
 
-    private async void BuildNikeSample_Click(object sender, RoutedEventArgs e)
-    {
-        SearchBox.Text = "NKE";
-        if (_instruments.Count == 0)
-        {
-            await LoadStocksAsync();
-        }
-
-        await BuildSyntheticAsync();
-    }
-
     private async Task BuildSyntheticAsync()
     {
         if (_instruments.Count == 0)
@@ -123,7 +112,7 @@ public partial class CapComTerminalWindow : Window
         var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments, limit: 500);
         var activeCachedCandles = CachedCandlesForResolution(resolution);
         var candles = BuildCachedCandles(candidates, activeCachedCandles, minCandles, candidateLimit: 500);
-        var seedText = SearchBox.Text.Trim();
+        var seedText = SeedText();
         var seededCandles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(
             activeCachedCandles.Count > 0 ? activeCachedCandles : candles,
             StringComparer.OrdinalIgnoreCase);
@@ -221,7 +210,7 @@ public partial class CapComTerminalWindow : Window
         _cachedCandlesByEpic = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
         _cachedCandlesByEpicByResolution =
             new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
-        var markets = await _api.SearchMarketsAsync(SearchBox.Text.Trim());
+        var markets = await _api.SearchMarketsAsync(SeedText());
         foreach (var item in markets.Where(CapitalInstrumentTypes.IsStock))
         {
             _instruments.Add(item);
@@ -375,6 +364,37 @@ public partial class CapComTerminalWindow : Window
 
         BlockBox.ItemsSource = blocks;
         if (blocks.Count > 0) BlockBox.SelectedIndex = 0;
+        RebuildSeedOptions();
+    }
+
+    private void RebuildSeedOptions()
+    {
+        if (SearchBox is null) return;
+        var current = SearchBox.Text;
+        var block = SelectedBlock();
+        var options = _instruments
+            .Where(CapitalInstrumentTypes.IsStock)
+            .Where(item => string.Equals(item.Group, block, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(item => string.IsNullOrWhiteSpace(item.Symbol) ? item.Epic : item.Symbol, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(item =>
+            {
+                var symbol = string.IsNullOrWhiteSpace(item.Symbol) ? item.Epic : item.Symbol;
+                return $"{symbol} | {item.Name}";
+            })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        SearchBox.ItemsSource = options;
+        SearchBox.Text = current;
+    }
+
+    private void BlockBox_SelectionChanged(object sender, SelectionChangedEventArgs e) => RebuildSeedOptions();
+
+    private string SeedText()
+    {
+        var text = SearchBox.Text.Trim();
+        var delimiter = text.IndexOf(" | ", StringComparison.Ordinal);
+        return delimiter > 0 ? text[..delimiter].Trim() : text;
     }
 
     private string SelectedBlock() =>

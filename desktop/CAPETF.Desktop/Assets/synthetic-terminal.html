@@ -286,7 +286,7 @@
         <button type="button" data-ma="50" class="ma active">MA50</button>
         <button type="button" data-ma="200" class="ma active">MA200</button>
         <button type="button" id="fit-chart">Fit</button>
-        <button type="button" id="components-toggle">Ticket</button>
+        <button type="button" id="components-toggle">Legs / Formula</button>
       </div>
     </header>
 
@@ -307,6 +307,10 @@
         <section class="panel">
           <div class="panel-title">SYNTHETIC FORMULA</div>
           <div id="formula">Build a synthetic symbol.</div>
+        </section>
+        <section class="panel">
+          <div class="panel-title">Selection Basis</div>
+          <div id="selection-basis" class="muted">Build a basket to see why the legs were chosen.</div>
         </section>
         <section class="panel">
           <div class="panel-title">ORDER PREVIEW</div>
@@ -542,6 +546,7 @@
       document.getElementById('vol-match').textContent = components.length ? `VOL MATCH ${components.length} legs` : 'VOL MATCH n/a';
       document.getElementById('period').textContent = `${activeInterval} ${chartMode === 'heikin' ? 'Heikin Ashi' : 'Candles'}`;
       document.getElementById('formula').textContent = buildFormula(components);
+      document.getElementById('selection-basis').textContent = getField(payload, 'SelectionBasis', 'selectionBasis', 'Selection uses similar price path, similar volatility, similar drawdown, and same currency. Formula uses equal notional weights.');
       document.getElementById('components').innerHTML = components.map(componentRow).join('');
       renderFooter(last, last && last.time);
     }
@@ -564,10 +569,14 @@
       const bid = getField(component, 'Bid', 'bid', null);
       const offer = getField(component, 'Offer', 'offer', null);
       const tick = getField(component, 'LastTickText', 'lastTickText', 'n/a');
+      const role = getField(component, 'Role', 'role', 'Peer');
+      const vol = Number(getField(component, 'AnnualizedVolatilityPct', 'annualizedVolatilityPct', 0));
+      const fourYear = Number(getField(component, 'FourYearReturnPct', 'fourYearReturnPct', 0));
       return `<div class="component">
         <strong>${escapeHtml(name)}</strong>
         <div class="muted">${escapeHtml(epic)} ${escapeHtml(currency)}</div>
-        <div>${weight.toFixed(2)}% | last ${money(last)}</div>
+        <div>Role ${escapeHtml(role)} | ${weight.toFixed(2)}% | last ${money(last)}</div>
+        <div class="muted">Annualized vol ${vol.toFixed(2)}% | 4Y return ${fourYear.toFixed(2)}%</div>
         <div class="muted">bid ${money(bid)} | offer ${money(offer)} | ${escapeHtml(tick)}</div>
       </div>`;
     }
