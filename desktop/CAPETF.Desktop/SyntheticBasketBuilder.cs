@@ -115,15 +115,30 @@ public static class SyntheticBasketBuilder
 
     private static IEnumerable<OhlcPoint> BuildCandles(IReadOnlyList<Candidate> cluster, IReadOnlyList<decimal> weights)
     {
-        var dates = cluster.SelectMany(item => item.Candles.Select(candle => candle.Time.Date)).GroupBy(date => date)
-            .Where(group => group.Count() == cluster.Count).Select(group => group.Key).OrderBy(date => date).ToList();
+        var candlesByDate = cluster
+            .Select(item => item.Candles
+                .GroupBy(candle => candle.Time.Date)
+                .ToDictionary(group => group.Key, group => group.Last()))
+            .ToList();
+        var dates = candlesByDate
+            .Skip(1)
+            .Aggregate(
+                candlesByDate[0].Keys.ToHashSet(),
+                (shared, rows) =>
+                {
+                    shared.IntersectWith(rows.Keys);
+                    return shared;
+                })
+            .OrderBy(date => date)
+            .ToList();
+
         foreach (var date in dates)
         {
             decimal open = 0, high = 0, low = 0, close = 0;
             DateTimeOffset time = default;
             for (var index = 0; index < cluster.Count; index++)
             {
-                var candle = cluster[index].Candles.First(row => row.Time.Date == date);
+                var candle = candlesByDate[index][date];
                 var weight = weights[index] / 100m;
                 open += candle.Open * weight;
                 high += candle.High * weight;

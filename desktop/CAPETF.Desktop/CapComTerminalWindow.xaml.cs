@@ -12,6 +12,9 @@ public partial class CapComTerminalWindow : Window
     private readonly CapitalApiClient _api = new();
     private readonly List<MarketInstrument> _instruments = [];
     private readonly ObservableCollection<TerminalComponentRow> _components = [];
+    private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> _cachedCandlesByEpic =
+        new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
+    private CapitalStreamingClient? _streaming;
     private SyntheticBasket? _basket;
 
     public CapComTerminalWindow()
@@ -54,17 +57,28 @@ public partial class CapComTerminalWindow : Window
 
     private async void LoadStocks_Click(object sender, RoutedEventArgs e)
     {
-        await EnsureConnectedAsync();
-        StatusText.Text = "Loading Capital.com stocks...";
-        _instruments.Clear();
-        var markets = await _api.SearchMarketsAsync(SearchBox.Text.Trim());
-        foreach (var item in markets.Where(CapitalInstrumentTypes.IsStock).Take(240))
+        try
         {
-            _instruments.Add(item);
-        }
+            StatusText.Text = "Loading cached stock chunks...";
+            var cached = DashboardStockChunkLoader.LoadStocks();
+            if (cached.Instruments.Count > 0)
+            {
+                _instruments.Clear();
+                _instruments.AddRange(cached.Instruments.Where(CapitalInstrumentTypes.IsStock));
+                _cachedCandlesByEpic = cached.OhlcByEpic;
+                RebuildBlocks();
+                var source = cached.SourceAsOf is null ? "" : $" Source date {cached.SourceAsOf:yyyy-MM-dd}.";
+                StatusText.Text = $"{_instruments.Count} stocks loaded from {cached.ChunkCount} cached stock chunks.{source}";
+                return;
+            }
 
-        RebuildBlocks();
-        StatusText.Text = $"{_instruments.Count} stocks loaded.";
+            await LoadStocksFromApiAsync();
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Cached chunk load failed; trying Capital.com API. {ex.Message}";
+            await LoadStocksFromApiAsync();
+        }
     }
 
     private async void BuildSynthetic_Click(object sender, RoutedEventArgs e)
@@ -77,16 +91,98 @@ public partial class CapComTerminalWindow : Window
         }
 
         var block = SelectedBlock();
-        var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments, limit: 80);
         var resolution = SelectedResolution();
-        var requestResolution = RequestResolution(resolution);
         var periodsPerYear = PeriodsPerYear(resolution);
-        var maxCandles = MaxCandles(resolution);
         var minCandles = MinimumCandles(resolution);
+        var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments, limit: 500);
+        var candles = BuildCachedCandles(candidates, minCandles, candidateLimit: 500);
+
+        IReadOnlyList<MarketInstrument> selectionCandidates = SelectSyntheticCandidates(candidates, candles, maxSelection: 36);
+
+        if (candles.Count == 0 || selectionCandidates.Count < 3)
+        {
+            candles = await LoadApiCandlesAsync(block, candidates.Take(80).ToList(), resolution, minCandles);
+            selectionCandidates = SelectSyntheticCandidates(candidates, candles, maxSelection: 36);
+        }
+
+        StatusText.Text = $"Selecting basket from {selectionCandidates.Count} similar-history candidates...";
+        _basket = await Task.Run(() => SyntheticTerminalSelector.SelectBest(block, selectionCandidates, candles, periodsPerYear));
+        if (_basket is null)
+        {
+            StatusText.Text = $"No synthetic basket could be built. {candles.Count} symbols had usable history.";
+            return;
+        }
+
+        RenderSyntheticChart(_basket);
+        StatusText.Text = $"{_basket.Symbol}: {_basket.Components.Count} legs, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
+    }
+
+    private static IReadOnlyList<MarketInstrument> SelectSyntheticCandidates(
+        IReadOnlyList<MarketInstrument> candidates,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
+        int maxSelection)
+    {
+        return candidates
+            .Where(item => candles.ContainsKey(item.Epic))
+            .OrderBy(item => item.Price is null ? 1 : 0)
+            .ThenByDescending(item => candles.TryGetValue(item.Epic, out var rows) ? rows.Count : 0)
+            .ThenBy(item => string.IsNullOrWhiteSpace(item.Sector) || item.Sector == "All" ? 1 : 0)
+            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(maxSelection)
+            .ToList();
+    }
+
+    private async Task LoadStocksFromApiAsync()
+    {
+        await EnsureConnectedAsync();
+        StatusText.Text = "Loading Capital.com stocks...";
+        _instruments.Clear();
+        _cachedCandlesByEpic = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
+        var markets = await _api.SearchMarketsAsync(SearchBox.Text.Trim());
+        foreach (var item in markets.Where(CapitalInstrumentTypes.IsStock))
+        {
+            _instruments.Add(item);
+        }
+
+        RebuildBlocks();
+        StatusText.Text = $"{_instruments.Count} stocks loaded from Capital.com API.";
+    }
+
+    private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> BuildCachedCandles(
+        IReadOnlyList<MarketInstrument> candidates,
+        int minCandles,
+        int candidateLimit)
+    {
         var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>();
         var checkedCount = 0;
 
-        StatusText.Text = $"Scanning {candidates.Count} stocks for {block}...";
+        StatusText.Text = $"Scanning cached history for {Math.Min(candidates.Count, candidateLimit)} stocks...";
+        foreach (var item in candidates.Take(candidateLimit))
+        {
+            checkedCount++;
+            if (_cachedCandlesByEpic.TryGetValue(item.Epic, out var rows) && rows.Count >= minCandles)
+            {
+                candles[item.Epic] = rows;
+            }
+        }
+
+        StatusText.Text = $"Cached history loaded: {candles.Count} usable of {checkedCount} checked.";
+        return candles;
+    }
+
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> LoadApiCandlesAsync(
+        string block,
+        IReadOnlyList<MarketInstrument> candidates,
+        string resolution,
+        int minCandles)
+    {
+        await EnsureConnectedAsync();
+        var requestResolution = RequestResolution(resolution);
+        var maxCandles = MaxCandles(resolution);
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>();
+        var checkedCount = 0;
+
+        StatusText.Text = $"Scanning Capital.com history for {candidates.Count} stocks in {block}...";
         foreach (var item in candidates)
         {
             checkedCount++;
@@ -106,23 +202,31 @@ public partial class CapComTerminalWindow : Window
             }
         }
 
-        _basket = SyntheticTerminalSelector.SelectBest(block, candidates, candles, periodsPerYear);
-        if (_basket is null)
-        {
-            StatusText.Text = $"No synthetic basket could be built. {candles.Count} symbols had usable history.";
-            return;
-        }
-
-        RenderSyntheticChart(_basket);
-        StatusText.Text = $"{_basket.Symbol}: {_basket.Components.Count} legs, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
+        return candles;
     }
 
     private async void StreamSynthetic_Click(object sender, RoutedEventArgs e)
     {
         await EnsureConnectedAsync();
-        StatusText.Text = _basket is null
-            ? "Build a synthetic symbol before streaming."
-            : "Streaming hook is ready; live order placement is still disabled.";
+        if (_basket is null)
+        {
+            StatusText.Text = "Build a synthetic symbol before streaming.";
+            return;
+        }
+
+        if (_streaming is null)
+        {
+            _streaming = new CapitalStreamingClient();
+            _streaming.QuoteReceived += Streaming_QuoteReceived;
+            _streaming.StatusChanged += (_, message) => Dispatcher.Invoke(() => ConnectionText.Text = message);
+            await _streaming.ConnectAsync(_api.Session!);
+        }
+
+        var epics = SyntheticTerminalWorkspace.StreamingEpics(_basket);
+        await _streaming.SubscribeQuotesAsync(_api.Session!, epics);
+        await _streaming.SubscribeOhlcAsync(_api.Session!, epics, RequestResolution(SelectedResolution()));
+        ConnectionText.Text = $"Streaming {_basket.Symbol}";
+        StatusText.Text = $"Streaming {_basket.Symbol}: {epics.Count} component epics.";
     }
 
     private void BuyPreview_Click(object sender, RoutedEventArgs e) => PreviewSyntheticOrder("BUY");
@@ -130,6 +234,18 @@ public partial class CapComTerminalWindow : Window
     private void SellPreview_Click(object sender, RoutedEventArgs e) => PreviewSyntheticOrder("SELL");
 
     private void CandleType_SelectionChanged(object sender, SelectionChangedEventArgs e) => RenderNativeCandles();
+
+    private async void Streaming_QuoteReceived(object? sender, QuoteUpdate update)
+    {
+        await Dispatcher.InvokeAsync(() =>
+        {
+            if (_basket is null) return;
+            var result = SyntheticTerminalLiveUpdate.Apply(_basket, update);
+            if (!result.Matched) return;
+            RenderSyntheticChart(_basket);
+            StatusText.Text = $"{_basket.Symbol}: live {_basket.BasketPrice:0.####}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
+        });
+    }
 
     private async Task EnsureConnectedAsync()
     {
@@ -373,5 +489,16 @@ public partial class CapComTerminalWindow : Window
         if (quantity <= 0) quantity = 1m;
         OrderPreviewText.Text = string.Join(Environment.NewLine, _basket.Components.Select(component =>
             $"{side} {quantity * component.Weight / 100m:0.####} x {component.Instrument.Epic}"));
+    }
+
+    protected override async void OnClosed(EventArgs e)
+    {
+        if (_streaming is not null)
+        {
+            await _streaming.DisposeAsync();
+        }
+
+        _api.Dispose();
+        base.OnClosed(e);
     }
 }

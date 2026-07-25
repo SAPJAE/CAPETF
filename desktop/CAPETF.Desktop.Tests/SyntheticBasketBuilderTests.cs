@@ -12,6 +12,7 @@ public static class SyntheticBasketBuilderTests
         InverseVolatilityWeightsSumToOneHundred();
         InverseVolatilityWeightsRespectCapsAndMinimums();
         SyntheticCandlesUseWeightedOhlc();
+        SyntheticCandlesHandleDuplicateCachedDates();
         SyntheticBasketsDoNotMixCurrencies();
         SyntheticBasketsKeepBlankCurrenciesTogether();
         SyntheticBasketsAllowBlankCurrenciesInsideSelectedBlock();
@@ -44,6 +45,7 @@ public static class SyntheticBasketBuilderTests
         DesktopTerminalWorkspaceExposesChartFirstControls();
         DesktopTerminalWorkspaceExposesV2ProfessionalControls();
         CapComTerminalStartsWithoutDevExpressStockSharpRuntimeCrash();
+        CapComTerminalLoadsFullEncryptedStockChunks();
         TerminalWorkspaceModeNameIsAvailable();
         TerminalStreamingEpicsUseOnlySelectedSyntheticComponents();
     }
@@ -122,6 +124,29 @@ public static class SyntheticBasketBuilderTests
         AssertNear(22m, first.High, "weighted high should use component highs");
         AssertNear(19m, first.Low, "weighted low should use component lows");
         AssertNear(21m, first.Close, "weighted close should use component closes");
+    }
+
+    private static void SyntheticCandlesHandleDuplicateCachedDates()
+    {
+        var a = CreateStock("DUP-A", "Duplicate A");
+        var b = CreateStock("DUP-B", "Duplicate B");
+        var c = CreateStock("DUP-C", "Duplicate C");
+        var day = DateTimeOffset.Parse("2024-01-01T00:00:00Z");
+        var duplicateA = CreateCandles(day, 10m, 11m, 9m, 10.5m).ToList();
+        duplicateA.Insert(4, duplicateA[4] with { Close = duplicateA[4].Close + 1m });
+        var missingC = CreateCandles(day, 30m, 31m, 29m, 30.5m).Where((_, index) => index != 4).ToList();
+        missingC.Add(missingC[^1] with { Time = missingC[^1].Time.AddDays(1) });
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>
+        {
+            ["DUP-A"] = duplicateA,
+            ["DUP-B"] = CreateCandles(day, 20m, 21m, 19m, 20.5m),
+            ["DUP-C"] = missingC,
+        };
+
+        var result = SyntheticBasketBuilder.Build("US / USD / Tech", [a, b, c], candles, maxBaskets: 1);
+
+        if (result.Baskets.Count != 1) throw new Exception("duplicate cached dates must not prevent a valid basket");
+        if (result.Baskets[0].Candles.Count < 100) throw new Exception("duplicate cached dates must still produce aligned synthetic candles");
     }
 
     private static void SyntheticBasketsDoNotMixCurrencies()
@@ -914,6 +939,59 @@ public static class SyntheticBasketBuilderTests
             if (!source.Contains(required, StringComparison.Ordinal))
             {
                 throw new Exception($"cap.com Terminal source missing {required}");
+            }
+        }
+    }
+
+    private static void CapComTerminalLoadsFullEncryptedStockChunks()
+    {
+        var loaderPath = SourcePath("desktop", "CAPETF.Desktop", "DashboardStockChunkLoader.cs");
+        if (!File.Exists(loaderPath)) throw new Exception("cap.com Terminal must include a stock chunk loader");
+        var loader = File.ReadAllText(loaderPath);
+        foreach (var required in new[]
+        {
+            "stocks-*.enc.json",
+            "Rfc2898DeriveBytes.Pbkdf2",
+            "AesGcm",
+            "LoadStocks",
+            "OhlcByEpic",
+            "weeklyPoints",
+            "dailyPoints",
+            "hourlyPoints",
+            "BuildSyntheticCandles",
+        })
+        {
+            if (!loader.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"stock chunk loader missing {required}");
+            }
+        }
+
+        var project = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CAPETF.Desktop.csproj"));
+        if (!project.Contains("..\\..\\data\\stocks-*.enc.json", StringComparison.Ordinal) ||
+            !project.Contains("Link=\"data\\%(Filename)%(Extension)\"", StringComparison.Ordinal))
+        {
+            throw new Exception("desktop package must include encrypted stock chunks");
+        }
+
+        var terminal = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "DashboardStockChunkLoader.LoadStocks",
+            "_cachedCandlesByEpic",
+            "cached stock chunks",
+            "LoadStocksFromApiAsync",
+            "candidateLimit: 500",
+            "maxSelection: 36",
+            "Task.Run(() => SyntheticTerminalSelector.SelectBest",
+            "CapitalStreamingClient",
+            "SubscribeQuotesAsync",
+            "SyntheticTerminalLiveUpdate.Apply",
+        })
+        {
+            if (!terminal.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal full stock loading missing {required}");
             }
         }
     }
