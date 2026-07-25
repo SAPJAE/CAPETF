@@ -33,6 +33,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalSelectorPenalizesVolatilityMismatch();
         SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
         SyntheticTerminalHtmlExposesRequiredFunctions();
+        SyntheticTerminalHtmlUsesPackagedChartLibrary();
         TerminalWorkspaceModeNameIsAvailable();
         TerminalStreamingEpicsUseOnlySelectedSyntheticComponents();
     }
@@ -624,6 +625,19 @@ public static class SyntheticBasketBuilderTests
                 throw new Exception($"terminal chart HTML missing {functionName}");
             }
         }
+    }
+
+    private static void SyntheticTerminalHtmlUsesPackagedChartLibrary()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
+        var html = File.ReadAllText(path);
+        if (html.Contains("unpkg.com", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new Exception("terminal chart HTML must use the packaged Lightweight Charts script, not a CDN");
+        }
+        var scriptPath = Path.Combine(AppContext.BaseDirectory, "Assets", "lightweight-charts.standalone.production.js");
+        if (!File.Exists(scriptPath)) throw new Exception("packaged Lightweight Charts script must be copied to output");
     }
 
     private static void TerminalWorkspaceModeNameIsAvailable()
