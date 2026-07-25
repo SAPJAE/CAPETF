@@ -22,11 +22,15 @@ public static class SyntheticTerminalChartPayload
             MovingAverage(basket.Candles, 20),
             MovingAverage(basket.Candles, 50),
             MovingAverage(basket.Candles, 200),
-            basket.Components.Select(component => new TerminalComponentRow(
+            "Selection uses similar price path, similar volatility, similar drawdown, and same currency. Formula uses equal notional weights.",
+            basket.Components.Select((component, index) => new TerminalComponentRow(
                 component.Instrument.Name,
                 component.Instrument.Epic,
                 string.IsNullOrWhiteSpace(component.Instrument.Currency) ? "n/a" : component.Instrument.Currency.Trim(),
                 component.Weight,
+                index == 0 ? "Anchor" : "Peer",
+                component.AnnualizedVolatilityPct,
+                component.FourYearReturnPct,
                 component.Instrument.Bid,
                 component.Instrument.Offer,
                 component.DisplayPrice,

@@ -31,6 +31,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticQuoteUsesComponentPriceWhenDashboardInstrumentIsAbsent();
         SyntheticComponentDisplayPriceFallsBackToBaseline();
         SyntheticTerminalPayloadIncludesCandlesComponentsCurrencyAndMas();
+        SyntheticTerminalPayloadIncludesSelectionBasis();
         SyntheticTerminalSelectorChoosesHighestSimilarityBasket();
         SyntheticTerminalSelectorUsesThreeYearComparisonWindow();
         SyntheticTerminalSelectorPenalizesVolatilityMismatch();
@@ -48,6 +49,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlExposesResizeFunction();
         SyntheticTerminalHtmlExposesDecisionChartControls();
         SyntheticTerminalHtmlExposesV2TerminalControls();
+        CapComTerminalUsesClearActionLabelsAndSymbolDropdown();
         DesktopDefaultSearchDoesNotFilterStocksByEtf();
         DesktopResizesTerminalChartWhenWorkspaceOpens();
         DesktopTerminalWorkspaceExposesChartFirstControls();
@@ -608,6 +610,41 @@ public static class SyntheticBasketBuilderTests
         AssertNear(310.5m, payload.Ma20[^1].Value, "MA20 must average the last 20 closes");
     }
 
+    private static void SyntheticTerminalPayloadIncludesSelectionBasis()
+    {
+        var basket = new SyntheticBasket
+        {
+            Symbol = "SYN-BASIS",
+            Block = "US / USD / Tech",
+            AverageVolatilityPct = 22.5m,
+            SimilarityScore = 88.1m,
+            BasketPrice = 100m,
+            LastUpdated = DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
+        };
+        basket.Candles.Add(new OhlcPoint(DateTimeOffset.Parse("2026-01-01T00:00:00Z"), 100m, 101m, 99m, 100m));
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "AAA", Name = "Anchor Inc", Symbol = "AAA", Currency = "USD", Price = 100m },
+            33.3333m,
+            21.4m,
+            54.2m));
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "BBB", Name = "Peer Inc", Symbol = "BBB", Currency = "USD", Price = 50m },
+            33.3333m,
+            22.1m,
+            49.3m));
+
+        var payload = SyntheticTerminalChartPayload.Build(basket);
+
+        if (!payload.SelectionBasis.Contains("similar price path", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new Exception("terminal payload must explain the selection basis");
+        }
+        if (payload.Components[0].Role != "Anchor") throw new Exception("first component should be labelled as the anchor leg");
+        if (payload.Components[1].Role != "Peer") throw new Exception("later components should be labelled as peer legs");
+        AssertNear(21.4m, payload.Components[0].AnnualizedVolatilityPct, "component row should expose annualized volatility");
+        AssertNear(54.2m, payload.Components[0].FourYearReturnPct, "component row should expose four-year return");
+    }
+
     private static void SyntheticTerminalSelectorChoosesHighestSimilarityBasket()
     {
         var day = DateTimeOffset.Parse("2022-01-01T00:00:00Z");
@@ -1078,6 +1115,76 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void CapComTerminalUsesClearActionLabelsAndSymbolDropdown()
+    {
+        var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml"));
+        foreach (var required in new[]
+        {
+            "Content=\"Load Universe\"",
+            "Content=\"Build Basket\"",
+            "Content=\"Start Live Prices\"",
+            "Content=\"Legs / Formula\"",
+            "ComboBox x:Name=\"SearchBox\"",
+            "IsEditable=\"True\"",
+            "SelectionChanged=\"BlockBox_SelectionChanged\"",
+        })
+        {
+            if (!xaml.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal XAML missing clear terminal UI element {required}");
+            }
+        }
+
+        foreach (var misleading in new[]
+        {
+            "Content=\"Load Stocks\"",
+            "Content=\"Build Synthetic\"",
+            "Content=\"Nike Sample\"",
+            "Content=\"Stream\"",
+            "Content=\"Ticket\"",
+            "Click=\"BuildNikeSample_Click\"",
+        })
+        {
+            if (xaml.Contains(misleading, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal XAML still has misleading element {misleading}");
+            }
+        }
+
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "RebuildSeedOptions",
+            "SeedText",
+            "BlockBox_SelectionChanged",
+            "SearchBox.ItemsSource",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal source missing dropdown seed wiring {required}");
+            }
+        }
+        if (source.Contains("BuildNikeSample_Click", StringComparison.Ordinal) ||
+            source.Contains("SearchBox.Text = \"NKE\"", StringComparison.Ordinal))
+        {
+            throw new Exception("NKE sample shortcut must be removed from cap.com Terminal");
+        }
+
+        var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
+        foreach (var required in new[] { "Selection Basis", "Legs / Formula", "Annualized vol", "4Y return", "Role" })
+        {
+            if (!html.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal HTML missing selection-basis label {required}");
+            }
+        }
+        if (html.Contains(">Ticket<", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal HTML should use Legs / Formula instead of Ticket");
+        }
+    }
+
     private static void CapComTerminalStartsWithoutDevExpressStockSharpRuntimeCrash()
     {
         var app = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "App.xaml"));
@@ -1109,7 +1216,6 @@ public static class SyntheticBasketBuilderTests
             "Click=\"FitChart_Click\"",
             "Click=\"ToggleTicket_Click\"",
             "AutomationProperties.Name=\"Seed symbol\"",
-            "Click=\"BuildNikeSample_Click\"",
         })
         {
             if (!xaml.Contains(required, StringComparison.Ordinal))
@@ -1203,8 +1309,8 @@ public static class SyntheticBasketBuilderTests
             "CapitalStreamingClient",
             "SubscribeQuotesAsync",
             "SyntheticTerminalLiveUpdate.Apply",
-            "BuildNikeSample_Click",
-            "SearchBox.Text = \"NKE\"",
+            "RebuildSeedOptions",
+            "SeedText",
         })
         {
             if (!terminal.Contains(required, StringComparison.Ordinal))

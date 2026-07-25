@@ -9,6 +9,9 @@ public sealed record TerminalComponentRow(
     string Epic,
     string Currency,
     decimal Weight,
+    string Role,
+    decimal AnnualizedVolatilityPct,
+    decimal FourYearReturnPct,
     decimal? Bid,
     decimal? Offer,
     decimal? Last,
@@ -22,6 +25,7 @@ public sealed record SyntheticTerminalPayload(
     IReadOnlyList<TerminalLinePoint> Ma20,
     IReadOnlyList<TerminalLinePoint> Ma50,
     IReadOnlyList<TerminalLinePoint> Ma200,
+    string SelectionBasis,
     IReadOnlyList<TerminalComponentRow> Components);
 
 public static class SyntheticTerminalWorkspace

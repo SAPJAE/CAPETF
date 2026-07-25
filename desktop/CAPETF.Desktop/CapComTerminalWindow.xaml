@@ -57,18 +57,17 @@
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
                         <Button Content="Fit" Click="FitChart_Click"/>
-                        <Button Content="Ticket" Click="ToggleTicket_Click"/>
+                        <Button Content="Legs / Formula" Click="ToggleTicket_Click"/>
                     </StackPanel>
                 </DockPanel>
 
                 <WrapPanel Grid.Row="1" Margin="0,7,0,0" VerticalAlignment="Center">
-                    <TextBox x:Name="SearchBox" AutomationProperties.Name="Seed symbol" Width="150" Text="" ToolTip="Seed symbol or name, for example NKE." Margin="0,0,6,0"/>
+                    <ComboBox x:Name="SearchBox" AutomationProperties.Name="Seed symbol" Width="230" IsEditable="True" IsTextSearchEnabled="True" StaysOpenOnEdit="True" ToolTip="Choose a symbol from the selected block, or type one." Margin="0,0,6,0"/>
                     <Button Content="Connect" Click="Connect_Click"/>
-                    <Button Content="Load Stocks" Click="LoadStocks_Click"/>
-                    <Button Content="Build Synthetic" Click="BuildSynthetic_Click" Background="#1D4ED8" BorderBrush="#60A5FA"/>
-                    <Button Content="Nike Sample" Click="BuildNikeSample_Click" Background="#334155" BorderBrush="#64748B"/>
-                    <Button Content="Stream" Click="StreamSynthetic_Click" Background="#216E8A" BorderBrush="#38BDF8"/>
-                    <ComboBox x:Name="BlockBox" MinWidth="190"/>
+                    <Button Content="Load Universe" Click="LoadStocks_Click"/>
+                    <Button Content="Build Basket" Click="BuildSynthetic_Click" Background="#1D4ED8" BorderBrush="#60A5FA"/>
+                    <Button Content="Start Live Prices" Click="StreamSynthetic_Click" Background="#216E8A" BorderBrush="#38BDF8"/>
+                    <ComboBox x:Name="BlockBox" MinWidth="190" SelectionChanged="BlockBox_SelectionChanged"/>
                     <ComboBox x:Name="ResolutionBox" SelectionChanged="Resolution_SelectionChanged">
                         <ComboBoxItem Content="Weekly" IsSelected="True"/>
                         <ComboBoxItem Content="Daily"/>
