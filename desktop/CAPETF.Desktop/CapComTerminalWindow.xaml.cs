@@ -503,7 +503,7 @@ public partial class CapComTerminalWindow : Window
             var result = SyntheticTerminalLiveUpdate.Apply(_basket, update);
             if (!result.Matched) return;
             if (result.Payload is not null) _ = SendTerminalPayloadAsync(result.Payload, liveUpdate: true);
-            ChartMetaText.Text = $"{result.Payload?.CurrencyLabel ?? ""} | bid {FormatQuote(_basket.BidPrice)} | ask {FormatQuote(_basket.AskPrice)} | last {FormatQuote(_basket.LastPrice)}";
+            ChartMetaText.Text = $"{result.Payload?.CurrencyLabel ?? ""} | bid {FormatQuote(_basket.BidPrice)} | ask {FormatQuote(_basket.AskPrice)}";
             StatusText.Text = $"{_basket.Symbol}: live {_basket.BasketPrice:0.####}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
         });
     }
@@ -693,7 +693,7 @@ public partial class CapComTerminalWindow : Window
     {
         var payload = SyntheticTerminalChartPayload.Build(basket);
         SymbolText.Text = $"{payload.Symbol}  {payload.Block}";
-        ChartMetaText.Text = $"{payload.CurrencyLabel} | bid {FormatQuote(payload.BidPrice)} | ask {FormatQuote(payload.AskPrice)} | last {FormatQuote(payload.LastPrice)}";
+        ChartMetaText.Text = $"{payload.CurrencyLabel} | bid {FormatQuote(payload.BidPrice)} | ask {FormatQuote(payload.AskPrice)}";
         SyntheticFormulaText.Text = string.Join(Environment.NewLine + "+ ", basket.Components.Select(component =>
             $"{SyntheticOrderSizing.FormatDisplayMultiplier(component)} * {component.Instrument.Epic}"));
 

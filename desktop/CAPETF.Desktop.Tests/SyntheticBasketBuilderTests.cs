@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 
 namespace CAPETF.Desktop.Tests;
 
@@ -81,9 +82,11 @@ public static class SyntheticBasketBuilderTests
         SyntheticStrategiesRankExpectedSetups();
         SyntheticStrategiesExposeBuildOptions();
         SyntheticStrategiesReturnClosestFallbackCandidates();
-        SyntheticQuoteUsesFormulaMultipliersForBidAskLast();
-        SyntheticQuoteIgnoresZeroBidAskQuotes();
+        SyntheticQuoteUsesFormulaMultipliersForBidAsk();
+        SyntheticQuoteTreatsMissingOrZeroSidesAsUnavailable();
         SyntheticOrderSizingUsesCapitalDealRules();
+        ExecutablePreviewUsesCurrentEqualNotionalAndDealRules();
+        ExecutablePreviewRoundsUpToCapitalDealMinimumAndIncrement();
         SavedSyntheticBasketStorePersistsFormulaDetails();
     }
 
@@ -820,6 +823,12 @@ public static class SyntheticBasketBuilderTests
         if (payload.CurrencyLabel != "USD") throw new Exception("matching known component currency must be displayed");
         if (payload.Candles.Count != 220) throw new Exception("terminal payload must include all synthetic candles");
         if (payload.Components.Count != 2) throw new Exception("terminal payload must include component rows");
+        using var payloadJson = JsonDocument.Parse(JsonSerializer.Serialize(payload));
+        if (payloadJson.RootElement.TryGetProperty("LastPrice", out _)
+            || payloadJson.RootElement.GetProperty("Components")[0].TryGetProperty("Last", out _))
+        {
+            throw new Exception("terminal payload must expose bid/ask without synthetic last-price display fields");
+        }
         AssertNear(0.6m, payload.Components[0].FormulaMultiplier, "component row must include executable formula multiplier");
         AssertNear(0.6m, payload.Components[0].DisplayMultiplier, "component row should expose rounded formula display multiplier");
         if (payload.Ma20.Count == 0 || payload.Ma50.Count == 0 || payload.Ma200.Count == 0)
@@ -1987,7 +1996,7 @@ public static class SyntheticBasketBuilderTests
         if (belowLow[0].Instrument.Epic != "NEAR-LOW") throw new Exception("below-2Y-low fallback should prefer the closest candidate");
     }
 
-    private static void SyntheticQuoteUsesFormulaMultipliersForBidAskLast()
+    private static void SyntheticQuoteUsesFormulaMultipliersForBidAsk()
     {
         var basket = new SyntheticBasket { Symbol = "SYN-QUOTE" };
         basket.Components.Add(new SyntheticComponent(
@@ -2010,20 +2019,17 @@ public static class SyntheticBasketBuilderTests
         SyntheticQuoteCalculator.Refresh(basket);
         AssertNear(99m, basket.BidPrice ?? 0m, "synthetic bid should use formula multipliers");
         AssertNear(101m, basket.AskPrice ?? 0m, "synthetic ask should use formula multipliers");
-        AssertNear(100m, basket.LastPrice ?? 0m, "synthetic last should use formula multipliers");
 
         var payload = SyntheticTerminalChartPayload.Build(basket);
         AssertNear(99m, payload.BidPrice ?? 0m, "terminal payload should expose synthetic bid");
         AssertNear(101m, payload.AskPrice ?? 0m, "terminal payload should expose synthetic ask");
-        AssertNear(100m, payload.LastPrice ?? 0m, "terminal payload should expose synthetic last");
 
         SyntheticTerminalLiveUpdate.Apply(basket, new QuoteUpdate("QA", 109m, 111m, 110m, DateTimeOffset.UtcNow));
         AssertNear(104m, basket.BidPrice ?? 0m, "live quote should recalculate synthetic bid");
         AssertNear(106m, basket.AskPrice ?? 0m, "live quote should recalculate synthetic ask");
-        AssertNear(105m, basket.LastPrice ?? 0m, "live quote should recalculate synthetic last");
     }
 
-    private static void SyntheticQuoteIgnoresZeroBidAskQuotes()
+    private static void SyntheticQuoteTreatsMissingOrZeroSidesAsUnavailable()
     {
         var basket = new SyntheticBasket { Symbol = "SYN-ZERO" };
         basket.Components.Add(new SyntheticComponent(
@@ -2043,23 +2049,26 @@ public static class SyntheticBasketBuilderTests
             FormulaMultiplier = 0.25m,
         });
 
+        basket.Components[0].Instrument.Bid = null;
         SyntheticQuoteCalculator.Refresh(basket);
-        AssertNear(99m, basket.BidPrice ?? 0m, "valid bid should calculate before zero quote");
+        if (basket.BidPrice is not null) throw new Exception("a missing component bid must make the synthetic bid unavailable");
+        AssertNear(101m, basket.AskPrice ?? 0m, "a missing bid must not zero a valid synthetic ask");
 
-        SyntheticTerminalLiveUpdate.Apply(basket, new QuoteUpdate("ZA", 0m, 0m, 0m, DateTimeOffset.UtcNow));
+        basket.Components[0].Instrument.Bid = 99m;
+        basket.Components[0].Instrument.Offer = 0m;
+        SyntheticQuoteCalculator.Refresh(basket);
+        AssertNear(99m, basket.BidPrice ?? 0m, "a zero offer must not zero a valid synthetic bid");
+        if (basket.AskPrice is not null) throw new Exception("a zero component offer must make the synthetic ask unavailable");
 
-        AssertNear(99m, basket.BidPrice ?? 0m, "zero bid/ask quote must not replace a valid synthetic bid");
-        AssertNear(101m, basket.AskPrice ?? 0m, "zero bid/ask quote must not replace a valid synthetic ask");
-
-        var invalid = new SyntheticBasket { Symbol = "SYN-ZERO-INITIAL" };
-        invalid.Components.Add(new SyntheticComponent(new MarketInstrument { Epic = "ZX", Bid = 0m, Offer = 0m, Price = 100m }, 100m, 0m, 0m)
+        var zeroBid = new SyntheticBasket { Symbol = "SYN-ZERO-BID" };
+        zeroBid.Components.Add(new SyntheticComponent(new MarketInstrument { Epic = "ZX", Bid = 0m, Offer = 100m }, 100m, 0m, 0m)
         {
             FormulaMultiplier = 1m,
         });
-        SyntheticQuoteCalculator.Refresh(invalid);
-        if (invalid.BidPrice is not null || invalid.AskPrice is not null)
+        SyntheticQuoteCalculator.Refresh(zeroBid);
+        if (zeroBid.BidPrice is not null)
         {
-            throw new Exception("zero bid/ask inputs must display as unavailable, not as a tradable synthetic price");
+            throw new Exception("a zero bid must display as unavailable, not as a tradable synthetic price");
         }
     }
 
@@ -2085,6 +2094,45 @@ public static class SyntheticBasketBuilderTests
             FormulaMultiplier = 3.93081368m,
         };
         AssertNear(3.93m, SyntheticOrderSizing.DisplayMultiplier(freeSized), "display rounding should not require deal rules");
+    }
+
+    private static void ExecutablePreviewUsesCurrentEqualNotionalAndDealRules()
+    {
+        var component = new SyntheticComponent(
+            new MarketInstrument { Epic = "A", Bid = 49m, Offer = 51m, MinDealSize = 0.1m, MinSizeIncrement = 0.1m },
+            100m / 3m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 9.99m,
+        };
+
+        var preview = SyntheticOrderSizing.ExecutableLegPreview(component, 300m, 50m);
+
+        AssertNear(2m, preview.Quantity, "one-third of 300 at price 50 is quantity 2");
+        AssertNear(100m, preview.Notional, "preview notional must use executable quantity");
+        AssertNear(100m / 3m, preview.WeightPct, "preview weight must reflect the executable notional");
+    }
+
+    private static void ExecutablePreviewRoundsUpToCapitalDealMinimumAndIncrement()
+    {
+        var minimumComponent = new SyntheticComponent(
+            new MarketInstrument { Epic = "MIN", MinDealSize = 1m, MinSizeIncrement = 0.1m },
+            10m,
+            0m,
+            0m);
+        var minimumPreview = SyntheticOrderSizing.ExecutableLegPreview(minimumComponent, 300m, 50m);
+        AssertNear(1m, minimumPreview.Quantity, "preview quantity must round up to Capital.com minimum deal size");
+        AssertNear(50m, minimumPreview.Notional, "minimum quantity must determine preview notional");
+
+        var incrementComponent = new SyntheticComponent(
+            new MarketInstrument { Epic = "INC", MinDealSize = 0.1m, MinSizeIncrement = 0.25m },
+            34m,
+            0m,
+            0m);
+        var incrementPreview = SyntheticOrderSizing.ExecutableLegPreview(incrementComponent, 300m, 50m);
+        AssertNear(2.25m, incrementPreview.Quantity, "preview quantity must round upward to Capital.com size increment");
+        AssertNear(112.5m, incrementPreview.Notional, "increment-rounded quantity must determine preview notional");
     }
 
     private static void SavedSyntheticBasketStorePersistsFormulaDetails()

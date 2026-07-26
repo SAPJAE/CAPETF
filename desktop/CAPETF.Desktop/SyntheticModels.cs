@@ -109,7 +109,6 @@ public static class SyntheticQuoteCalculator
     {
         basket.BidPrice = SumStrict(basket.Components, component => component.Instrument.Bid);
         basket.AskPrice = SumStrict(basket.Components, component => component.Instrument.Offer);
-        basket.LastPrice = SumStrict(basket.Components, ComponentLastPrice);
     }
 
     private static decimal? SumStrict(
@@ -127,16 +126,5 @@ public static class SyntheticQuoteCalculator
         }
 
         return count == 0 ? null : decimal.Round(total, 6);
-    }
-
-    private static decimal? ComponentLastPrice(SyntheticComponent component)
-    {
-        if (component.DisplayPrice is not null) return component.DisplayPrice;
-        if (component.Instrument.Bid is not null && component.Instrument.Offer is not null)
-        {
-            return (component.Instrument.Bid.Value + component.Instrument.Offer.Value) / 2m;
-        }
-
-        return null;
     }
 }

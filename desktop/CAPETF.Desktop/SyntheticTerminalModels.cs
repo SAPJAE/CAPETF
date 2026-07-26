@@ -20,7 +20,6 @@ public sealed record TerminalComponentRow(
     decimal FourYearReturnPct,
     decimal? Bid,
     decimal? Offer,
-    decimal? Last,
     string LastTickText);
 
 public sealed record SyntheticTerminalPayload(
@@ -29,7 +28,6 @@ public sealed record SyntheticTerminalPayload(
     string CurrencyLabel,
     decimal? BidPrice,
     decimal? AskPrice,
-    decimal? LastPrice,
     IReadOnlyList<TerminalCandle> Candles,
     IReadOnlyList<TerminalLinePoint> Ma20,
     IReadOnlyList<TerminalLinePoint> Ma50,

@@ -20,7 +20,6 @@ public static class SyntheticTerminalChartPayload
             CurrencyLabel(basket),
             basket.BidPrice,
             basket.AskPrice,
-            basket.LastPrice ?? basket.BasketPrice,
             candles,
             MovingAverage(basket.Candles, 20),
             MovingAverage(basket.Candles, 50),
@@ -42,7 +41,6 @@ public static class SyntheticTerminalChartPayload
                 component.FourYearReturnPct,
                 component.Instrument.Bid,
                 component.Instrument.Offer,
-                component.DisplayPrice,
                 component.Instrument.LastTickAt?.ToLocalTime().ToString("HH:mm:ss") ?? "n/a")).ToList());
     }
 
