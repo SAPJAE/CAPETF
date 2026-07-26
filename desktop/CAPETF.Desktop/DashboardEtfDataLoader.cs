@@ -139,7 +139,7 @@ public static class DashboardEtfDataLoader
     private static IReadOnlySet<string> EmptyEtfEpics() =>
         new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-    private static IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> BuildCandlesByResolution(JsonElement item)
+    internal static IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> BuildCandlesByResolution(JsonElement item)
     {
         var result = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
         AddCandles(result, "Weekly", ReadChartPoints(item, "weeklyPoints"));
@@ -147,9 +147,9 @@ public static class DashboardEtfDataLoader
         var hourly = ClosePointsToCandles(ReadChartPoints(item, "hourlyPoints"));
         if (hourly.Count >= 2)
         {
-            result["2H"] = AggregateCandles(hourly, 2);
-            result["4H"] = AggregateCandles(hourly, 4);
-            result["6H"] = AggregateCandles(hourly, 6);
+            result["2H"] = SessionAwareHourlyAggregation.Aggregate(hourly, 2);
+            result["4H"] = SessionAwareHourlyAggregation.Aggregate(hourly, 4);
+            result["6H"] = SessionAwareHourlyAggregation.Aggregate(hourly, 6);
         }
 
         if (result.Count == 0) AddCandles(result, "Weekly", ReadChartPoints(item, "monthlyPoints"));
@@ -160,19 +160,6 @@ public static class DashboardEtfDataLoader
     {
         var candles = ClosePointsToCandles(points);
         if (candles.Count >= 2) target[resolution] = candles;
-    }
-
-    private static IReadOnlyList<OhlcPoint> AggregateCandles(IReadOnlyList<OhlcPoint> source, int bucketSize)
-    {
-        var ordered = source.OrderBy(point => point.Time).ToList();
-        var result = new List<OhlcPoint>();
-        for (var index = 0; index + bucketSize <= ordered.Count; index += bucketSize)
-        {
-            var bucket = ordered.Skip(index).Take(bucketSize).ToList();
-            result.Add(new OhlcPoint(bucket[^1].Time, bucket[0].Open, bucket.Max(point => point.High), bucket.Min(point => point.Low), bucket[^1].Close));
-        }
-
-        return result;
     }
 
     private static IReadOnlyList<OhlcPoint> ClosePointsToCandles(IReadOnlyList<ChartPoint> points)

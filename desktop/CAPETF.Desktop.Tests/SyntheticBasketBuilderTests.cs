@@ -26,6 +26,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticHistoryServiceMapsTerminalTimeframesToCapitalResolutions();
         SyntheticHistoryServiceAggregatesHourlyCandlesLocally();
         SyntheticHistoryServiceAggregatesTradingSessionsAndRejectsGaps();
+        CachedIntradayLoadersAggregateOnlyConsecutiveHourlyRuns();
         SelectedHistoryRebuildKeepsTheExactSelectedEpics();
         SelectedHistoryRebuildRejectsMissingSelectedLeg();
         SelectedHistoryValidationUsesDailyAndWeeklyAlignmentKeys();
@@ -326,7 +327,7 @@ public static class SyntheticBasketBuilderTests
     {
         AssertEqual("HOUR", SyntheticHistoryService.RequestResolution("2H"), "2H source");
         AssertEqual("HOUR", SyntheticHistoryService.RequestResolution("6H"), "6H source");
-        AssertEqual("HOUR_4", SyntheticHistoryService.RequestResolution("4H"), "4H source");
+        AssertEqual("HOUR", SyntheticHistoryService.RequestResolution("4H"), "4H source");
         AssertEqual("DAY", SyntheticHistoryService.RequestResolution("Daily"), "daily source");
         AssertEqual("WEEK", SyntheticHistoryService.RequestResolution("Weekly"), "weekly source");
     }
@@ -603,6 +604,91 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception("a 2H candle must not bridge the missing hourly bar");
         }
+    }
+
+    private static void CachedIntradayLoadersAggregateOnlyConsecutiveHourlyRuns()
+    {
+        var firstSession = new[]
+        {
+            DateTimeOffset.Parse("2026-03-08T00:00:00-05:00"),
+            DateTimeOffset.Parse("2026-03-08T01:00:00-05:00"),
+            DateTimeOffset.Parse("2026-03-08T03:00:00-04:00"),
+            DateTimeOffset.Parse("2026-03-08T04:00:00-04:00"),
+            DateTimeOffset.Parse("2026-03-08T05:00:00-04:00"),
+            DateTimeOffset.Parse("2026-03-08T06:00:00-04:00"),
+        };
+        var secondStart = DateTimeOffset.Parse("2026-03-09T09:30:00-04:00");
+        var secondSession = Enumerable.Range(0, 6).Select(offset => secondStart.AddHours(offset)).ToArray();
+        var gapStart = DateTimeOffset.Parse("2026-03-10T09:30:00-04:00");
+        var gapSession = new[] { 0, 1, 3, 4, 5, 6 }.Select(offset => gapStart.AddHours(offset)).ToArray();
+        var times = firstSession.Concat(secondSession).Concat(gapSession).ToList();
+        var json = JsonSerializer.Serialize(new
+        {
+            hourlyPoints = times.Select((time, index) => new { d = time.ToString("O"), p = 100m + index }).ToList(),
+        });
+        using var document = JsonDocument.Parse(json);
+
+        var stock = DashboardStockChunkLoader.BuildSyntheticCandlesByResolution(document.RootElement);
+        var etf = DashboardEtfDataLoader.BuildCandlesByResolution(document.RootElement);
+        var serviceRows = times.Select((time, index) => FlatCandle(time, 100m + index)).ToList();
+        var expected = new Dictionary<string, IReadOnlyList<DateTimeOffset>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["2H"] = [firstSession[1], firstSession[3], firstSession[5], secondSession[1], secondSession[3], secondSession[5], gapSession[1], gapSession[3], gapSession[5]],
+            ["4H"] = [firstSession[3], secondSession[3], gapSession[5]],
+            ["6H"] = [firstSession[5], secondSession[5]],
+        };
+
+        foreach (var interval in new[] { "2H", "4H", "6H" })
+        {
+            AssertCandleTimes(expected[interval], stock[interval], $"stock cached {interval}");
+            AssertCandleTimes(expected[interval], etf[interval], $"ETF cached {interval}");
+            AssertCandleTimes(expected[interval], SyntheticHistoryService.Transform(serviceRows, interval), $"service {interval}");
+        }
+
+        var selected = new[]
+        {
+            CreateStock("SELECTED-A", "Selected A"),
+            CreateStock("SELECTED-B", "Selected B"),
+            CreateStock("SELECTED-C", "Selected C"),
+        };
+        var cached = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["SELECTED-A"] = stock["4H"],
+            ["SELECTED-B"] = etf["4H"],
+            ["SELECTED-C"] = stock["4H"],
+        };
+        var apiOverride = FlatCandle(expected["4H"][0], 999m);
+        var merged = SyntheticHistoryService.MergeSelectedHistory(
+            selected,
+            "4H",
+            new HistoryLoadResult(
+                new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["SELECTED-A"] = [apiOverride],
+                },
+                null,
+                null,
+                0),
+            cached);
+
+        AssertEqual(3, merged.SharedCount, "partial intraday API history must retain only valid cached shared buckets");
+        AssertNear(999m, merged.CandlesByEpic["SELECTED-A"].Single(row => row.Time == apiOverride.Time).Close,
+            "partial API history must win without replacing valid cached 4H coverage");
+        if (merged.CandlesByEpic.Values.SelectMany(rows => rows).Any(row => row.Time == gapSession[2]))
+        {
+            throw new Exception("partial API merge must not promote a cached bucket spanning a missing hourly bar");
+        }
+    }
+
+    private static void AssertCandleTimes(
+        IReadOnlyList<DateTimeOffset> expected,
+        IReadOnlyList<OhlcPoint> actual,
+        string message)
+    {
+        AssertEqual(
+            string.Join("|", expected.Select(time => time.ToUniversalTime().ToString("O"))),
+            string.Join("|", actual.Select(row => row.Time.ToUniversalTime().ToString("O"))),
+            message);
     }
 
     private static void SyntheticIndexStartsAtOneHundredOnFirstSharedCandle()
