@@ -366,7 +366,10 @@ public partial class CapComTerminalWindow : Window
 
     private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> CachedCandlesForResolution(string resolution)
     {
-        if (_cachedCandlesByEpicByResolution.Count == 0) return _cachedCandlesByEpic;
+        if (_cachedCandlesByEpicByResolution.Count == 0)
+        {
+            return resolution == "Weekly" ? _cachedCandlesByEpic : EmptyCandles();
+        }
 
         var result = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
         foreach (var (epic, byResolution) in _cachedCandlesByEpicByResolution)
@@ -377,7 +380,7 @@ public partial class CapComTerminalWindow : Window
             }
         }
 
-        return result.Count > 0 ? result : _cachedCandlesByEpic;
+        return result;
     }
 
     private async Task<HistoryLoadResult> LoadSelectedHistoryAsync(
@@ -391,7 +394,12 @@ public partial class CapComTerminalWindow : Window
             _operationState.Report($"Loading full {resolution} history", update.CompletedComponents, update.TotalComponents);
             StatusText.Text = $"Loading full {resolution} history for selected leg {update.CompletedComponents} of {update.TotalComponents}: {update.Epic}.";
         });
-        return await _history.LoadSelectedAsync(selectedComponents, resolution, progress);
+        var apiHistory = await _history.LoadSelectedAsync(selectedComponents, resolution, progress);
+        return SyntheticHistoryService.MergeSelectedHistory(
+            selectedComponents,
+            resolution,
+            apiHistory,
+            CachedCandlesForResolution(resolution));
     }
 
     private async Task<HistoryLoadResult> LoadCandidateHistoryAsync(

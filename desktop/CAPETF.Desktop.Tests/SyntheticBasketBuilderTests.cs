@@ -29,6 +29,8 @@ public static class SyntheticBasketBuilderTests
         SelectedHistoryRebuildKeepsTheExactSelectedEpics();
         SelectedHistoryRebuildRejectsMissingSelectedLeg();
         SelectedHistoryValidationUsesDailyAndWeeklyAlignmentKeys();
+        SelectedHistoryMergeUsesApiPrecedenceAndCachedWeeklyCoverage();
+        SelectedHistoryLoaderMergesTheActiveResolutionCache();
         InverseVolatilityWeightsSumToOneHundred();
         InverseVolatilityWeightsRespectCapsAndMinimums();
         SyntheticCandlesUsePriceStabilizedOhlc();
@@ -507,6 +509,68 @@ public static class SyntheticBasketBuilderTests
             "US / USD / Tech", selected, new HistoryLoadResult(weeklyRows, null, null, 3),
             timeframe: "Weekly", periodsPerYear: 52, minimumCandles: 3);
         if (weekly is null) throw new Exception("weekly validation must align matching calendar weeks across market timestamp offsets");
+    }
+
+    private static void SelectedHistoryMergeUsesApiPrecedenceAndCachedWeeklyCoverage()
+    {
+        var start = DateTimeOffset.Parse("2023-01-02T00:00:00Z");
+        var selected = new[]
+        {
+            CreateStock("SELECTED-A", "Selected A"),
+            CreateStock("SELECTED-B", "Selected B"),
+            CreateStock("SELECTED-C", "Selected C"),
+        };
+        IReadOnlyList<OhlcPoint> WeeklyRows(decimal initial) => Enumerable.Range(0, 120)
+            .Select(index =>
+            {
+                var close = initial + index + (index % 2 == 0 ? 1m : -1m);
+                return FlatCandle(start.AddDays(index * 7), close);
+            })
+            .ToList();
+
+        var cached = selected.ToDictionary(
+            item => item.Epic,
+            item => WeeklyRows(item.Epic == "SELECTED-A" ? 100m : item.Epic == "SELECTED-B" ? 200m : 300m),
+            StringComparer.OrdinalIgnoreCase);
+        cached["UNRELATED"] = WeeklyRows(400m);
+        var apiWinningRow = FlatCandle(start.AddDays(119 * 7 + 1), 777m);
+        var api = new HistoryLoadResult(
+            new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["SELECTED-A"] = [apiWinningRow],
+                ["SELECTED-C"] = [FlatCandle(start.AddDays(119 * 7 + 2), 333m)],
+                ["UNRELATED"] = [FlatCandle(start, 999m)],
+            },
+            null,
+            null,
+            0);
+
+        var merged = SyntheticHistoryService.MergeSelectedHistory(selected, "Weekly", api, cached);
+
+        AssertEqual(3, merged.CandlesByEpic.Count, "selected history merge must not leak unrelated epics");
+        AssertEqual(120, merged.CandlesByEpic["SELECTED-A"].Count, "API rows must overlay cached timeframe keys rather than duplicate them");
+        AssertNear(777m, merged.CandlesByEpic["SELECTED-A"][^1].Close, "API history must win for duplicate weekly keys");
+        AssertEqual(120, merged.CandlesByEpic["SELECTED-B"].Count, "empty API history must retain cached selected-leg coverage");
+        AssertEqual(120, merged.SharedCount, "shared metadata must be recalculated from the merged strict intersection");
+        AssertEqual(start, merged.SharedStart, "merged shared start");
+        AssertEqual(apiWinningRow.Time, merged.SharedEnd, "merged shared end must use the winning API timestamp");
+
+        var basket = SyntheticHistoryService.BuildSelected(
+            "US / USD / Tech", selected, merged, "Weekly", periodsPerYear: 52, minimumCandles: 120);
+        if (basket is null) throw new Exception("cached selected-leg weekly coverage must keep the basket buildable when API history is partial");
+    }
+
+    private static void SelectedHistoryLoaderMergesTheActiveResolutionCache()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        var start = source.IndexOf("private async Task<HistoryLoadResult> LoadSelectedHistoryAsync", StringComparison.Ordinal);
+        var end = source.IndexOf("private async Task<HistoryLoadResult> LoadCandidateHistoryAsync", start, StringComparison.Ordinal);
+        var method = source[start..end];
+
+        AssertTrue(method.Contains("MergeSelectedHistory", StringComparison.Ordinal),
+            "the shared selected-history loader must merge API and cached history");
+        AssertTrue(method.Contains("CachedCandlesForResolution(resolution)", StringComparison.Ordinal),
+            "the selected-history merge must use only the active resolution cache");
     }
 
     private static void SyntheticHistoryServiceAggregatesTradingSessionsAndRejectsGaps()

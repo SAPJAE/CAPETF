@@ -82,6 +82,44 @@ public sealed class SyntheticHistoryService
             _ => source.OrderBy(point => point.Time).ToList(),
         };
 
+    public static HistoryLoadResult MergeSelectedHistory(
+        IReadOnlyList<MarketInstrument> selectedComponents,
+        string timeframe,
+        HistoryLoadResult apiHistory,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> cachedHistory)
+    {
+        var components = selectedComponents
+            .Where(component => !string.IsNullOrWhiteSpace(component.Epic))
+            .GroupBy(component => component.Epic, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+        var merged = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var component in components)
+        {
+            var rowsByKey = new Dictionary<string, OhlcPoint>(StringComparer.Ordinal);
+            if (cachedHistory.TryGetValue(component.Epic, out var cachedRows))
+            {
+                foreach (var row in cachedRows) rowsByKey[AlignmentKey(row.Time, timeframe)] = row;
+            }
+            if (apiHistory.CandlesByEpic.TryGetValue(component.Epic, out var apiRows))
+            {
+                foreach (var row in apiRows) rowsByKey[AlignmentKey(row.Time, timeframe)] = row;
+            }
+            if (rowsByKey.Count > 0)
+            {
+                merged[component.Epic] = rowsByKey.Values.OrderBy(row => row.Time).ToList();
+            }
+        }
+
+        var sharedTimes = FindSharedTimes(merged, components, timeframe);
+        return new HistoryLoadResult(
+            merged,
+            sharedTimes.Count == 0 ? null : sharedTimes[0],
+            sharedTimes.Count == 0 ? null : sharedTimes[^1],
+            sharedTimes.Count);
+    }
+
     public static SyntheticBasket? BuildSelected(
         string block,
         IReadOnlyList<MarketInstrument> selectedComponents,
