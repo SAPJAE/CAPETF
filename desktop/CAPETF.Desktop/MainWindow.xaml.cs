@@ -373,7 +373,7 @@ public partial class MainWindow : Window
             }
 
             if (!_dataOperations.IsCurrent(operation)) return;
-            var basket = SyntheticTerminalSelector.SelectBest(block, instruments, candles, periodsPerYear);
+            var basket = SyntheticTerminalSelector.SelectBest(block, instruments, candles, periodsPerYear, minimumCandles);
             if (basket is null)
             {
                 TerminalStatusText.Text = $"No terminal synthetic instrument could be built for {block}. Checked {checkedCount} stocks; {candles.Count} had enough {TerminalTimeframeText().ToLowerInvariant()} history.";

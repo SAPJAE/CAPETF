@@ -16,6 +16,9 @@ public static class SyntheticBasketBuilderTests
         SyntheticFormulaUsesEqualNotionalWeights();
         SyntheticFormulaUsesPriceStabilizedMultipliers();
         SyntheticCandlesHandleDuplicateCachedDates();
+        SyntheticCandlesUseTimestampIntersectionForIntradayHistory();
+        SyntheticCandlesKeepFullSharedTimestampHistory();
+        SyntheticBuilderAcceptsConfiguredIntradayMinimum();
         SyntheticBasketsDoNotMixCurrencies();
         SyntheticBasketsKeepBlankCurrenciesTogether();
         SyntheticBasketsAllowBlankCurrenciesInsideSelectedBlock();
@@ -240,6 +243,81 @@ public static class SyntheticBasketBuilderTests
 
         if (result.Baskets.Count != 1) throw new Exception("duplicate cached dates must not prevent a valid basket");
         if (result.Baskets[0].Candles.Count < 100) throw new Exception("duplicate cached dates must still produce aligned synthetic candles");
+    }
+
+    private static void SyntheticCandlesUseTimestampIntersectionForIntradayHistory()
+    {
+        var a = CreateStock("INTRA-A", "Intraday A");
+        var b = CreateStock("INTRA-B", "Intraday B");
+        var c = CreateStock("INTRA-C", "Intraday C");
+        var start = DateTimeOffset.Parse("2026-01-01T08:00:00Z");
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>
+        {
+            ["INTRA-A"] = CreateIntradayCandles(start, 56m, 120, TimeSpan.FromHours(1)),
+            ["INTRA-B"] = CreateIntradayCandles(start, 127m, 120, TimeSpan.FromHours(1)),
+            ["INTRA-C"] = CreateIntradayCandles(start, 162m, 120, TimeSpan.FromHours(1)),
+        };
+
+        var result = SyntheticBasketBuilder.Build("US / USD / Tech", [a, b, c], candles, maxBaskets: 1, periodsPerYear: 252 * 4);
+        var basket = result.Baskets.Single();
+
+        if (basket.Candles.Count != 120)
+        {
+            throw new Exception($"intraday synthetic candles must preserve every shared timestamp, got {basket.Candles.Count}");
+        }
+
+        if (basket.Candles[0].Time != start || basket.Candles[^1].Time != start.AddHours(119))
+        {
+            throw new Exception("intraday synthetic candles must keep exact shared candle times");
+        }
+    }
+
+    private static void SyntheticCandlesKeepFullSharedTimestampHistory()
+    {
+        var a = CreateStock("FULL-A", "Full A");
+        var b = CreateStock("FULL-B", "Full B");
+        var c = CreateStock("FULL-C", "Full C");
+        var sharedStart = DateTimeOffset.Parse("2023-02-01T00:00:00Z");
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>
+        {
+            ["FULL-A"] = CreateIntradayCandles(sharedStart.AddDays(-21), 80m, 340, TimeSpan.FromDays(7)),
+            ["FULL-B"] = CreateIntradayCandles(sharedStart, 120m, 320, TimeSpan.FromDays(7)),
+            ["FULL-C"] = CreateIntradayCandles(sharedStart, 160m, 330, TimeSpan.FromDays(7)),
+        };
+
+        var result = SyntheticBasketBuilder.Build("US / USD / Tech", [a, b, c], candles, maxBaskets: 1);
+        var basket = result.Baskets.Single();
+
+        if (basket.Candles.Count != 320)
+        {
+            throw new Exception($"synthetic basket should keep the full intersected history, got {basket.Candles.Count}");
+        }
+
+        if (basket.Candles[0].Time != sharedStart || basket.Candles[^1].Time != sharedStart.AddDays(7 * 319))
+        {
+            throw new Exception("synthetic basket should use the shared timestamp intersection across all legs");
+        }
+    }
+
+    private static void SyntheticBuilderAcceptsConfiguredIntradayMinimum()
+    {
+        var a = CreateStock("MIN-A", "Minimum A");
+        var b = CreateStock("MIN-B", "Minimum B");
+        var c = CreateStock("MIN-C", "Minimum C");
+        var start = DateTimeOffset.Parse("2026-01-01T08:00:00Z");
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>
+        {
+            ["MIN-A"] = CreateIntradayCandles(start, 90m, 60, TimeSpan.FromHours(2)),
+            ["MIN-B"] = CreateIntradayCandles(start, 100m, 60, TimeSpan.FromHours(2)),
+            ["MIN-C"] = CreateIntradayCandles(start, 110m, 60, TimeSpan.FromHours(2)),
+        };
+
+        var result = SyntheticBasketBuilder.Build("US / USD / Tech", [a, b, c], candles, maxBaskets: 1, periodsPerYear: 252 * 4, minimumCandles: 60);
+
+        if (result.Baskets.Count != 1 || result.Baskets[0].Candles.Count != 60)
+        {
+            throw new Exception("intraday basket builder should honor the configured minimum candle count");
+        }
     }
 
     private static void SyntheticBasketsDoNotMixCurrencies()
@@ -1181,10 +1259,17 @@ public static class SyntheticBasketBuilderTests
             "Content=\"Start Live Prices\"",
             "Content=\"Legs / Formula\"",
             "Content=\"Live\"",
+            "Content=\"Zoom +\"",
+            "Content=\"Zoom -\"",
+            "Content=\"Reset\"",
             "Content=\"Save Basket\"",
             "ComboBox x:Name=\"SearchBox\"",
             "ComboBox x:Name=\"StrategyBox\"",
             "ComboBox x:Name=\"SavedBasketsBox\"",
+            "x:Name=\"TerminalMa20Check\"",
+            "x:Name=\"TerminalMa50Check\"",
+            "x:Name=\"TerminalMa200Check\"",
+            "x:Name=\"PriceLinesCheck\"",
             "IsEditable=\"True\"",
             "SelectionChanged=\"BlockBox_SelectionChanged\"",
             "SelectionChanged=\"SavedBaskets_SelectionChanged\"",
@@ -1222,6 +1307,17 @@ public static class SyntheticBasketBuilderTests
             "SyntheticStrategyRanker.Rank",
             "GoToRealtime_Click",
             "window.goToRealtime",
+            "ZoomIn_Click",
+            "ZoomOut_Click",
+            "PanLeft_Click",
+            "PanRight_Click",
+            "ResetChart_Click",
+            "PriceLines_Changed",
+            "Ma_Changed",
+            "window.zoomTerminal",
+            "window.panTerminal",
+            "window.resetTerminalView",
+            "window.togglePriceLines",
             "SaveBasket_Click",
             "SavedBaskets_SelectionChanged",
             "SavedSyntheticBasketStore",
@@ -1253,6 +1349,12 @@ public static class SyntheticBasketBuilderTests
             "FormulaReferencePrice",
             "goToRealtime",
             "scrollToRealTime",
+            "window.zoomTerminal",
+            "window.panTerminal",
+            "window.resetTerminalView",
+            "window.togglePriceLines",
+            "createPriceLine",
+            "removePriceLine",
             "flex-direction: column",
             "overflow-wrap: anywhere",
             "SYNTHETIC_PRICE_FLOOR = -10",
@@ -1655,6 +1757,18 @@ public static class SyntheticBasketBuilderTests
                 return new OhlcPoint(day.AddDays(index), open * scale, high * scale, low * scale, close * scale);
             })
             .ToList();
+
+    private static IReadOnlyList<OhlcPoint> CreateIntradayCandles(DateTimeOffset start, decimal finalClose, int count, TimeSpan step)
+    {
+        return Enumerable.Range(0, count)
+            .Select(index =>
+            {
+                var scale = 0.75m + 0.25m * index / Math.Max(1, count - 1);
+                var close = finalClose * scale;
+                return new OhlcPoint(start.AddTicks(step.Ticks * index), close * 0.99m, close * 1.01m, close * 0.98m, close);
+            })
+            .ToList();
+    }
 
     private static IReadOnlyList<OhlcPoint> CreateVariableCandles(DateTimeOffset day, decimal close)
     {

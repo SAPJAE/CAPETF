@@ -173,8 +173,9 @@ public partial class CapComTerminalWindow : Window
                 block,
                 _instruments,
                 seededCandles,
-                periodsPerYear))
-            : await Task.Run(() => SyntheticTerminalSelector.SelectBest(block, selectionCandidates, candles, periodsPerYear));
+                periodsPerYear,
+                minCandles))
+            : await Task.Run(() => SyntheticTerminalSelector.SelectBest(block, selectionCandidates, candles, periodsPerYear, minCandles));
         if (_basket is null)
         {
             await ClearTerminalChartAsync();
@@ -233,7 +234,7 @@ public partial class CapComTerminalWindow : Window
             candles = await LoadApiCandlesAsync(saved.Block, selectedInstruments, resolution, minCandles);
         }
 
-        var result = SyntheticBasketBuilder.Build(saved.Block, selectedInstruments, candles, maxBaskets: 1, periodsPerYear: periodsPerYear);
+        var result = SyntheticBasketBuilder.Build(saved.Block, selectedInstruments, candles, maxBaskets: 1, periodsPerYear: periodsPerYear, minimumCandles: minCandles);
         _basket = result.Baskets.FirstOrDefault();
         if (_basket is null)
         {
@@ -710,8 +711,41 @@ public partial class CapComTerminalWindow : Window
     private async void GoToRealtime_Click(object sender, RoutedEventArgs e) =>
         await InvokeTerminalScriptAsync("window.goToRealtime && window.goToRealtime();");
 
+    private async void ZoomIn_Click(object sender, RoutedEventArgs e) =>
+        await InvokeTerminalScriptAsync("window.zoomTerminal && window.zoomTerminal(1.25);");
+
+    private async void ZoomOut_Click(object sender, RoutedEventArgs e) =>
+        await InvokeTerminalScriptAsync("window.zoomTerminal && window.zoomTerminal(0.8);");
+
+    private async void PanLeft_Click(object sender, RoutedEventArgs e) =>
+        await InvokeTerminalScriptAsync("window.panTerminal && window.panTerminal(-25);");
+
+    private async void PanRight_Click(object sender, RoutedEventArgs e) =>
+        await InvokeTerminalScriptAsync("window.panTerminal && window.panTerminal(25);");
+
+    private async void ResetChart_Click(object sender, RoutedEventArgs e) =>
+        await InvokeTerminalScriptAsync("window.resetTerminalView && window.resetTerminalView();");
+
     private async void ToggleTicket_Click(object sender, RoutedEventArgs e) =>
         await InvokeTerminalScriptAsync("window.toggleTerminalComponents && window.toggleTerminalComponents();");
+
+    private async void PriceLines_Changed(object sender, RoutedEventArgs e)
+    {
+        var visible = PriceLinesCheck?.IsChecked == true ? "true" : "false";
+        await InvokeTerminalScriptAsync($"window.togglePriceLines && window.togglePriceLines({visible});");
+    }
+
+    private async void Ma_Changed(object sender, RoutedEventArgs e)
+    {
+        if (sender == TerminalMa20Check) await ToggleTerminalMaAsync(20, TerminalMa20Check.IsChecked == true);
+        if (sender == TerminalMa50Check) await ToggleTerminalMaAsync(50, TerminalMa50Check.IsChecked == true);
+        if (sender == TerminalMa200Check) await ToggleTerminalMaAsync(200, TerminalMa200Check.IsChecked == true);
+    }
+
+    private async Task ToggleTerminalMaAsync(int period, bool visible)
+    {
+        await InvokeTerminalScriptAsync($"window.toggleTerminalMa && window.toggleTerminalMa({period}, {visible.ToString().ToLowerInvariant()});");
+    }
 
     private async Task FitTerminalChartAsync()
     {
