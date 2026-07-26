@@ -89,32 +89,81 @@ public sealed class SyntheticHistoryService
         int periodsPerYear,
         int minimumCandles)
     {
+        var requested = selectedComponents
+            .Where(component => !string.IsNullOrWhiteSpace(component.Epic))
+            .ToList();
+        var requestedEpics = requested
+            .Select(component => component.Epic)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (requested.Count != selectedComponents.Count ||
+            requestedEpics.Count != requested.Count ||
+            requested.Any(component =>
+                !history.CandlesByEpic.TryGetValue(component.Epic, out var candles) ||
+                candles.Count < minimumCandles) ||
+            FindSharedTimes(history.CandlesByEpic, requested).Count == 0)
+        {
+            return null;
+        }
+
         var result = SyntheticBasketBuilder.Build(
             block,
-            selectedComponents,
+            requested,
             history.CandlesByEpic,
             maxBaskets: 1,
             periodsPerYear: periodsPerYear,
             minimumCandles: minimumCandles);
-        return result.Baskets.FirstOrDefault();
+        var basket = result.Baskets.FirstOrDefault();
+        if (basket is null || basket.Components.Count != requested.Count) return null;
+
+        var basketEpics = basket.Components
+            .Select(component => component.Instrument.Epic)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return basketEpics.Count == requestedEpics.Count && basketEpics.SetEquals(requestedEpics) ? basket : null;
     }
 
     private static IReadOnlyList<OhlcPoint> Aggregate(IReadOnlyList<OhlcPoint> source, int bucketSize)
     {
-        var ordered = source.OrderBy(point => point.Time).ToList();
-        var result = new List<OhlcPoint>();
-        for (var index = 0; index + bucketSize <= ordered.Count; index += bucketSize)
+        return source
+            .GroupBy(point => BucketStart(point.Time, bucketSize))
+            .OrderBy(group => group.Key)
+            .Select(group => CreateCompleteBucket(group.Key, group, bucketSize))
+            .OfType<OhlcPoint>()
+            .ToList();
+    }
+
+    private static OhlcPoint? CreateCompleteBucket(
+        DateTimeOffset bucketStart,
+        IEnumerable<OhlcPoint> rows,
+        int bucketSize)
+    {
+        var ordered = rows.OrderBy(point => point.Time).ToList();
+        var byTime = ordered
+            .GroupBy(point => point.Time.ToUniversalTime())
+            .ToDictionary(group => group.Key, group => group.Last());
+        if (ordered.Count != bucketSize || byTime.Count != bucketSize)
         {
-            var bucket = ordered.Skip(index).Take(bucketSize).ToList();
-            result.Add(new OhlcPoint(
-                bucket[^1].Time,
-                bucket[0].Open,
-                bucket.Max(point => point.High),
-                bucket.Min(point => point.Low),
-                bucket[^1].Close));
+            return null;
         }
 
-        return result;
+        var expectedTimes = Enumerable.Range(0, bucketSize)
+            .Select(offset => bucketStart.AddHours(offset))
+            .ToList();
+        if (expectedTimes.Any(time => !byTime.ContainsKey(time))) return null;
+
+        var candles = expectedTimes.Select(time => byTime[time]).ToList();
+        return new OhlcPoint(
+            expectedTimes[^1],
+            candles[0].Open,
+            candles.Max(point => point.High),
+            candles.Min(point => point.Low),
+            candles[^1].Close);
+    }
+
+    private static DateTimeOffset BucketStart(DateTimeOffset timestamp, int bucketSize)
+    {
+        var utc = timestamp.ToUniversalTime();
+        var hour = utc.Hour / bucketSize * bucketSize;
+        return new DateTimeOffset(utc.Year, utc.Month, utc.Day, hour, 0, 0, TimeSpan.Zero);
     }
 
     private static IReadOnlyList<DateTimeOffset> FindSharedTimes(

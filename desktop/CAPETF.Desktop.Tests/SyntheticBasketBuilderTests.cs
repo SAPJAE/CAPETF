@@ -17,7 +17,9 @@ public static class SyntheticBasketBuilderTests
         CapitalHistoryPagingWindowsMatchCapitalResolutions();
         SyntheticHistoryServiceMapsTerminalTimeframesToCapitalResolutions();
         SyntheticHistoryServiceAggregatesHourlyCandlesLocally();
+        SyntheticHistoryServiceUsesStableUtcBucketsAndRejectsGaps();
         SelectedHistoryRebuildKeepsTheExactSelectedEpics();
+        SelectedHistoryRebuildRejectsMissingSelectedLeg();
         InverseVolatilityWeightsSumToOneHundred();
         InverseVolatilityWeightsRespectCapsAndMinimums();
         SyntheticCandlesUsePriceStabilizedOhlc();
@@ -225,7 +227,7 @@ public static class SyntheticBasketBuilderTests
 
     private static void SyntheticHistoryServiceAggregatesHourlyCandlesLocally()
     {
-        var start = DateTimeOffset.Parse("2026-07-20T09:00:00Z");
+        var start = DateTimeOffset.Parse("2026-07-20T12:00:00Z");
         var hourly = Enumerable.Range(0, 6)
             .Select(index => new OhlcPoint(
                 start.AddHours(index),
@@ -278,6 +280,63 @@ public static class SyntheticBasketBuilderTests
             string.Join(",", selected.Select(instrument => instrument.Epic).OrderBy(epic => epic)),
             string.Join(",", basket.Components.Select(component => component.Instrument.Epic).OrderBy(epic => epic)),
             "refreshed history must rebuild from the exact selected epics");
+    }
+
+    private static void SelectedHistoryRebuildRejectsMissingSelectedLeg()
+    {
+        var start = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var selected = new[]
+        {
+            CreateStock("REQUIRED-A", "Required A"),
+            CreateStock("REQUIRED-B", "Required B"),
+            CreateStock("REQUIRED-C", "Required C"),
+            CreateStock("REQUIRED-D", "Required D"),
+        };
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>
+        {
+            ["REQUIRED-A"] = CreateVariableCandles(start, 100m),
+            ["REQUIRED-B"] = CreateVariableCandles(start, 150m),
+            ["REQUIRED-C"] = CreateVariableCandles(start, 225m),
+            ["REQUIRED-D"] = CreateVariableCandles(start, 300m).Take(10).ToList(),
+        };
+
+        var basket = SyntheticHistoryService.BuildSelected(
+            "US / USD / Tech",
+            selected,
+            new HistoryLoadResult(candles, start, start.AddDays(119), 120),
+            periodsPerYear: 252,
+            minimumCandles: 120);
+
+        if (basket is not null)
+        {
+            throw new Exception("a selected-leg rebuild must not silently drop a requested leg with insufficient history");
+        }
+    }
+
+    private static void SyntheticHistoryServiceUsesStableUtcBucketsAndRejectsGaps()
+    {
+        var start = DateTimeOffset.Parse("2026-07-20T09:00:00Z");
+        var firstLeg = HourlyCandles(start, 4);
+        var secondLeg = HourlyCandles(start.AddHours(1), 4);
+
+        var firstTwoHour = SyntheticHistoryService.Transform(firstLeg, "2H");
+        var secondTwoHour = SyntheticHistoryService.Transform(secondLeg, "2H");
+        var sharedTimes = firstTwoHour.Select(candle => candle.Time).Intersect(secondTwoHour.Select(candle => candle.Time)).ToList();
+
+        AssertEqual(1, sharedTimes.Count, "different source offsets must retain their shared 2H UTC bucket");
+        AssertEqual(start.AddHours(2), sharedTimes[0], "2H buckets must use a deterministic UTC bucket-end timestamp");
+
+        var twoHourWithGap = SyntheticHistoryService.Transform(
+            HourlyCandles(start.AddHours(1), 4).Where(candle => candle.Time != start.AddHours(2)).ToList(),
+            "2H");
+        AssertEqual(1, twoHourWithGap.Count, "a missing hourly candle must omit its 2H bucket");
+        AssertEqual(start.AddHours(4), twoHourWithGap[0].Time, "the next complete 2H bucket must remain available");
+
+        var sixHourWithGap = SyntheticHistoryService.Transform(
+            HourlyCandles(start.AddHours(3), 12).Where(candle => candle.Time != start.AddHours(5)).ToList(),
+            "6H");
+        AssertEqual(1, sixHourWithGap.Count, "a missing hourly candle must omit its 6H bucket");
+        AssertEqual(start.AddHours(14), sixHourWithGap[0].Time, "the next complete 6H bucket must use its UTC bucket-end timestamp");
     }
 
     private static void SyntheticIndexStartsAtOneHundredOnFirstSharedCandle()
@@ -2401,6 +2460,15 @@ public static class SyntheticBasketBuilderTests
             })
             .ToList();
     }
+
+    private static IReadOnlyList<OhlcPoint> HourlyCandles(DateTimeOffset start, int count) =>
+        Enumerable.Range(0, count)
+            .Select(index =>
+            {
+                var value = 100m + index;
+                return new OhlcPoint(start.AddHours(index), value, value + 2m, value - 1m, value + 1m);
+            })
+            .ToList();
 
     private static IReadOnlyList<OhlcPoint> CreateVariableCandles(DateTimeOffset day, decimal close)
     {
