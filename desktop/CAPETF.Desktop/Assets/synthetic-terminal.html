@@ -17,6 +17,7 @@
       --green: #22c55e;
       --red: #ef4444;
       --amber: #f59e0b;
+      --rail-width: 420px;
     }
 
     html,
@@ -110,12 +111,31 @@
 
     #workspace {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(360px, 420px);
+      grid-template-columns: minmax(0, 1fr) 6px var(--rail-width);
       min-height: 0;
     }
 
     #workspace.ticket-hidden {
-      grid-template-columns: minmax(0, 1fr) 0;
+      grid-template-columns: minmax(0, 1fr) 0 0;
+    }
+
+    #component-splitter {
+      width: 6px;
+      min-width: 6px;
+      cursor: col-resize;
+      touch-action: none;
+      background: var(--line);
+      outline: none;
+    }
+
+    #component-splitter:hover,
+    #component-splitter:focus-visible,
+    #component-splitter.dragging {
+      background: var(--blue);
+    }
+
+    #component-splitter.hidden {
+      display: none;
     }
 
     #chart-panel {
@@ -299,6 +319,7 @@
         <span id="block"></span>
         <span id="currency"></span>
         <span id="quote-prices"></span>
+        <span id="candle-range"></span>
         <span id="vol-match">VOL MATCH n/a</span>
       </div>
       <div id="toolbar">
@@ -325,6 +346,8 @@
             <button type="button" class="chart-tool" data-tool="trend" title="Draw trend line">TL</button>
             <button type="button" class="chart-tool" data-tool="hline" title="Draw horizontal price line">HL</button>
             <button type="button" class="chart-tool" data-tool="vline" title="Draw vertical time line">VL</button>
+            <button type="button" class="chart-tool" data-tool="ray" title="Draw ray">RAY</button>
+            <button type="button" class="chart-tool" data-tool="rectangle" title="Draw rectangle">RECT</button>
             <button type="button" id="clear-drawings" title="Clear drawings">Clear</button>
           </div>
           <div id="empty-state">Build a synthetic symbol to load the interactive chart.</div>
@@ -337,6 +360,7 @@
         </footer>
       </section>
 
+      <div id="component-splitter" class="hidden" role="separator" aria-label="Resize components rail" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="620" aria-valuenow="420" tabindex="0"></div>
       <aside id="side-rail" class="hidden">
         <section class="panel">
           <div class="panel-title">SYNTHETIC FORMULA</div>
@@ -376,6 +400,8 @@
     const emptyState = document.getElementById('empty-state');
     const workspace = document.getElementById('workspace');
     const sideRail = document.getElementById('side-rail');
+    const componentSplitter = document.getElementById('component-splitter');
+    const terminal = document.getElementById('terminal');
     const intervalButtons = Array.from(document.querySelectorAll('.interval'));
     const modeButtons = Array.from(document.querySelectorAll('.mode'));
     const maButtons = Array.from(document.querySelectorAll('.ma'));
@@ -396,7 +422,15 @@
     let activeTool = 'crosshair';
     let drawingAnchor = null;
     let drawingPrimitives = [];
+    let drawingRecords = [];
+    let drawingSymbol = '';
+    let railWidth = 420;
+    let railPointerId = null;
     const SYNTHETIC_PRICE_FLOOR = -10;
+    const RAIL_WIDTH_KEY = 'capcom-terminal-rail-width';
+    const DRAWING_STORAGE_PREFIX = 'capcom-terminal-drawings:';
+    const RAIL_MIN_WIDTH = 260;
+    const RAIL_MAX_WIDTH = 620;
 
     // Contract markers for automated tests and future upgrades.
     const CandlestickSeries = 'CandlestickSeries';
@@ -557,6 +591,74 @@
               ctx.moveTo(scaledX, 0);
               ctx.lineTo(scaledX, scope.bitmapSize.height);
               ctx.stroke();
+              ctx.restore();
+            });
+          }
+        };
+      }
+    }
+
+    class RayPrimitive extends TrendLinePrimitive {
+      constructor(chartApi, series, p1, p2, color = '#f97316') {
+        super(chartApi, series, p1, p2, color);
+        this.view = new RayPaneView(this);
+      }
+    }
+
+    class RayPaneView extends TrendLinePaneView {
+      renderer() {
+        const p1 = this.p1;
+        const p2 = this.p2;
+        const color = this.source.color;
+        return {
+          draw(target) {
+            target.useBitmapCoordinateSpace(scope => {
+              if (p1.x === null || p1.y === null || p2.x === null || p2.y === null || p1.x === p2.x) return;
+              const ctx = scope.context;
+              const endX = p2.x > p1.x ? scope.bitmapSize.width / scope.horizontalPixelRatio : 0;
+              const ratio = (endX - p1.x) / (p2.x - p1.x);
+              const endY = p1.y + (p2.y - p1.y) * ratio;
+              ctx.save();
+              ctx.strokeStyle = color;
+              ctx.lineWidth = Math.max(1, Math.floor(2 * scope.verticalPixelRatio));
+              ctx.beginPath();
+              ctx.moveTo(Math.round(p1.x * scope.horizontalPixelRatio), Math.round(p1.y * scope.verticalPixelRatio));
+              ctx.lineTo(Math.round(endX * scope.horizontalPixelRatio), Math.round(endY * scope.verticalPixelRatio));
+              ctx.stroke();
+              ctx.restore();
+            });
+          }
+        };
+      }
+    }
+
+    class RectanglePrimitive extends TrendLinePrimitive {
+      constructor(chartApi, series, p1, p2, color = '#a78bfa') {
+        super(chartApi, series, p1, p2, color);
+        this.view = new RectanglePaneView(this);
+      }
+    }
+
+    class RectanglePaneView extends TrendLinePaneView {
+      renderer() {
+        const p1 = this.p1;
+        const p2 = this.p2;
+        const color = this.source.color;
+        return {
+          draw(target) {
+            target.useBitmapCoordinateSpace(scope => {
+              if (p1.x === null || p1.y === null || p2.x === null || p2.y === null) return;
+              const ctx = scope.context;
+              const left = Math.min(p1.x, p2.x) * scope.horizontalPixelRatio;
+              const top = Math.min(p1.y, p2.y) * scope.verticalPixelRatio;
+              const width = Math.abs(p2.x - p1.x) * scope.horizontalPixelRatio;
+              const height = Math.abs(p2.y - p1.y) * scope.verticalPixelRatio;
+              ctx.save();
+              ctx.fillStyle = 'rgba(167, 139, 250, .12)';
+              ctx.strokeStyle = color;
+              ctx.lineWidth = Math.max(1, Math.floor(2 * scope.verticalPixelRatio));
+              ctx.fillRect(Math.round(left), Math.round(top), Math.round(width), Math.round(height));
+              ctx.strokeRect(Math.round(left), Math.round(top), Math.round(width), Math.round(height));
               ctx.restore();
             });
           }
@@ -756,6 +858,13 @@
       return new Date(Number(time) * 1000).toLocaleString();
     }
 
+    function sharedCandleRange() {
+      if (!displayCandles.length) return 'n/a';
+      const first = displayCandles[0];
+      const last = displayCandles[displayCandles.length - 1];
+      return `${formatTime(first.time)} to ${formatTime(last.time)} | ${displayCandles.length} candles`;
+    }
+
     function renderMetadata() {
       const components = getField(payload, 'Components', 'components', []);
       const last = displayCandles[displayCandles.length - 1];
@@ -765,6 +874,7 @@
       const bid = getField(payload, 'BidPrice', 'bidPrice', null);
       const ask = getField(payload, 'AskPrice', 'askPrice', null);
       document.getElementById('quote-prices').textContent = `Bid ${money(bid)}  Ask ${money(ask)}`;
+      document.getElementById('candle-range').textContent = `Shared ${sharedCandleRange()}`;
       document.getElementById('vol-match').textContent = components.length ? `VOL MATCH ${components.length} legs` : 'VOL MATCH n/a';
       document.getElementById('period').textContent = `${activeInterval} ${chartMode === 'heikin' ? 'Heikin Ashi' : 'Candles'}`;
       document.getElementById('formula').textContent = buildFormula(components);
@@ -874,6 +984,74 @@
       })[char]);
     }
 
+    function clampRailWidth(width) {
+      const numeric = Number(width);
+      const fallback = Number.isFinite(numeric) && numeric > 0 ? numeric : 420;
+      return Math.max(RAIL_MIN_WIDTH, Math.min(RAIL_MAX_WIDTH, Math.round(fallback)));
+    }
+
+    function applyRailWidth() {
+      document.documentElement.style.setProperty('--rail-width', `${railWidth}px`);
+      componentSplitter.setAttribute('aria-valuenow', String(railWidth));
+    }
+
+    function persistRailWidth() {
+      try {
+        localStorage.setItem(RAIL_WIDTH_KEY, String(railWidth));
+      } catch (_) {
+        // The terminal remains usable when the WebView storage is unavailable.
+      }
+    }
+
+    function restoreRailWidth() {
+      try {
+        railWidth = clampRailWidth(localStorage.getItem(RAIL_WIDTH_KEY));
+      } catch (_) {
+        railWidth = 420;
+      }
+      applyRailWidth();
+    }
+
+    function setRailWidth(width) {
+      railWidth = clampRailWidth(width);
+      applyRailWidth();
+      persistRailWidth();
+      requestAnimationFrame(window.resizeTerminal);
+    }
+
+    function setRailCollapsed(collapsed) {
+      workspace.classList.toggle('ticket-hidden', collapsed);
+      sideRail.classList.toggle('hidden', collapsed);
+      componentSplitter.classList.toggle('hidden', collapsed);
+      document.getElementById('components-toggle').setAttribute('aria-expanded', String(!collapsed));
+      requestAnimationFrame(window.resizeTerminal);
+    }
+
+    function railWidthFromPointer(event) {
+      const bounds = workspace.getBoundingClientRect();
+      return clampRailWidth(bounds.right - event.clientX);
+    }
+
+    function beginRailResize(event) {
+      if (workspace.classList.contains('ticket-hidden')) return;
+      railPointerId = event.pointerId;
+      componentSplitter.setPointerCapture(event.pointerId);
+      componentSplitter.classList.add('dragging');
+      event.preventDefault();
+    }
+
+    function resizeRail(event) {
+      if (event.pointerId !== railPointerId) return;
+      setRailWidth(railWidthFromPointer(event));
+    }
+
+    function endRailResize(event) {
+      if (event.pointerId !== railPointerId) return;
+      if (componentSplitter.hasPointerCapture(event.pointerId)) componentSplitter.releasePointerCapture(event.pointerId);
+      railPointerId = null;
+      componentSplitter.classList.remove('dragging');
+    }
+
     function refreshButtons() {
       intervalButtons.forEach(button => button.classList.toggle('active', button.dataset.interval === activeInterval));
       modeButtons.forEach(button => button.classList.toggle('active', button.dataset.mode === chartMode));
@@ -887,10 +1065,107 @@
       return Number.isFinite(value) ? value : null;
     }
 
-    function addDrawing(primitive) {
-      if (!candleSeries || !primitive) return;
+    function drawingStorageKey(symbol) {
+      return symbol ? `${DRAWING_STORAGE_PREFIX}${symbol}` : '';
+    }
+
+    function storedTime(time) {
+      if (typeof time === 'number' || typeof time === 'string') return time;
+      if (time && typeof time === 'object' && Number.isFinite(time.year) && Number.isFinite(time.month) && Number.isFinite(time.day)) {
+        return { year: time.year, month: time.month, day: time.day };
+      }
+      return null;
+    }
+
+    function storedPoint(time, price) {
+      const stored = storedTime(time);
+      return stored === null || !Number.isFinite(price) ? null : { time: stored, price };
+    }
+
+    function timeValue(time) {
+      if (typeof time === 'number') return time;
+      if (typeof time === 'object' && time) return Date.UTC(time.year, time.month - 1, time.day) / 1000;
+      const parsed = Date.parse(time);
+      return Number.isFinite(parsed) ? parsed / 1000 : NaN;
+    }
+
+    function timeForCurrentCandles(time) {
+      const target = timeValue(time);
+      if (!Number.isFinite(target) || !displayCandles.length) return time;
+      return displayCandles.reduce((closest, candle) =>
+        Math.abs(candle.time - target) < Math.abs(closest.time - target) ? candle : closest).time;
+    }
+
+    function currentDrawingPoint(point) {
+      return { time: timeForCurrentCandles(point.time), price: point.price };
+    }
+
+    function validDrawing(record) {
+      if (!record || !['hline', 'vline', 'trend', 'ray', 'rectangle'].includes(record.type)) return false;
+      if (record.type === 'hline') return Number.isFinite(record.price);
+      if (record.type === 'vline') return storedTime(record.time) !== null;
+      return !!storedPoint(record.p1 && record.p1.time, record.p1 && record.p1.price) &&
+        !!storedPoint(record.p2 && record.p2.time, record.p2 && record.p2.price);
+    }
+
+    function drawingPrimitive(record) {
+      if (!chart || !candleSeries || !validDrawing(record)) return null;
+      if (record.type === 'hline') return new HorizontalLinePrimitive(candleSeries, record.price);
+      if (record.type === 'vline') return new VerticalLinePrimitive(chart, timeForCurrentCandles(record.time));
+      const p1 = currentDrawingPoint(record.p1);
+      const p2 = currentDrawingPoint(record.p2);
+      if (record.type === 'trend') return new TrendLinePrimitive(chart, candleSeries, p1, p2);
+      if (record.type === 'ray') return new RayPrimitive(chart, candleSeries, p1, p2);
+      return new RectanglePrimitive(chart, candleSeries, p1, p2);
+    }
+
+    function attachDrawing(record) {
+      const primitive = drawingPrimitive(record);
+      if (!primitive) return;
       candleSeries.attachPrimitive(primitive);
       drawingPrimitives.push(primitive);
+    }
+
+    function detachDrawings() {
+      if (candleSeries && typeof candleSeries.detachPrimitive === 'function') {
+        drawingPrimitives.forEach(primitive => candleSeries.detachPrimitive(primitive));
+      }
+      drawingPrimitives = [];
+    }
+
+    function persistDrawings() {
+      const key = drawingStorageKey(drawingSymbol);
+      if (!key) return;
+      try {
+        localStorage.setItem(key, JSON.stringify(drawingRecords));
+      } catch (_) {
+        setStatus('Drawings could not be saved locally');
+      }
+    }
+
+    function loadDrawings(symbol) {
+      const key = drawingStorageKey(symbol);
+      if (!key) return [];
+      try {
+        const records = JSON.parse(localStorage.getItem(key) || '[]');
+        return Array.isArray(records) ? records.filter(validDrawing) : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function restoreDrawingsForSymbol(symbol) {
+      detachDrawings();
+      drawingSymbol = symbol || '';
+      drawingRecords = loadDrawings(drawingSymbol);
+      drawingRecords.forEach(attachDrawing);
+    }
+
+    function addDrawing(record) {
+      if (!validDrawing(record)) return;
+      drawingRecords.push(record);
+      attachDrawing(record);
+      persistDrawings();
       setStatus(`${activeTool} drawing added`);
     }
 
@@ -899,21 +1174,22 @@
       const price = pointerPrice(param);
       if (!Number.isFinite(price)) return;
       if (activeTool === 'hline') {
-        addDrawing(new HorizontalLinePrimitive(candleSeries, price));
+        addDrawing({ type: 'hline', price });
         return;
       }
       if (activeTool === 'vline') {
-        addDrawing(new VerticalLinePrimitive(chart, param.time));
+        addDrawing({ type: 'vline', time: storedTime(param.time) });
         return;
       }
-      if (activeTool === 'trend') {
-        const point = { time: param.time, price };
+      if (['trend', 'ray', 'rectangle'].includes(activeTool)) {
+        const point = storedPoint(param.time, price);
+        if (!point) return;
         if (!drawingAnchor) {
           drawingAnchor = point;
-          setStatus('trend anchor set');
+          setStatus(`${activeTool} anchor set`);
           return;
         }
-        addDrawing(new TrendLinePrimitive(chart, candleSeries, drawingAnchor, point));
+        addDrawing({ type: activeTool, p1: drawingAnchor, p2: point });
         drawingAnchor = null;
       }
     }
@@ -943,15 +1219,27 @@
         .filter(validCandle)
         .sort((a, b) => a.time - b.time);
       renderChart(!liveUpdate);
+      if (!liveUpdate) {
+        restoreDrawingsForSymbol(getField(payload, 'Symbol', 'symbol', ''));
+      }
       if (liveUpdate) document.getElementById('stream-state').textContent = 'stream tick';
     }
 
-    window.renderTerminal = function(nextPayload) {
+    window.setTerminalData = function(nextPayload) {
       apply(nextPayload, false);
     };
 
-    window.updateTerminal = function(nextPayload) {
+    window.updateTerminalTick = function(nextPayload) {
       apply(nextPayload, true);
+    };
+
+    window.renderTerminal = window.setTerminalData;
+    window.updateTerminal = window.updateTerminalTick;
+
+    window.setTerminalBusy = function(busy, label) {
+      const active = !!busy;
+      terminal.setAttribute('aria-busy', String(active));
+      if (active) setStatus(label || 'Working');
     };
 
     window.clearTerminal = function() {
@@ -1019,25 +1307,22 @@
     };
 
     window.setTerminalTool = function(tool) {
-      activeTool = ['crosshair', 'trend', 'hline', 'vline'].includes(tool) ? tool : 'crosshair';
+      activeTool = ['crosshair', 'trend', 'hline', 'vline', 'ray', 'rectangle'].includes(tool) ? tool : 'crosshair';
       drawingAnchor = null;
       refreshButtons();
       setStatus(activeTool === 'crosshair' ? '' : `${activeTool} tool active`);
     };
 
     window.clearTerminalDrawings = function() {
-      if (candleSeries && typeof candleSeries.detachPrimitive === 'function') {
-        drawingPrimitives.forEach(primitive => candleSeries.detachPrimitive(primitive));
-      }
-      drawingPrimitives = [];
+      detachDrawings();
+      drawingRecords = [];
       drawingAnchor = null;
+      persistDrawings();
       setStatus('drawings cleared');
     };
 
     window.toggleTerminalComponents = function() {
-      workspace.classList.toggle('ticket-hidden');
-      sideRail.classList.toggle('hidden');
-      requestAnimationFrame(window.resizeTerminal);
+      setRailCollapsed(!workspace.classList.contains('ticket-hidden'));
     };
 
     window.placeSyntheticPreviewOrder = function(side, quantity) {
@@ -1063,8 +1348,21 @@
     document.getElementById('components-toggle').addEventListener('click', window.toggleTerminalComponents);
     document.getElementById('buy-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('buy', document.getElementById('quantity').value));
     document.getElementById('sell-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('sell', document.getElementById('quantity').value));
+    componentSplitter.addEventListener('pointerdown', beginRailResize);
+    componentSplitter.addEventListener('pointermove', resizeRail);
+    componentSplitter.addEventListener('pointerup', endRailResize);
+    componentSplitter.addEventListener('pointercancel', endRailResize);
+    componentSplitter.addEventListener('keydown', event => {
+      if (event.key === 'ArrowLeft') setRailWidth(railWidth + 20);
+      else if (event.key === 'ArrowRight') setRailWidth(railWidth - 20);
+      else if (event.key === 'Home') setRailWidth(RAIL_MIN_WIDTH);
+      else if (event.key === 'End') setRailWidth(RAIL_MAX_WIDTH);
+      else return;
+      event.preventDefault();
+    });
     window.addEventListener('resize', window.resizeTerminal);
 
+    restoreRailWidth();
     ensureChart();
   </script>
 </body>

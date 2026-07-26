@@ -80,6 +80,8 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlRejectsKLineChartRuntime();
         SyntheticTerminalHtmlUsesV3LightweightChartsTerminal();
         SyntheticTerminalHtmlUsesV5SeriesApiAndChartSideTools();
+        SyntheticTerminalHtmlExposesResizableRailAndPersistentDrawingTools();
+        CapComTerminalUsesTask6PayloadBridge();
         SyntheticTerminalHtmlExposesResizeFunction();
         SyntheticTerminalHtmlExposesDecisionChartControls();
         SyntheticTerminalHtmlExposesV2TerminalControls();
@@ -2302,6 +2304,68 @@ public static class SyntheticBasketBuilderTests
         AssertEqual("United States", details.Country, "market details should parse country");
         AssertEqual("US", details.Region, "market details should parse region");
         AssertEqual("Technology", details.Sector, "market details should parse sector");
+    }
+
+    private static void SyntheticTerminalHtmlExposesResizableRailAndPersistentDrawingTools()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
+        var html = File.ReadAllText(path);
+
+        foreach (var required in new[]
+        {
+            "id=\"component-splitter\"",
+            "pointerdown",
+            "pointermove",
+            "pointerup",
+            "capcom-terminal-rail-width",
+            "localStorage",
+            "grid-template-columns: minmax(0, 1fr) 6px var(--rail-width)",
+            "data-tool=\"ray\"",
+            "data-tool=\"rectangle\"",
+            "class RayPrimitive",
+            "class RectanglePrimitive",
+            "capcom-terminal-drawings:",
+            "restoreDrawingsForSymbol",
+            "Shared ${sharedCandleRange()}",
+            "Bid ${money(bid)}  Ask ${money(ask)}",
+        })
+        {
+            if (!html.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal chart HTML missing Task 6 workspace contract: {required}");
+            }
+        }
+
+        foreach (var forbidden in new[]
+        {
+            "id=\"last-price\"",
+            "title: 'Last'",
+            "Last ${",
+        })
+        {
+            if (html.Contains(forbidden, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal chart HTML must not expose last-price metadata or price lines: {forbidden}");
+            }
+        }
+    }
+
+    private static void CapComTerminalUsesTask6PayloadBridge()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "window.setTerminalBusy",
+            "window.setTerminalData",
+            "window.updateTerminalTick",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal host must use the Task 6 payload bridge: {required}");
+            }
+        }
     }
 
     private static void StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy()

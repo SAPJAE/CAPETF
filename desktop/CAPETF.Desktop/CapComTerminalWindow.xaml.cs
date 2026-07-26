@@ -565,6 +565,7 @@ public partial class CapComTerminalWindow : Window
         }
 
         SetOperationControlsEnabled(false);
+        await SetTerminalBusyAsync(true, operationName);
         try
         {
             await action();
@@ -582,6 +583,7 @@ public partial class CapComTerminalWindow : Window
         }
         finally
         {
+            await SetTerminalBusyAsync(false);
             SetOperationControlsEnabled(true);
         }
     }
@@ -846,12 +848,18 @@ public partial class CapComTerminalWindow : Window
         var json = JsonSerializer.Serialize(payload);
         if (liveUpdate)
         {
-            await InvokeTerminalScriptAsync($"window.updateTerminal && window.updateTerminal({json});");
+            await InvokeTerminalScriptAsync($"window.updateTerminalTick ? window.updateTerminalTick({json}) : window.updateTerminal && window.updateTerminal({json});");
         }
         else
         {
-            await InvokeTerminalScriptAsync($"window.renderTerminal && window.renderTerminal({json});");
+            await InvokeTerminalScriptAsync($"window.setTerminalData ? window.setTerminalData({json}) : window.renderTerminal && window.renderTerminal({json});");
         }
+    }
+
+    private Task SetTerminalBusyAsync(bool busy, string? operationName = null)
+    {
+        var label = JsonSerializer.Serialize(operationName ?? string.Empty);
+        return InvokeTerminalScriptAsync($"window.setTerminalBusy && window.setTerminalBusy({busy.ToString().ToLowerInvariant()}, {label});");
     }
 
     private static string FormatQuote(decimal? value) => value?.ToString("0.#####") ?? "n/a";
