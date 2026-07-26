@@ -445,6 +445,22 @@ test('ETF and Sector cards omit the Quality Dip block', () => {
   assert.doesNotMatch(sectorHtml, /quality-dip|Quality dip/);
 });
 
+test('stock search wildcard matches plural sector queries', () => {
+  context.testItem = baseCardItem({
+    name: 'Advanced Micro Devices',
+    symbol: 'AMD',
+    epic: 'AMD',
+    sector: 'Semiconductor',
+    industry: 'Chipmakers',
+    region: 'US',
+    currency: 'USD',
+  });
+
+  assert.equal(run('matchesSearch(testItem, "semiconductors")'), true);
+  assert.equal(run('matchesSearch(testItem, "chip")'), true);
+  assert.equal(run('matchesSearch(testItem, "semiconductors chip")'), true);
+});
+
 test('dashboard exposes Terminal tab and renderer', () => {
   assert.match(dashboardSource, /data-dataset="terminal">Terminal<\/button>/);
   assert.match(dashboardSource, /function renderTerminalWorkspace\(items\)/);
