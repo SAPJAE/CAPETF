@@ -57,6 +57,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlExposesDecisionChartControls();
         SyntheticTerminalHtmlExposesV2TerminalControls();
         CapComTerminalUsesClearActionLabelsAndSymbolDropdown();
+        SeedSearchOptionsIncludePalantirByNameAndSymbolAcrossBlocks();
         SeededSyntheticBuildsDoNotUseGenericHistoryFallback();
         CapComTerminalIntradayMinimumsFitCachedHourlyHistory();
         StockRefreshFetchesDeepHourlyHistory();
@@ -1093,6 +1094,42 @@ public static class SyntheticBasketBuilderTests
         if (!shouldFallback)
         {
             throw new Exception("non-seeded strategy builds should still use the generic API fallback when cached history is empty");
+        }
+    }
+
+    private static void SeedSearchOptionsIncludePalantirByNameAndSymbolAcrossBlocks()
+    {
+        var palantir = new MarketInstrument
+        {
+            Epic = "PLTR",
+            Symbol = "PLTR",
+            Name = "Palantir Technologies Inc",
+            Type = "SHARES",
+            Region = "US",
+            Currency = "USD",
+            Sector = "",
+        };
+        var sap = new MarketInstrument
+        {
+            Epic = "SAPD",
+            Symbol = "SAPd",
+            Name = "SAP SE",
+            Type = "SHARES",
+            Region = "Europe",
+            Currency = "EUR",
+            Sector = "All",
+        };
+
+        var options = SeedSearchOptionBuilder.BuildOptions([palantir, sap], selectedBlock: "Europe / EUR / All");
+
+        if (!options.Any(option => option.StartsWith("PLTR | Palantir Technologies Inc", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new Exception("seed dropdown must include a symbol-first Palantir option even outside the selected block");
+        }
+
+        if (!options.Any(option => option.StartsWith("Palantir Technologies Inc | PLTR", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new Exception("seed dropdown must include a name-first Palantir option so typing Palantir finds it");
         }
     }
 

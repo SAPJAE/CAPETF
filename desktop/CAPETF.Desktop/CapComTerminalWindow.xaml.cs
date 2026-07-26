@@ -494,18 +494,7 @@ public partial class CapComTerminalWindow : Window
         if (SearchBox is null) return;
         var current = SearchBox.Text;
         var block = SelectedBlock();
-        var options = _instruments
-            .Where(CapitalInstrumentTypes.IsStock)
-            .Where(item => string.Equals(item.Group, block, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(item => string.IsNullOrWhiteSpace(item.Symbol) ? item.Epic : item.Symbol, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(item =>
-            {
-                var symbol = string.IsNullOrWhiteSpace(item.Symbol) ? item.Epic : item.Symbol;
-                return $"{symbol} | {item.Name}";
-            })
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var options = SeedSearchOptionBuilder.BuildOptions(_instruments, block);
         SearchBox.ItemsSource = options;
         SearchBox.Text = current;
     }
