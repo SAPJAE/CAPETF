@@ -7,14 +7,16 @@ public static class SyntheticBasketBuilder
         IReadOnlyList<MarketInstrument> instruments,
         IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
         int maxBaskets = 12,
-        int periodsPerYear = 52)
+        int periodsPerYear = 52,
+        int minimumCandles = 120)
     {
         if (periodsPerYear <= 0) throw new ArgumentOutOfRangeException(nameof(periodsPerYear));
+        if (minimumCandles < 2) throw new ArgumentOutOfRangeException(nameof(minimumCandles));
 
         var candidates = instruments
             .Where(CapitalInstrumentTypes.IsStock)
             .Where(item => !string.IsNullOrWhiteSpace(item.Epic))
-            .Where(item => candles.TryGetValue(item.Epic, out var rows) && rows.Count >= 120)
+            .Where(item => candles.TryGetValue(item.Epic, out var rows) && rows.Count >= minimumCandles)
             .Select(item =>
             {
                 var history = candles[item.Epic].OrderBy(row => row.Time).ToList();
@@ -140,30 +142,30 @@ public static class SyntheticBasketBuilder
 
     private static IEnumerable<OhlcPoint> BuildCandles(IReadOnlyList<Candidate> cluster, IReadOnlyList<decimal> multipliers)
     {
-        var candlesByDate = cluster
+        var candlesByTime = cluster
             .Select(item => item.Candles
-                .GroupBy(candle => candle.Time.Date)
+                .GroupBy(candle => candle.Time)
                 .ToDictionary(group => group.Key, group => group.Last()))
             .ToList();
-        var dates = candlesByDate
+        var times = candlesByTime
             .Skip(1)
             .Aggregate(
-                candlesByDate[0].Keys.ToHashSet(),
+                candlesByTime[0].Keys.ToHashSet(),
                 (shared, rows) =>
                 {
                     shared.IntersectWith(rows.Keys);
                     return shared;
                 })
-            .OrderBy(date => date)
+            .OrderBy(time => time)
             .ToList();
 
-        foreach (var date in dates)
+        foreach (var timeKey in times)
         {
             decimal open = 0, high = 0, low = 0, close = 0;
             DateTimeOffset time = default;
             for (var index = 0; index < cluster.Count; index++)
             {
-                var candle = candlesByDate[index][date];
+                var candle = candlesByTime[index][timeKey];
                 var multiplier = multipliers[index];
                 open += candle.Open * multiplier;
                 high += candle.High * multiplier;

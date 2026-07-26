@@ -364,6 +364,9 @@
     let chartMode = 'candles';
     let activeInterval = '1W';
     let maVisibility = { 20: true, 50: true, 200: true };
+    let priceLinesVisible = true;
+    let syntheticPriceLines = [];
+    let terminalBarSpacing = 8;
     const SYNTHETIC_PRICE_FLOOR = -10;
 
     // Contract markers for automated tests and future upgrades.
@@ -579,6 +582,38 @@
       renderFooter(last, last && last.time);
     }
 
+    function clearPriceLines() {
+      if (!candleSeries) return;
+      for (const line of syntheticPriceLines) {
+        candleSeries.removePriceLine(line);
+      }
+      syntheticPriceLines = [];
+    }
+
+    function addPriceLine(price, title, color) {
+      const numeric = Number(price);
+      if (!priceLinesVisible || !candleSeries || !Number.isFinite(numeric)) return;
+      syntheticPriceLines.push(candleSeries.createPriceLine({
+        price: numeric,
+        color,
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title
+      }));
+    }
+
+    function renderPriceLines() {
+      clearPriceLines();
+      const last = displayCandles[displayCandles.length - 1];
+      const bid = getField(payload, 'BidPrice', 'bidPrice', null);
+      const ask = getField(payload, 'AskPrice', 'askPrice', null);
+      const syntheticLast = getField(payload, 'LastPrice', 'lastPrice', last && last.close);
+      addPriceLine(bid, 'Bid', '#22c55e');
+      addPriceLine(ask, 'Ask', '#ef4444');
+      addPriceLine(syntheticLast, 'Last', '#60a5fa');
+    }
+
     function buildFormula(components) {
       if (!components.length) return 'Build a synthetic symbol.';
       return components.map(component => {
@@ -643,6 +678,7 @@
 
       emptyState.style.display = displayCandles.length ? 'none' : 'grid';
       renderMetadata();
+      renderPriceLines();
       refreshButtons();
       setStatus(displayCandles.length < 2 ? 'No chart data loaded' : '');
       if (fitContent) instance.timeScale().fitContent();
@@ -684,6 +720,28 @@
       if (chart) chart.timeScale().scrollToRealTime();
     };
 
+    window.zoomTerminal = function(factor) {
+      if (!chart) return;
+      const numeric = Number(factor);
+      terminalBarSpacing = Math.max(2, Math.min(48, terminalBarSpacing * (Number.isFinite(numeric) && numeric > 0 ? numeric : 1)));
+      chart.timeScale().applyOptions({ barSpacing: terminalBarSpacing });
+    };
+
+    window.panTerminal = function(bars) {
+      if (!chart) return;
+      const current = chart.timeScale().scrollPosition();
+      const delta = Number(bars);
+      chart.timeScale().scrollToPosition(current + (Number.isFinite(delta) ? delta : 0), false);
+    };
+
+    window.resetTerminalView = function() {
+      if (!chart) return;
+      terminalBarSpacing = 8;
+      chart.timeScale().applyOptions({ barSpacing: terminalBarSpacing, rightOffset: 8 });
+      chart.priceScale('right').applyOptions({ autoScale: true });
+      chart.timeScale().fitContent();
+    };
+
     window.setTerminalChartMode = function(mode) {
       const normalized = String(mode || '').toLowerCase().includes('heikin') ? 'heikin' : 'candles';
       chartMode = normalized;
@@ -701,6 +759,11 @@
       if (!maVisibility.hasOwnProperty(key)) return;
       maVisibility[key] = !!visible;
       renderChart(false);
+    };
+
+    window.togglePriceLines = function(visible) {
+      priceLinesVisible = !!visible;
+      renderPriceLines();
     };
 
     window.toggleTerminalComponents = function() {

@@ -16,18 +16,19 @@ public static class SeededSyntheticSelector
         string fallbackBlock,
         IReadOnlyList<MarketInstrument> instruments,
         IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
-        int periodsPerYear)
+        int periodsPerYear,
+        int minimumCandles = 120)
     {
         if (string.IsNullOrWhiteSpace(seedText)) return null;
 
-        var seed = FindSeed(seedText, fallbackBlock, instruments, candles, requireCandles: true);
-        if (seed is null || !candles.TryGetValue(seed.Epic, out var seedCandles) || seedCandles.Count < 120) return null;
+        var seed = FindSeed(seedText, fallbackBlock, instruments, candles, requireCandles: true, minimumCandles: minimumCandles);
+        if (seed is null || !candles.TryGetValue(seed.Epic, out var seedCandles) || seedCandles.Count < minimumCandles) return null;
 
         var peerPool = instruments
             .Where(CapitalInstrumentTypes.IsStock)
             .Where(item => !string.Equals(item.Epic, seed.Epic, StringComparison.OrdinalIgnoreCase))
             .Where(item => SameCurrency(seed, item))
-            .Where(item => candles.TryGetValue(item.Epic, out var rows) && rows.Count >= 120)
+            .Where(item => candles.TryGetValue(item.Epic, out var rows) && rows.Count >= minimumCandles)
             .ToList();
 
         if (IsNikeSeed(seed))
@@ -54,7 +55,7 @@ public static class SeededSyntheticSelector
         if (peers.Count < 2) return null;
 
         var selected = new[] { seed }.Concat(peers).ToList();
-        var result = SyntheticBasketBuilder.Build(seed.Group, selected, candles, maxBaskets: 1, periodsPerYear: periodsPerYear);
+        var result = SyntheticBasketBuilder.Build(seed.Group, selected, candles, maxBaskets: 1, periodsPerYear: periodsPerYear, minimumCandles: minimumCandles);
         var basket = result.Baskets.FirstOrDefault();
         if (basket is null) return null;
 
@@ -92,12 +93,13 @@ public static class SeededSyntheticSelector
         string preferredBlock,
         IReadOnlyList<MarketInstrument> instruments,
         IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>? candles,
-        bool requireCandles)
+        bool requireCandles,
+        int minimumCandles = 120)
     {
         var query = seedText.Trim();
         var eligible = instruments
             .Where(CapitalInstrumentTypes.IsStock)
-            .Where(item => !requireCandles || (candles is not null && candles.TryGetValue(item.Epic, out var rows) && rows.Count >= 120))
+            .Where(item => !requireCandles || (candles is not null && candles.TryGetValue(item.Epic, out var rows) && rows.Count >= minimumCandles))
             .ToList();
 
         var preferred = eligible

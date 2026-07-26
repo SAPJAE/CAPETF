@@ -8,7 +8,8 @@ public static class SyntheticTerminalSelector
         string block,
         IReadOnlyList<MarketInstrument> instruments,
         IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
-        int periodsPerYear)
+        int periodsPerYear,
+        int minimumCandles = 120)
     {
         var blockInstruments = instruments
             .Where(item => string.Equals(item.Group, block, StringComparison.OrdinalIgnoreCase))
@@ -23,7 +24,8 @@ public static class SyntheticTerminalSelector
             blockInstruments,
             comparisonCandles,
             maxBaskets: 12,
-            periodsPerYear: periodsPerYear);
+            periodsPerYear: periodsPerYear,
+            minimumCandles: minimumCandles);
 
         var selected = result.Baskets
             .Where(basket => basket.Candles.Count >= 2 && basket.Components.Count is >= 3 and <= 4)
@@ -35,7 +37,7 @@ public static class SyntheticTerminalSelector
         if (selected is null) return null;
 
         var selectedInstruments = selected.Components.Select(component => component.Instrument).ToList();
-        return SyntheticBasketBuilder.Build(block, selectedInstruments, candles, maxBaskets: 1, periodsPerYear: periodsPerYear)
+        return SyntheticBasketBuilder.Build(block, selectedInstruments, candles, maxBaskets: 1, periodsPerYear: periodsPerYear, minimumCandles: minimumCandles)
             .Baskets
             .FirstOrDefault() ?? selected;
     }
