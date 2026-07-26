@@ -81,6 +81,8 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlUsesV3LightweightChartsTerminal();
         SyntheticTerminalHtmlUsesV5SeriesApiAndChartSideTools();
         SyntheticTerminalHtmlExposesResizableRailAndPersistentDrawingTools();
+        SyntheticTerminalHtmlDisablesNativeLastCloseDecorations();
+        SyntheticTerminalHtmlResetsTransientDrawingStateBeforeRestore();
         CapComTerminalUsesTask6PayloadBridge();
         SyntheticTerminalHtmlExposesResizeFunction();
         SyntheticTerminalHtmlExposesDecisionChartControls();
@@ -2348,6 +2350,52 @@ public static class SyntheticBasketBuilderTests
             {
                 throw new Exception($"terminal chart HTML must not expose last-price metadata or price lines: {forbidden}");
             }
+        }
+    }
+
+    private static void SyntheticTerminalHtmlDisablesNativeLastCloseDecorations()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
+        var html = File.ReadAllText(path);
+        var candleStart = html.IndexOf("chart.addSeries(LightweightCharts.CandlestickSeries", StringComparison.Ordinal);
+        var candleEnd = html.IndexOf("maSeries = {", candleStart, StringComparison.Ordinal);
+        if (candleStart < 0 || candleEnd < candleStart) throw new Exception("terminal chart HTML must define the candlestick series before moving-average series");
+        var candleOptions = html[candleStart..candleEnd];
+
+        foreach (var required in new[] { "priceLineVisible: false", "lastValueVisible: false" })
+        {
+            if (!candleOptions.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"candlestick series must disable native last-close decoration: {required}");
+            }
+        }
+
+        foreach (var forbidden in new[] { "priceLineVisible: true", "lastValueVisible: true" })
+        {
+            if (candleOptions.Contains(forbidden, StringComparison.Ordinal))
+            {
+                throw new Exception($"candlestick series must not enable native last-close decoration: {forbidden}");
+            }
+        }
+    }
+
+    private static void SyntheticTerminalHtmlResetsTransientDrawingStateBeforeRestore()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
+        var html = File.ReadAllText(path);
+        var restoreStart = html.IndexOf("function restoreDrawingsForSymbol", StringComparison.Ordinal);
+        var restoreEnd = html.IndexOf("function addDrawing", restoreStart, StringComparison.Ordinal);
+        if (restoreStart < 0 || restoreEnd < restoreStart) throw new Exception("terminal chart HTML must retain a focused drawing restore helper");
+        var restore = html[restoreStart..restoreEnd];
+        var anchorReset = restore.IndexOf("drawingAnchor = null;", StringComparison.Ordinal);
+        var previewReset = restore.IndexOf("clearDrawingPreview();", StringComparison.Ordinal);
+        var recordLoad = restore.IndexOf("drawingRecords = loadDrawings", StringComparison.Ordinal);
+
+        if (anchorReset < 0 || previewReset < 0 || recordLoad < 0 || anchorReset > recordLoad || previewReset > recordLoad)
+        {
+            throw new Exception("drawing restore must reset anchors and preview state before loading another symbol's records");
         }
     }
 

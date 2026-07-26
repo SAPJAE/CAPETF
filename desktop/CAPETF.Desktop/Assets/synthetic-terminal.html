@@ -422,6 +422,7 @@
     let activeTool = 'crosshair';
     let drawingAnchor = null;
     let drawingPrimitives = [];
+    let drawingPreviewPrimitive = null;
     let drawingRecords = [];
     let drawingSymbol = '';
     let railWidth = 420;
@@ -812,8 +813,8 @@
         borderDownColor: '#ef4444',
         wickUpColor: '#86efac',
         wickDownColor: '#fca5a5',
-        priceLineVisible: true,
-        lastValueVisible: true,
+        priceLineVisible: false,
+        lastValueVisible: false,
         priceFormat: { type: 'price', precision: 5, minMove: 0.00001 },
         autoscaleInfoProvider: floorAutoscaleRange
       });
@@ -1133,6 +1134,13 @@
       drawingPrimitives = [];
     }
 
+    function clearDrawingPreview() {
+      if (drawingPreviewPrimitive && candleSeries && typeof candleSeries.detachPrimitive === 'function') {
+        candleSeries.detachPrimitive(drawingPreviewPrimitive);
+      }
+      drawingPreviewPrimitive = null;
+    }
+
     function persistDrawings() {
       const key = drawingStorageKey(drawingSymbol);
       if (!key) return;
@@ -1156,6 +1164,8 @@
 
     function restoreDrawingsForSymbol(symbol) {
       detachDrawings();
+      drawingAnchor = null;
+      clearDrawingPreview();
       drawingSymbol = symbol || '';
       drawingRecords = loadDrawings(drawingSymbol);
       drawingRecords.forEach(attachDrawing);
@@ -1315,6 +1325,7 @@
 
     window.clearTerminalDrawings = function() {
       detachDrawings();
+      clearDrawingPreview();
       drawingRecords = [];
       drawingAnchor = null;
       persistDrawings();
