@@ -5,19 +5,60 @@ using System.IO;
 
 namespace CAPETF.Desktop;
 
-public sealed class CapitalStreamingClient : IAsyncDisposable
+internal interface ICapitalStreamingSocket : IDisposable
+{
+    WebSocketState State { get; }
+    Task ConnectAsync(Uri uri, CancellationToken cancellationToken);
+    Task SendAsync(ArraySegment<byte> bytes, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken);
+    Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken);
+    Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken);
+}
+
+internal sealed class CapitalStreamingSocket : ICapitalStreamingSocket
 {
     private readonly ClientWebSocket _socket = new();
+
+    public WebSocketState State => _socket.State;
+    public Task ConnectAsync(Uri uri, CancellationToken cancellationToken) => _socket.ConnectAsync(uri, cancellationToken);
+    public Task SendAsync(ArraySegment<byte> bytes, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) =>
+        _socket.SendAsync(bytes, messageType, endOfMessage, cancellationToken);
+    public Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken) =>
+        _socket.ReceiveAsync(buffer, cancellationToken);
+    public Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) =>
+        _socket.CloseAsync(closeStatus, statusDescription, cancellationToken);
+    public void Dispose() => _socket.Dispose();
+}
+
+public sealed class CapitalStreamingClient : IAsyncDisposable
+{
+    private readonly ICapitalStreamingSocket _socket;
     private readonly CancellationTokenSource _lifetime = new();
     private Task? _readerTask;
     private int _correlationId;
 
     public event EventHandler<QuoteUpdate>? QuoteReceived;
     public event EventHandler<string>? StatusChanged;
+    public event EventHandler<string>? Disconnected;
+
+    public CapitalStreamingClient() : this(new CapitalStreamingSocket())
+    {
+    }
+
+    internal CapitalStreamingClient(ICapitalStreamingSocket socket)
+    {
+        _socket = socket;
+    }
+
+    public bool IsConnected =>
+        _socket.State == WebSocketState.Open && (_readerTask is null || !_readerTask.IsCompleted);
 
     public async Task ConnectAsync(CapitalSession session, CancellationToken cancellationToken = default)
     {
-        if (_socket.State == WebSocketState.Open) return;
+        if (IsConnected) return;
+        if (_socket.State != WebSocketState.None)
+        {
+            throw new InvalidOperationException($"Realtime socket cannot reconnect from {_socket.State}; create a new streaming client.");
+        }
         await _socket.ConnectAsync(new Uri("wss://api-streaming-capital.backend-capital.com/connect"), cancellationToken);
         _readerTask = Task.Run(() => ReadLoopAsync(_lifetime.Token));
         StatusChanged?.Invoke(this, "Realtime connected");
@@ -52,28 +93,52 @@ public sealed class CapitalStreamingClient : IAsyncDisposable
 
     private async Task SendAsync(object message, CancellationToken cancellationToken)
     {
-        if (_socket.State != WebSocketState.Open) return;
+        if (!IsConnected)
+        {
+            var status = $"Realtime disconnected: socket is {_socket.State}.";
+            StatusChanged?.Invoke(this, status);
+            throw new InvalidOperationException($"Realtime socket is not open ({_socket.State}).");
+        }
         var json = JsonSerializer.Serialize(message);
         var bytes = Encoding.UTF8.GetBytes(json);
-        await _socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
+        await _socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, cancellationToken);
     }
 
     private async Task ReadLoopAsync(CancellationToken cancellationToken)
     {
-        var buffer = new byte[64 * 1024];
-        while (!cancellationToken.IsCancellationRequested && _socket.State == WebSocketState.Open)
+        try
         {
-            using var memory = new MemoryStream();
-            WebSocketReceiveResult result;
-            do
+            var buffer = new byte[64 * 1024];
+            while (!cancellationToken.IsCancellationRequested && _socket.State == WebSocketState.Open)
             {
-                result = await _socket.ReceiveAsync(buffer, cancellationToken);
-                if (result.MessageType == WebSocketMessageType.Close) return;
-                memory.Write(buffer, 0, result.Count);
-            } while (!result.EndOfMessage);
+                using var memory = new MemoryStream();
+                WebSocketReceiveResult result;
+                do
+                {
+                    result = await _socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
+                    if (result.MessageType == WebSocketMessageType.Close)
+                    {
+                        var message = $"Realtime disconnected: {result.CloseStatusDescription ?? "socket closed"}.";
+                        StatusChanged?.Invoke(this, message);
+                        Disconnected?.Invoke(this, message);
+                        return;
+                    }
+                    memory.Write(buffer, 0, result.Count);
+                } while (!result.EndOfMessage);
 
-            var json = Encoding.UTF8.GetString(memory.ToArray());
-            HandleMessage(json);
+                var json = Encoding.UTF8.GetString(memory.ToArray());
+                HandleMessage(json);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            var message = $"Realtime faulted: {ex.Message}";
+            StatusChanged?.Invoke(this, message);
+            Disconnected?.Invoke(this, message);
+            throw;
         }
     }
 

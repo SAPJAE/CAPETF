@@ -46,6 +46,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <Border Grid.Row="0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="10,7">
@@ -111,18 +112,19 @@
                     <TextBlock x:Name="ChartMetaText" Text="Load stocks and build a synthetic chart." Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0"/>
                 </StackPanel>
             </Border>
-            <Border x:Name="OperationProgressPanel" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="12"
-                    Width="290" Background="#E60B1220" BorderBrush="#3B82F6" BorderThickness="1" Padding="10,8"
-                    Visibility="{Binding ProgressVisibility}">
-                <StackPanel>
-                    <TextBlock Text="{Binding Label}" Foreground="{StaticResource InkBrush}" TextWrapping="Wrap"/>
-                    <ProgressBar x:Name="OperationProgressBar" Margin="0,7,0,0" Height="6" Minimum="0" Maximum="100"
-                                 Value="{Binding Percent, Mode=OneWay}" IsIndeterminate="{Binding IsIndeterminate}"/>
-                </StackPanel>
-            </Border>
         </Grid>
 
-        <Border Grid.Row="2" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="10,5">
+        <Border Grid.Row="2" x:Name="OperationProgressPanel" HorizontalAlignment="Right" Margin="12,6"
+                Width="290" Background="#E60B1220" BorderBrush="#3B82F6" BorderThickness="1" Padding="10,8"
+                Visibility="{Binding ProgressVisibility}">
+            <StackPanel>
+                <TextBlock Text="{Binding Label}" Foreground="{StaticResource InkBrush}" TextWrapping="Wrap"/>
+                <ProgressBar x:Name="OperationProgressBar" Margin="0,7,0,0" Height="6" Minimum="0" Maximum="100"
+                             Value="{Binding Percent, Mode=OneWay}" IsIndeterminate="{Binding IsIndeterminate}"/>
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="3" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="10,5">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
@@ -131,7 +133,7 @@
                 <TextBlock x:Name="StatusText" Text="Ready." Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Visibility="Collapsed">
                     <TextBlock x:Name="SyntheticFormulaText" Text="No formula yet."/>
-                    <TextBox x:Name="QuantityBox" Text="1"/>
+                    <TextBox x:Name="QuantityBox" Text="300"/>
                     <TextBlock x:Name="OrderPreviewText" Text="Preview only. No live orders are sent."/>
                     <Button Content="Buy" Click="BuyPreview_Click"/>
                     <Button Content="Sell" Click="SellPreview_Click"/>

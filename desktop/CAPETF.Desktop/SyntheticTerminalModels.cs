@@ -4,6 +4,19 @@ public sealed record TerminalCandle(long Time, decimal Open, decimal High, decim
 
 public sealed record TerminalLinePoint(long Time, decimal Value);
 
+public sealed record TerminalComponentQuote(
+    string Epic,
+    decimal? Bid,
+    decimal? Offer,
+    DateTimeOffset? QuoteTimestamp,
+    string QuoteStatus);
+
+public sealed record SyntheticTerminalTickPayload(
+    TerminalCandle? Candle,
+    decimal? BidPrice,
+    decimal? AskPrice,
+    IReadOnlyList<TerminalComponentQuote> ComponentQuotes);
+
 public sealed record TerminalComponentRow(
     string Name,
     string Epic,
@@ -20,10 +33,12 @@ public sealed record TerminalComponentRow(
     decimal FourYearReturnPct,
     decimal? Bid,
     decimal? Offer,
-    string LastTickText);
+    DateTimeOffset? QuoteTimestamp,
+    string QuoteStatus);
 
 public sealed record SyntheticTerminalPayload(
     string Symbol,
+    string DrawingIdentity,
     string Block,
     string CurrencyLabel,
     decimal? BidPrice,

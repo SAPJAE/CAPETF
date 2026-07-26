@@ -60,7 +60,7 @@ public sealed class SyntheticHistoryService
             }
         }
 
-        var sharedTimes = FindSharedTimes(candlesByEpic, components);
+        var sharedTimes = FindSharedTimes(candlesByEpic, components, timeframe);
         return new HistoryLoadResult(
             candlesByEpic,
             sharedTimes.Count == 0 ? null : sharedTimes[0],
@@ -86,6 +86,7 @@ public sealed class SyntheticHistoryService
         string block,
         IReadOnlyList<MarketInstrument> selectedComponents,
         HistoryLoadResult history,
+        string timeframe,
         int periodsPerYear,
         int minimumCandles)
     {
@@ -100,7 +101,7 @@ public sealed class SyntheticHistoryService
             requested.Any(component =>
                 !history.CandlesByEpic.TryGetValue(component.Epic, out var candles) ||
                 candles.Count < minimumCandles) ||
-            FindSharedTimes(history.CandlesByEpic, requested).Count == 0)
+            FindSharedTimes(history.CandlesByEpic, requested, timeframe).Count == 0)
         {
             return null;
         }
@@ -123,62 +124,71 @@ public sealed class SyntheticHistoryService
 
     private static IReadOnlyList<OhlcPoint> Aggregate(IReadOnlyList<OhlcPoint> source, int bucketSize)
     {
-        return source
-            .GroupBy(point => BucketStart(point.Time, bucketSize))
-            .OrderBy(group => group.Key)
-            .Select(group => CreateCompleteBucket(group.Key, group, bucketSize))
-            .OfType<OhlcPoint>()
-            .ToList();
-    }
-
-    private static OhlcPoint? CreateCompleteBucket(
-        DateTimeOffset bucketStart,
-        IEnumerable<OhlcPoint> rows,
-        int bucketSize)
-    {
-        var ordered = rows.OrderBy(point => point.Time).ToList();
-        var byTime = ordered
+        var ordered = source
             .GroupBy(point => point.Time.ToUniversalTime())
-            .ToDictionary(group => group.Key, group => group.Last());
-        if (ordered.Count != bucketSize || byTime.Count != bucketSize)
-        {
-            return null;
-        }
-
-        var expectedTimes = Enumerable.Range(0, bucketSize)
-            .Select(offset => bucketStart.AddHours(offset))
+            .Select(group => group.Last())
+            .OrderBy(point => point.Time.ToUniversalTime())
             .ToList();
-        if (expectedTimes.Any(time => !byTime.ContainsKey(time))) return null;
-
-        var candles = expectedTimes.Select(time => byTime[time]).ToList();
-        return new OhlcPoint(
-            expectedTimes[^1],
-            candles[0].Open,
-            candles.Max(point => point.High),
-            candles.Min(point => point.Low),
-            candles[^1].Close);
+        var result = new List<OhlcPoint>();
+        var run = new List<OhlcPoint>();
+        foreach (var point in ordered)
+        {
+            if (run.Count > 0 && point.Time.ToUniversalTime() - run[^1].Time.ToUniversalTime() != TimeSpan.FromHours(1))
+            {
+                AddCompleteBuckets(run, bucketSize, result);
+                run.Clear();
+            }
+            run.Add(point);
+        }
+        AddCompleteBuckets(run, bucketSize, result);
+        return result;
     }
 
-    private static DateTimeOffset BucketStart(DateTimeOffset timestamp, int bucketSize)
+    private static void AddCompleteBuckets(
+        IReadOnlyList<OhlcPoint> run,
+        int bucketSize,
+        ICollection<OhlcPoint> destination)
     {
-        var utc = timestamp.ToUniversalTime();
-        var hour = utc.Hour / bucketSize * bucketSize;
-        return new DateTimeOffset(utc.Year, utc.Month, utc.Day, hour, 0, 0, TimeSpan.Zero);
+        for (var start = 0; start + bucketSize <= run.Count; start += bucketSize)
+        {
+            var candles = run.Skip(start).Take(bucketSize).ToList();
+            destination.Add(new OhlcPoint(
+                candles[^1].Time,
+                candles[0].Open,
+                candles.Max(point => point.High),
+                candles.Min(point => point.Low),
+                candles[^1].Close));
+        }
     }
 
     private static IReadOnlyList<DateTimeOffset> FindSharedTimes(
         IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candlesByEpic,
-        IReadOnlyList<MarketInstrument> components)
+        IReadOnlyList<MarketInstrument> components,
+        string timeframe)
     {
-        var timeSets = components
+        var rowsByKey = components
             .Select(component => candlesByEpic.TryGetValue(component.Epic, out var candles)
-                ? candles.Select(candle => candle.Time).ToHashSet()
-                : [])
+                ? candles.GroupBy(candle => AlignmentKey(candle.Time, timeframe))
+                    .ToDictionary(group => group.Key, group => group.Last().Time)
+                : new Dictionary<string, DateTimeOffset>())
             .ToList();
-        if (timeSets.Count == 0 || timeSets.Any(times => times.Count == 0)) return [];
+        if (rowsByKey.Count == 0 || rowsByKey.Any(rows => rows.Count == 0)) return [];
 
-        var shared = timeSets[0];
-        foreach (var times in timeSets.Skip(1)) shared.IntersectWith(times);
-        return shared.OrderBy(time => time).ToList();
+        var shared = rowsByKey[0].Keys.ToHashSet(StringComparer.Ordinal);
+        foreach (var rows in rowsByKey.Skip(1)) shared.IntersectWith(rows.Keys);
+        return shared.Select(key => rowsByKey[0][key]).OrderBy(time => time).ToList();
+    }
+
+    private static string AlignmentKey(DateTimeOffset time, string timeframe) => timeframe switch
+    {
+        "Daily" => $"D:{time:yyyyMMdd}",
+        "Weekly" => $"W:{WeekStart(time.Date):yyyyMMdd}",
+        _ => $"T:{time.ToUniversalTime().Ticks}",
+    };
+
+    private static DateTime WeekStart(DateTime date)
+    {
+        var offset = ((int)date.DayOfWeek + 6) % 7;
+        return date.Date.AddDays(-offset);
     }
 }

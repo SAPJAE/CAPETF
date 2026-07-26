@@ -1,9 +1,35 @@
 using System.Globalization;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 
 namespace CAPETF.Desktop;
+
+internal sealed class CapitalApiException(HttpStatusCode statusCode, string reasonPhrase, string responseBody)
+    : InvalidOperationException($"Capital.com request failed: {(int)statusCode} {reasonPhrase}. {responseBody}")
+{
+    public HttpStatusCode StatusCode { get; } = statusCode;
+    public string ResponseBody { get; } = responseBody;
+
+    public bool IsHistoryBoundary
+    {
+        get
+        {
+            if (StatusCode != HttpStatusCode.BadRequest) return false;
+            try
+            {
+                using var document = JsonDocument.Parse(ResponseBody);
+                var code = document.RootElement.TryGetProperty("errorCode", out var value) ? value.GetString() : null;
+                return code is "error.invalid.from" or "error.invalid.to" or "error.invalid.date-range";
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+    }
+}
 
 public sealed class CapitalApiClient : IDisposable
 {
@@ -127,24 +153,36 @@ public sealed class CapitalApiClient : IDisposable
             var from = to - step;
             if (from < earliest) from = earliest;
 
-            using var doc = await GetJsonAsync(BuildPricesPath(epic, resolution, apiMax, from, to), cancellationToken);
-            var rows = ParseOhlcPrices(doc.RootElement);
-            requestCount++;
-
-            if (rows.Count == 0)
+            JsonDocument doc;
+            try
             {
-                if (rowsByTime.Count > 0) break;
-                to = from.AddSeconds(-1);
-                continue;
+                doc = await GetJsonAsync(BuildPricesPath(epic, resolution, apiMax, from, to), cancellationToken);
+            }
+            catch (CapitalApiException ex) when (ex.IsHistoryBoundary)
+            {
+                break;
             }
 
-            foreach (var row in rows)
+            using (doc)
             {
-                rowsByTime[row.Time] = row;
-            }
+                var rows = ParseOhlcPrices(doc.RootElement);
+                requestCount++;
 
-            var oldest = rows.Min(row => row.Time);
-            to = rows.Count >= apiMax ? oldest.AddSeconds(-1) : from.AddSeconds(-1);
+                if (rows.Count == 0)
+                {
+                    if (rowsByTime.Count > 0) break;
+                    to = from.AddSeconds(-1);
+                    continue;
+                }
+
+                foreach (var row in rows)
+                {
+                    rowsByTime[row.Time] = row;
+                }
+
+                var oldest = rows.Min(row => row.Time);
+                to = rows.Count >= apiMax ? oldest.AddSeconds(-1) : from.AddSeconds(-1);
+            }
         }
 
         return rowsByTime.Values.OrderBy(row => row.Time).ToList();
@@ -256,7 +294,7 @@ public sealed class CapitalApiClient : IDisposable
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new InvalidOperationException($"Capital.com request failed: {(int)response.StatusCode} {response.ReasonPhrase}. {body}");
+            throw new CapitalApiException(response.StatusCode, response.ReasonPhrase ?? "Request failed", body);
         }
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);

@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using Microsoft.Web.WebView2.Core;
 
 namespace CAPETF.Desktop;
 
@@ -219,6 +220,7 @@ public partial class MainWindow : Window
         {
             await TerminalChartWebView.EnsureCoreWebView2Async();
             _terminalChartReady = false;
+            TerminalChartWebView.CoreWebView2.WebMessageReceived += TerminalWebMessageReceived;
             TerminalChartWebView.CoreWebView2.ProcessFailed += (_, args) =>
                 TerminalStatusText.Text = $"Terminal WebView failed: {args.ProcessFailedKind}";
             TerminalChartWebView.NavigationCompleted += TerminalChartWebView_NavigationCompleted;
@@ -502,8 +504,12 @@ public partial class MainWindow : Window
     private void ShowSyntheticDetails(SyntheticBasket basket)
     {
         var updated = basket.LastUpdated?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "n/a";
+        var quoteStatus = basket.Components.Any(component => component.Instrument.LastTickAt is null ||
+            DateTimeOffset.UtcNow - component.Instrument.LastTickAt.Value > TimeSpan.FromMinutes(5))
+            ? "stale components"
+            : "quotes fresh";
         SyntheticDetailText.Text =
-            $"{basket.Symbol} | {basket.Block} | {basket.BasketPrice:0.####} | avg vol {basket.AverageVolatilityPct:0.##}% | similarity {basket.SimilarityScore:0.##} | updated {updated}";
+            $"{basket.Symbol} | {basket.Block} | bid {FormatTerminalQuote(basket.BidPrice)} | ask {FormatTerminalQuote(basket.AskPrice)} | {quoteStatus} | avg vol {basket.AverageVolatilityPct:0.##}% | similarity {basket.SimilarityScore:0.##} | updated {updated}";
     }
 
     private async void RenderSyntheticCandlesAsync(SyntheticBasket basket)
@@ -554,6 +560,49 @@ public partial class MainWindow : Window
             TerminalStatusText.Text = "Terminal chart update failed.";
         }
     }
+
+    private async Task RenderTerminalTickAsync(SyntheticTerminalTickPayload tick)
+    {
+        if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null) return;
+        try
+        {
+            var json = JsonSerializer.Serialize(tick);
+            await TerminalChartWebView.ExecuteScriptAsync($"window.updateTerminalTick && window.updateTerminalTick({json});");
+        }
+        catch
+        {
+            TerminalStatusText.Text = "Terminal chart update failed.";
+        }
+    }
+
+    private async void TerminalWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        try
+        {
+            using var message = JsonDocument.Parse(e.WebMessageAsJson);
+            var root = message.RootElement;
+            if (!root.TryGetProperty("type", out var type) || type.GetString() != "previewOrder") return;
+            if (_terminalBasket is null) throw new InvalidOperationException("Build a synthetic symbol first.");
+            var side = root.TryGetProperty("side", out var sideValue) ? sideValue.GetString() ?? "BUY" : "BUY";
+            var basketNotional = root.TryGetProperty("basketNotional", out var notionalValue) && notionalValue.TryGetDecimal(out var parsed)
+                ? parsed
+                : 300m;
+            var preview = SyntheticOrderSizing.BuildExecutableOrderPreview(_terminalBasket, side, basketNotional);
+            var json = JsonSerializer.Serialize(preview);
+            await TerminalChartWebView.ExecuteScriptAsync($"window.setTerminalOrderPreview && window.setTerminalOrderPreview({json});");
+        }
+        catch (Exception ex)
+        {
+            TerminalStatusText.Text = ex.Message;
+            var json = JsonSerializer.Serialize(new { Error = ex.Message });
+            if (_terminalChartReady && TerminalChartWebView.CoreWebView2 is not null)
+            {
+                await TerminalChartWebView.ExecuteScriptAsync($"window.setTerminalOrderPreview && window.setTerminalOrderPreview({json});");
+            }
+        }
+    }
+
+    private static string FormatTerminalQuote(decimal? value) => value?.ToString("0.#####") ?? "n/a";
 
     private async Task ResizeTerminalChartAsync()
     {
@@ -622,7 +671,7 @@ public partial class MainWindow : Window
     {
         if (!_terminalChartReady || TerminalChartWebView.CoreWebView2 is null) return;
         var json = JsonSerializer.Serialize(side);
-        await TerminalChartWebView.ExecuteScriptAsync($"window.placeSyntheticPreviewOrder && window.placeSyntheticPreviewOrder({json}, 1);");
+        await TerminalChartWebView.ExecuteScriptAsync($"window.placeSyntheticPreviewOrder && window.placeSyntheticPreviewOrder({json}, 300);");
     }
 
     private async void TerminalIntervalBox_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
@@ -778,7 +827,7 @@ public partial class MainWindow : Window
 
     private async void Streaming_QuoteReceived(object? sender, QuoteUpdate update)
     {
-        SyntheticTerminalPayload? terminalPayload = null;
+        SyntheticTerminalTickPayload? terminalTick = null;
         await Dispatcher.InvokeAsync(() =>
         {
             if (CurrentWorkspaceMode() == SyntheticTerminalWorkspace.ModeName && _terminalBasket is not null)
@@ -786,9 +835,9 @@ public partial class MainWindow : Window
                 var result = SyntheticTerminalLiveUpdate.Apply(_terminalBasket, update);
                 if (result.Matched)
                 {
-                    terminalPayload = result.Payload;
+                    terminalTick = result.Tick;
                     TerminalHeaderText.Text = $"{_terminalBasket.Symbol} | {_terminalBasket.Block}";
-                    TerminalStatusText.Text = $"{_terminalBasket.Symbol}: last {_terminalBasket.BasketPrice:0.####}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
+                    TerminalStatusText.Text = $"{_terminalBasket.Symbol}: bid {FormatTerminalQuote(_terminalBasket.BidPrice)}, ask {FormatTerminalQuote(_terminalBasket.AskPrice)}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
                 }
                 return;
             }
@@ -815,9 +864,9 @@ public partial class MainWindow : Window
             UpdateSyntheticBasketsForQuote(update);
         });
 
-        if (terminalPayload is not null)
+        if (terminalTick is not null)
         {
-            var renderTask = await Dispatcher.InvokeAsync(() => RenderTerminalPayloadAsync(terminalPayload, fit: false));
+            var renderTask = await Dispatcher.InvokeAsync(() => RenderTerminalTickAsync(terminalTick));
             await renderTask;
         }
     }

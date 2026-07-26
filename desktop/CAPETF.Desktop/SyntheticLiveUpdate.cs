@@ -23,6 +23,7 @@ public static class SyntheticLiveUpdate
 
         component.Instrument.Bid = update.Bid is > 0 ? update.Bid : null;
         component.Instrument.Offer = update.Offer is > 0 ? update.Offer : null;
+        component.Instrument.LastTickAt = update.Time;
         basket.LastUpdated = update.Time;
         SyntheticQuoteCalculator.Refresh(basket);
         if (update.Price is null || update.Price <= 0) return new SyntheticQuoteApplyResult(true, false);

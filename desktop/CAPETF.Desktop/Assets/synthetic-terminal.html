@@ -374,8 +374,8 @@
           <div class="panel-title">ORDER PREVIEW</div>
           <div id="order-ticket">
             <div id="quantity-row">
-              <span class="muted">Quantity multiplier</span>
-              <input id="quantity" type="number" value="1" min="0.01" step="0.01">
+              <span class="muted">Basket notional</span>
+              <input id="quantity" type="number" value="300" min="1" step="100">
             </div>
             <div id="order-buttons">
               <button type="button" id="buy-preview">Buy</button>
@@ -424,9 +424,11 @@
     let drawingPrimitives = [];
     let drawingPreviewPrimitive = null;
     let drawingRecords = [];
-    let drawingSymbol = '';
+    let drawingIdentity = '';
     let railWidth = 420;
     let railPointerId = null;
+    let pendingTerminalTick = null;
+    let terminalTickFrame = null;
     const SYNTHETIC_PRICE_FLOOR = -10;
     const RAIL_WIDTH_KEY = 'capcom-terminal-rail-width';
     const DRAWING_STORAGE_PREFIX = 'capcom-terminal-drawings:';
@@ -937,7 +939,8 @@
       const minSizeIncrement = getField(component, 'MinSizeIncrement', 'minSizeIncrement', null);
       const bid = getField(component, 'Bid', 'bid', null);
       const offer = getField(component, 'Offer', 'offer', null);
-      const tick = getField(component, 'LastTickText', 'lastTickText', 'n/a');
+      const quoteStatus = getField(component, 'QuoteStatus', 'quoteStatus', 'stale');
+      const quoteTimestamp = getField(component, 'QuoteTimestamp', 'quoteTimestamp', null);
       const role = getField(component, 'Role', 'role', 'Peer');
       const vol = Number(getField(component, 'AnnualizedVolatilityPct', 'annualizedVolatilityPct', 0));
       const fourYear = Number(getField(component, 'FourYearReturnPct', 'fourYearReturnPct', 0));
@@ -948,31 +951,25 @@
         <div class="muted">min deal ${formatNullable(minDealSize)} | size step ${formatNullable(minSizeIncrement)}</div>
         <div class="muted">reference ${money(referencePrice)}</div>
         <div class="muted">Annualized vol ${vol.toFixed(2)}% | 4Y return ${fourYear.toFixed(2)}%</div>
-        <div class="muted">bid ${money(bid)} | offer ${money(offer)} | ${escapeHtml(tick)}</div>
+        <div class="muted">bid ${money(bid)} | offer ${money(offer)} | ${escapeHtml(quoteStatus)} ${escapeHtml(formatQuoteTimestamp(quoteTimestamp))}</div>
       </div>`;
     }
 
     function formatMultiplier(value) {
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) return 'n/a';
-      return numeric.toFixed(2).replace(/\.?0+$/, '');
+      return Number(numeric.toPrecision(6)).toString();
+    }
+
+    function formatQuoteTimestamp(value) {
+      if (!value) return '(no quote timestamp)';
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? '(invalid quote timestamp)' : `(${parsed.toLocaleTimeString()})`;
     }
 
     function formatNullable(value) {
       const numeric = Number(value);
       return Number.isFinite(numeric) && numeric > 0 ? formatMultiplier(numeric) : 'n/a';
-    }
-
-    function executableLegQuantity(component, quantity) {
-      const weight = Number(getField(component, 'Weight', 'weight', 0));
-      const fallbackMultiplier = weight / 100;
-      const formulaMultiplier = Number(getField(component, 'FormulaMultiplier', 'formulaMultiplier', fallbackMultiplier));
-      const minDeal = Number(getField(component, 'MinDealSize', 'minDealSize', 0));
-      const step = Number(getField(component, 'MinSizeIncrement', 'minSizeIncrement', 0));
-      let sized = Math.abs(quantity * formulaMultiplier);
-      if (Number.isFinite(minDeal) && minDeal > 0 && sized < minDeal) sized = minDeal;
-      if (Number.isFinite(step) && step > 0) sized = Math.ceil(sized / step) * step;
-      return Number.isFinite(sized) ? sized : 0;
     }
 
     function escapeHtml(value) {
@@ -1066,8 +1063,8 @@
       return Number.isFinite(value) ? value : null;
     }
 
-    function drawingStorageKey(symbol) {
-      return symbol ? `${DRAWING_STORAGE_PREFIX}${symbol}` : '';
+    function drawingStorageKey(identity) {
+      return identity ? `${DRAWING_STORAGE_PREFIX}${identity}` : '';
     }
 
     function storedTime(time) {
@@ -1142,7 +1139,7 @@
     }
 
     function persistDrawings() {
-      const key = drawingStorageKey(drawingSymbol);
+      const key = drawingStorageKey(drawingIdentity);
       if (!key) return;
       try {
         localStorage.setItem(key, JSON.stringify(drawingRecords));
@@ -1151,8 +1148,8 @@
       }
     }
 
-    function loadDrawings(symbol) {
-      const key = drawingStorageKey(symbol);
+    function loadDrawings(identity) {
+      const key = drawingStorageKey(identity);
       if (!key) return [];
       try {
         const records = JSON.parse(localStorage.getItem(key) || '[]');
@@ -1162,12 +1159,12 @@
       }
     }
 
-    function restoreDrawingsForSymbol(symbol) {
+    function restoreDrawingsForSymbol(identity) {
       detachDrawings();
       drawingAnchor = null;
       clearDrawingPreview();
-      drawingSymbol = symbol || '';
-      drawingRecords = loadDrawings(drawingSymbol);
+      drawingIdentity = identity || '';
+      drawingRecords = loadDrawings(drawingIdentity);
       drawingRecords.forEach(attachDrawing);
     }
 
@@ -1230,7 +1227,7 @@
         .sort((a, b) => a.time - b.time);
       renderChart(!liveUpdate);
       if (!liveUpdate) {
-        restoreDrawingsForSymbol(getField(payload, 'Symbol', 'symbol', ''));
+        restoreDrawingsForSymbol(getField(payload, 'DrawingIdentity', 'drawingIdentity', getField(payload, 'Symbol', 'symbol', '')));
       }
       if (liveUpdate) document.getElementById('stream-state').textContent = 'stream tick';
     }
@@ -1239,8 +1236,53 @@
       apply(nextPayload, false);
     };
 
-    window.updateTerminalTick = function(nextPayload) {
-      apply(nextPayload, true);
+    function flushTerminalTick() {
+      terminalTickFrame = null;
+      const tick = pendingTerminalTick;
+      pendingTerminalTick = null;
+      if (!tick || !candleSeries) return;
+
+      payload.BidPrice = getField(tick, 'BidPrice', 'bidPrice', null);
+      payload.AskPrice = getField(tick, 'AskPrice', 'askPrice', null);
+      const quotes = getField(tick, 'ComponentQuotes', 'componentQuotes', []);
+      const quotesByEpic = new Map(quotes.map(quote => [getField(quote, 'Epic', 'epic', ''), quote]));
+      payload.Components = getField(payload, 'Components', 'components', []).map(component => {
+        const quote = quotesByEpic.get(getField(component, 'Epic', 'epic', ''));
+        if (!quote) return component;
+        return {
+          ...component,
+          Bid: getField(quote, 'Bid', 'bid', null),
+          Offer: getField(quote, 'Offer', 'offer', null),
+          QuoteTimestamp: getField(quote, 'QuoteTimestamp', 'quoteTimestamp', null),
+          QuoteStatus: getField(quote, 'QuoteStatus', 'quoteStatus', 'stale')
+        };
+      });
+
+      const nextCandleSource = getField(tick, 'Candle', 'candle', null);
+      if (nextCandleSource) {
+        const nextCandle = normalizeCandle(nextCandleSource);
+        if (validCandle(nextCandle)) {
+          const existingIndex = rawCandles.findIndex(candle => candle.time === nextCandle.time);
+          if (existingIndex >= 0) rawCandles[existingIndex] = nextCandle;
+          else if (!rawCandles.length || nextCandle.time > rawCandles[rawCandles.length - 1].time) rawCandles.push(nextCandle);
+          displayCandles = candlesForMode();
+          const displayCandle = displayCandles[displayCandles.length - 1];
+          if (displayCandle) candleSeries.update(displayCandle);
+          for (const period of [20, 50, 200]) {
+            const points = computeMa(displayCandles, period);
+            if (maVisibility[period] && points.length) maSeries[period].update(points[points.length - 1]);
+          }
+        }
+      }
+
+      renderMetadata();
+      renderPriceLines();
+      document.getElementById('stream-state').textContent = 'stream tick';
+    }
+
+    window.updateTerminalTick = function(nextTick) {
+      pendingTerminalTick = nextTick;
+      if (terminalTickFrame === null) terminalTickFrame = requestAnimationFrame(flushTerminalTick);
     };
 
     window.renderTerminal = window.setTerminalData;
@@ -1336,18 +1378,36 @@
       setRailCollapsed(!workspace.classList.contains('ticket-hidden'));
     };
 
-    window.placeSyntheticPreviewOrder = function(side, quantity) {
-      const multiplier = Math.max(0, Number(quantity) || 0);
-      const components = getField(payload, 'Components', 'components', []);
-      const rows = components.map(component => {
-        const weight = Number(getField(component, 'Weight', 'weight', 0));
-        const fallbackMultiplier = weight / 100;
-        const formulaMultiplier = Number(getField(component, 'FormulaMultiplier', 'formulaMultiplier', fallbackMultiplier));
-        const epic = getField(component, 'Epic', 'epic', '');
-        const legSide = multiplier * formulaMultiplier >= 0 ? String(side).toUpperCase() : String(side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
-        return `${legSide} ${executableLegQuantity(component, multiplier).toFixed(4).replace(/\.?0+$/, '')} x ${epic}`;
+    window.placeSyntheticPreviewOrder = function(side, basketNotional) {
+      if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage({ type: 'previewOrder', side: String(side).toUpperCase(), basketNotional: Number(basketNotional) });
+      } else {
+        document.getElementById('order-preview').textContent = 'Desktop order preview host unavailable.';
+      }
+    };
+
+    window.setTerminalOrderPreview = function(preview) {
+      const error = getField(preview, 'Error', 'error', '');
+      if (error) {
+        document.getElementById('order-preview').textContent = error;
+        return;
+      }
+      const side = getField(preview, 'Side', 'side', '');
+      const requested = getField(preview, 'RequestedBasketNotional', 'requestedBasketNotional', null);
+      const total = getField(preview, 'TotalExecutableNotional', 'totalExecutableNotional', null);
+      const maxImbalance = Number(getField(preview, 'MaxAbsoluteWeightImbalancePct', 'maxAbsoluteWeightImbalancePct', 0));
+      const legs = getField(preview, 'Legs', 'legs', []);
+      const summary = `${side} basket ${money(requested)} | executable ${money(total)} | max imbalance ${maxImbalance.toFixed(2)}pp`;
+      const rows = legs.map(leg => {
+        const legSide = getField(leg, 'Side', 'side', '');
+        const epic = getField(leg, 'Epic', 'epic', '');
+        const quantity = getField(leg, 'Quantity', 'quantity', null);
+        const reference = getField(leg, 'ReferencePrice', 'referencePrice', null);
+        const notional = getField(leg, 'Notional', 'notional', null);
+        const imbalance = Number(getField(leg, 'WeightImbalancePct', 'weightImbalancePct', 0));
+        return `${legSide} ${formatMultiplier(quantity)} x ${epic} @ ${money(reference)} = ${money(notional)} (${imbalance >= 0 ? '+' : ''}${imbalance.toFixed(2)}pp)`;
       });
-      document.getElementById('order-preview').textContent = rows.length ? rows.join(' | ') : 'Build a synthetic symbol first.';
+      document.getElementById('order-preview').textContent = [summary, ...rows].join(' | ');
     };
 
     intervalButtons.forEach(button => button.addEventListener('click', () => window.setTerminalInterval(button.dataset.interval)));

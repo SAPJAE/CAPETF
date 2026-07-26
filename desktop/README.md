@@ -19,4 +19,6 @@ The release stores credentials with Windows DPAPI for the current Windows user. 
 
 Historical depth depends on what Capital.com makes available for each epic and resolution. The terminal keeps its requests within those available history limits, so candle count and date range can differ by instrument and timeframe.
 
+The bundled encrypted ETF catalog uses an application-shipped fallback key so the desktop can load its offline universe without user setup. This is data obfuscation, not confidentiality: anyone with the application binaries can recover that fallback key and decrypt the bundled catalog. Capital.com account credentials remain separate and are protected for the current Windows user with DPAPI.
+
 This build is analytical only. It does not submit live orders.

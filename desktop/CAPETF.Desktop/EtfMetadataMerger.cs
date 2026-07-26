@@ -15,7 +15,7 @@ public static class EtfMetadataMerger
             Country = country,
             Region = FirstMeaningful(cached.Region, details.Region, RegionFromCountry(country)),
             Sector = FirstMeaningful(cached.Sector, details.Sector, "All"),
-            Status = First(cached.Status, details.Status),
+            Status = First(details.Status, cached.Status),
             Price = cached.Price ?? details.Price,
             Bid = cached.Bid ?? details.Bid,
             Offer = cached.Offer ?? details.Offer,

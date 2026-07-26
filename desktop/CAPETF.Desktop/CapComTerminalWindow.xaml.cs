@@ -3,6 +3,7 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using Microsoft.Web.WebView2.Core;
 
 namespace CAPETF.Desktop;
 
@@ -29,6 +30,8 @@ public partial class CapComTerminalWindow : Window
     private bool _loadingSavedBaskets;
     private SyntheticTerminalPayload? _pendingPayload;
     private bool _chartReady;
+    private bool _streamReconnectScheduled;
+    private bool _isClosing;
 
     public CapComTerminalWindow()
     {
@@ -147,6 +150,13 @@ public partial class CapComTerminalWindow : Window
         var activeCachedCandles = CachedCandlesForResolution(resolution);
         var candles = BuildCachedCandles(candidates, activeCachedCandles, minCandles, candidateLimit: 500);
         var seedText = SeedText();
+        candles = await SyntheticTerminalBuildPolicy.LoadCandidateHistoryFallbackAsync(
+            strategy,
+            seedText,
+            candidates,
+            candles,
+            maximumCandidates: 12,
+            selected => LoadCandidateHistoryAsync(selected, resolution));
         var isSeededSimilarBuild =
             strategy == SyntheticStrategyKind.SimilarToSelectedSymbol &&
             !string.IsNullOrWhiteSpace(seedText);
@@ -211,7 +221,7 @@ public partial class CapComTerminalWindow : Window
         var selectedHistory = await LoadSelectedHistoryAsync(selectedComponents, resolution);
         _operationState.BeginStage("Building selected basket");
         await Task.Yield();
-        _basket = SyntheticHistoryService.BuildSelected(block, selectedComponents, selectedHistory, periodsPerYear, minCandles);
+        _basket = SyntheticHistoryService.BuildSelected(block, selectedComponents, selectedHistory, resolution, periodsPerYear, minCandles);
         if (_basket is null)
         {
             await ClearTerminalChartAsync();
@@ -271,7 +281,7 @@ public partial class CapComTerminalWindow : Window
         var selectedHistory = await LoadSelectedHistoryAsync(selectedInstruments, resolution);
         _operationState.BeginStage("Building selected basket");
         await Task.Yield();
-        _basket = SyntheticHistoryService.BuildSelected(saved.Block, selectedInstruments, selectedHistory, periodsPerYear, minCandles);
+        _basket = SyntheticHistoryService.BuildSelected(saved.Block, selectedInstruments, selectedHistory, resolution, periodsPerYear, minCandles);
         if (_basket is null)
         {
             await ClearTerminalChartAsync();
@@ -384,6 +394,20 @@ public partial class CapComTerminalWindow : Window
         return await _history.LoadSelectedAsync(selectedComponents, resolution, progress);
     }
 
+    private async Task<HistoryLoadResult> LoadCandidateHistoryAsync(
+        IReadOnlyList<MarketInstrument> candidates,
+        string resolution)
+    {
+        await EnsureConnectedAsync();
+        _operationState.BeginStage($"Loading candidate {resolution} history", candidates.Count);
+        var progress = new Progress<HistoryLoadProgress>(update =>
+        {
+            _operationState.Report($"Loading candidate {resolution} history", update.CompletedComponents, update.TotalComponents);
+            StatusText.Text = $"Loading Capital.com {resolution} history for candidate {update.CompletedComponents} of {update.TotalComponents}: {update.Epic}.";
+        });
+        return await _history.LoadSelectedAsync(candidates, resolution, progress);
+    }
+
     private static string HistoryRange(HistoryLoadResult history) =>
         history.SharedStart is not null && history.SharedEnd is not null
             ? $"{history.SharedCount} shared candles from {history.SharedStart:yyyy-MM-dd} to {history.SharedEnd:yyyy-MM-dd}"
@@ -412,12 +436,15 @@ public partial class CapComTerminalWindow : Window
         await EnsureConnectedAsync();
         if (_basket is null) return;
 
-        if (_streaming is null)
+        if (_streaming is null || !_streaming.IsConnected)
         {
-            _streaming = new CapitalStreamingClient();
-            _streaming.QuoteReceived += Streaming_QuoteReceived;
-            _streaming.StatusChanged += (_, message) => Dispatcher.Invoke(() => ConnectionText.Text = message);
-            await _streaming.ConnectAsync(_api.Session!);
+            if (_streaming is not null) await _streaming.DisposeAsync();
+            var streaming = new CapitalStreamingClient();
+            streaming.QuoteReceived += Streaming_QuoteReceived;
+            streaming.StatusChanged += (_, message) => Dispatcher.Invoke(() => ConnectionText.Text = message);
+            streaming.Disconnected += Streaming_Disconnected;
+            await streaming.ConnectAsync(_api.Session!);
+            _streaming = streaming;
         }
 
         var epics = SyntheticTerminalWorkspace.StreamingEpics(_basket);
@@ -427,6 +454,27 @@ public partial class CapComTerminalWindow : Window
         _operationState.Report("Starting live stream", 2, 2);
         ConnectionText.Text = $"Streaming {_basket.Symbol}";
         StatusText.Text = $"Streaming {_basket.Symbol}: {epics.Count} component epics.";
+    }
+
+    private void Streaming_Disconnected(object? sender, string message)
+    {
+        if (_isClosing) return;
+        _ = Dispatcher.InvokeAsync(async () => await ReconnectStreamingAsync(message));
+    }
+
+    private async Task ReconnectStreamingAsync(string message)
+    {
+        if (_isClosing || _streamReconnectScheduled || _basket is null || _api.Session is null || _operationState.IsBusy) return;
+        _streamReconnectScheduled = true;
+        try
+        {
+            ConnectionText.Text = message;
+            await RunOperationAsync("Reconnecting live stream", StartStreamingCurrentBasketAsync);
+        }
+        finally
+        {
+            _streamReconnectScheduled = false;
+        }
     }
 
     private async Task RefreshBasketMarketDetailsAsync(SyntheticBasket basket)
@@ -516,6 +564,7 @@ public partial class CapComTerminalWindow : Window
             existingBasket.Block,
             selectedComponents,
             history,
+            resolution,
             PeriodsPerYear(resolution),
             MinimumCandles(resolution));
         if (rebuilt is null)
@@ -541,9 +590,11 @@ public partial class CapComTerminalWindow : Window
             if (_basket is null) return;
             var result = SyntheticTerminalLiveUpdate.Apply(_basket, update);
             if (!result.Matched) return;
-            if (result.Payload is not null) _ = SendTerminalPayloadAsync(result.Payload, liveUpdate: true);
-            ChartMetaText.Text = $"{result.Payload?.CurrencyLabel ?? ""} | bid {FormatQuote(_basket.BidPrice)} | ask {FormatQuote(_basket.AskPrice)}";
-            StatusText.Text = $"{_basket.Symbol}: live {_basket.BasketPrice:0.####}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
+            if (result.Tick is not null) _ = SendTerminalTickAsync(result.Tick);
+            ChartMetaText.Text = $"{_pendingPayload?.CurrencyLabel ?? ""} | bid {FormatQuote(_basket.BidPrice)} | ask {FormatQuote(_basket.AskPrice)}";
+            var quoteStatus = _basket.Components.Any(component => component.Instrument.LastTickAt is null ||
+                update.Time - component.Instrument.LastTickAt.Value > TimeSpan.FromMinutes(5)) ? "stale components" : "quotes fresh";
+            StatusText.Text = $"{_basket.Symbol}: bid {FormatQuote(_basket.BidPrice)}, ask {FormatQuote(_basket.AskPrice)}, {quoteStatus}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
         });
     }
 
@@ -714,7 +765,9 @@ public partial class CapComTerminalWindow : Window
             }
         }
 
-        return enriched;
+        return enriched
+            .Where(item => TerminalUniverse.Accepts(TerminalUniverseKind.ETFs, item, _knownEtfEpics))
+            .ToList();
     }
 
     private void ApplyUniverse(
@@ -805,13 +858,14 @@ public partial class CapComTerminalWindow : Window
             }
 
             await TerminalWebView.EnsureCoreWebView2Async();
+            TerminalWebView.CoreWebView2.WebMessageReceived += TerminalWebMessageReceived;
             TerminalWebView.NavigationCompleted += async (_, _) =>
             {
                 _chartReady = true;
                 await InvokeTerminalScriptAsync("window.resizeTerminal && window.resizeTerminal();");
                 if (_pendingPayload is not null)
                 {
-                    await SendTerminalPayloadAsync(_pendingPayload, liveUpdate: false);
+                    await SendTerminalPayloadAsync(_pendingPayload);
                 }
             };
             TerminalWebView.Source = new Uri(terminalPath);
@@ -835,25 +889,25 @@ public partial class CapComTerminalWindow : Window
         _components.Clear();
         foreach (var component in payload.Components) _components.Add(component);
 
-        await SendTerminalPayloadAsync(payload, liveUpdate: false);
+        await SendTerminalPayloadAsync(payload);
         await SetTerminalChartModeAsync();
         await SetTerminalIntervalAsync();
     }
 
-    private async Task SendTerminalPayloadAsync(SyntheticTerminalPayload payload, bool liveUpdate)
+    private async Task SendTerminalPayloadAsync(SyntheticTerminalPayload payload)
     {
         _pendingPayload = payload;
         if (!_chartReady || TerminalWebView.CoreWebView2 is null) return;
 
         var json = JsonSerializer.Serialize(payload);
-        if (liveUpdate)
-        {
-            await InvokeTerminalScriptAsync($"window.updateTerminalTick ? window.updateTerminalTick({json}) : window.updateTerminal && window.updateTerminal({json});");
-        }
-        else
-        {
-            await InvokeTerminalScriptAsync($"window.setTerminalData ? window.setTerminalData({json}) : window.renderTerminal && window.renderTerminal({json});");
-        }
+        await InvokeTerminalScriptAsync($"window.setTerminalData ? window.setTerminalData({json}) : window.renderTerminal && window.renderTerminal({json});");
+    }
+
+    private async Task SendTerminalTickAsync(SyntheticTerminalTickPayload tick)
+    {
+        if (!_chartReady || TerminalWebView.CoreWebView2 is null) return;
+        var json = JsonSerializer.Serialize(tick);
+        await InvokeTerminalScriptAsync($"window.updateTerminalTick && window.updateTerminalTick({json});");
     }
 
     private Task SetTerminalBusyAsync(bool busy, string? operationName = null)
@@ -961,7 +1015,26 @@ public partial class CapComTerminalWindow : Window
         await InvokeTerminalScriptAsync("window.fitTerminalChart && window.fitTerminalChart();");
     }
 
-    private void PreviewSyntheticOrder(string side)
+    private void TerminalWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        try
+        {
+            using var message = JsonDocument.Parse(e.WebMessageAsJson);
+            var root = message.RootElement;
+            if (!root.TryGetProperty("type", out var type) || type.GetString() != "previewOrder") return;
+            var side = root.TryGetProperty("side", out var sideValue) ? sideValue.GetString() ?? "BUY" : "BUY";
+            var basketNotional = root.TryGetProperty("basketNotional", out var notionalValue) && notionalValue.TryGetDecimal(out var parsed)
+                ? parsed
+                : 0m;
+            PreviewSyntheticOrder(side, basketNotional);
+        }
+        catch (JsonException ex)
+        {
+            StatusText.Text = $"Order preview request was invalid: {ex.Message}";
+        }
+    }
+
+    private void PreviewSyntheticOrder(string side, decimal? requestedBasketNotional = null)
     {
         if (_basket is null)
         {
@@ -969,20 +1042,30 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
-        _ = decimal.TryParse(QuantityBox.Text, out var quantity);
-        if (quantity <= 0) quantity = 1m;
-        OrderPreviewText.Text = string.Join(Environment.NewLine, _basket.Components.Select(component =>
+        _ = decimal.TryParse(QuantityBox.Text, out var enteredNotional);
+        var basketNotional = requestedBasketNotional is > 0 ? requestedBasketNotional.Value : enteredNotional;
+        if (basketNotional <= 0) basketNotional = 300m;
+        try
         {
-            var raw = quantity * component.FormulaMultiplier;
-            var legSide = raw >= 0 ? side : side == "BUY" ? "SELL" : "BUY";
-            var executable = SyntheticOrderSizing.ExecutableLegQuantity(component, quantity);
-            return $"{legSide} {executable:0.####} x {component.Instrument.Epic} (calc {raw:0.##})";
-        }));
-        _ = InvokeTerminalScriptAsync($"window.placeSyntheticPreviewOrder && window.placeSyntheticPreviewOrder('{side}', {quantity});");
+            var preview = SyntheticOrderSizing.BuildExecutableOrderPreview(_basket, side, basketNotional);
+            var rows = preview.Legs.Select(leg =>
+                $"{leg.Side} {leg.Quantity:0.####} x {leg.Epic} @ {leg.ReferencePrice:0.#####} = {leg.Notional:0.##} ({leg.WeightImbalancePct:+0.##;-0.##;0}pp)");
+            OrderPreviewText.Text = $"Executable {preview.TotalExecutableNotional:0.##}; max imbalance {preview.MaxAbsoluteWeightImbalancePct:0.##}pp" +
+                                    Environment.NewLine + string.Join(Environment.NewLine, rows);
+            var json = JsonSerializer.Serialize(preview);
+            _ = InvokeTerminalScriptAsync($"window.setTerminalOrderPreview && window.setTerminalOrderPreview({json});");
+        }
+        catch (Exception ex)
+        {
+            OrderPreviewText.Text = ex.Message;
+            var json = JsonSerializer.Serialize(new { Error = ex.Message });
+            _ = InvokeTerminalScriptAsync($"window.setTerminalOrderPreview && window.setTerminalOrderPreview({json});");
+        }
     }
 
     protected override async void OnClosed(EventArgs e)
     {
+        _isClosing = true;
         if (_streaming is not null)
         {
             await _streaming.DisposeAsync();

@@ -2,8 +2,11 @@ namespace CAPETF.Desktop;
 
 public static class SyntheticTerminalChartPayload
 {
-    public static SyntheticTerminalPayload Build(SyntheticBasket basket)
+    private static readonly TimeSpan FreshQuoteAge = TimeSpan.FromMinutes(5);
+
+    public static SyntheticTerminalPayload Build(SyntheticBasket basket, DateTimeOffset? now = null)
     {
+        var observedAt = now ?? DateTimeOffset.UtcNow;
         var candles = basket.Candles
             .OrderBy(candle => candle.Time)
             .Select(candle => new TerminalCandle(
@@ -16,6 +19,7 @@ public static class SyntheticTerminalChartPayload
 
         return new SyntheticTerminalPayload(
             basket.Symbol,
+            DrawingIdentity(basket),
             basket.Block,
             CurrencyLabel(basket),
             basket.BidPrice,
@@ -41,8 +45,18 @@ public static class SyntheticTerminalChartPayload
                 component.FourYearReturnPct,
                 component.Instrument.Bid,
                 component.Instrument.Offer,
-                component.Instrument.LastTickAt?.ToLocalTime().ToString("HH:mm:ss") ?? "n/a")).ToList());
+                component.Instrument.LastTickAt,
+                QuoteStatus(component.Instrument.LastTickAt, observedAt))).ToList());
     }
+
+    private static string DrawingIdentity(SyntheticBasket basket) =>
+        string.Join("|", new[] { basket.Symbol }.Concat(basket.Components
+            .Select(component => component.Instrument.Epic)
+            .Where(epic => !string.IsNullOrWhiteSpace(epic))
+            .OrderBy(epic => epic, StringComparer.OrdinalIgnoreCase)));
+
+    internal static string QuoteStatus(DateTimeOffset? quoteTimestamp, DateTimeOffset now) =>
+        quoteTimestamp is not null && now - quoteTimestamp.Value <= FreshQuoteAge ? "fresh" : "stale";
 
     private static IReadOnlyList<TerminalLinePoint> MovingAverage(IReadOnlyList<OhlcPoint> source, int period)
     {

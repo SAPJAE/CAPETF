@@ -2,6 +2,7 @@ using CAPETF.Desktop;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 
@@ -14,16 +15,20 @@ public static class SyntheticBasketBuilderTests
         TerminalOperationStateRejectsDuplicatesAndTracksProgress();
         TerminalOperationStageResetsCompletedTotalsForIndeterminateWork();
         TerminalProgressPercentUsesOneWayBinding();
+        TerminalProgressPanelAvoidsWebViewAirspace();
         CapComTerminalOperationGuardCompletesFailsAndRestoresControls();
         NewOperationCancelsAndSupersedesEarlierWork();
         IncompleteOhlcRowsAreExcluded();
         CapitalPricePathSupportsDatedHistoryWindows();
         CapitalHistoryPagingWindowsMatchCapitalResolutions();
+        CapitalHistoryPagingRetainsSuccessfulRowsAtTerminalBoundary();
+        CapitalHistoryPagingDoesNotSwallowAuthFailure();
         SyntheticHistoryServiceMapsTerminalTimeframesToCapitalResolutions();
         SyntheticHistoryServiceAggregatesHourlyCandlesLocally();
-        SyntheticHistoryServiceUsesStableUtcBucketsAndRejectsGaps();
+        SyntheticHistoryServiceAggregatesTradingSessionsAndRejectsGaps();
         SelectedHistoryRebuildKeepsTheExactSelectedEpics();
         SelectedHistoryRebuildRejectsMissingSelectedLeg();
+        SelectedHistoryValidationUsesDailyAndWeeklyAlignmentKeys();
         InverseVolatilityWeightsSumToOneHundred();
         InverseVolatilityWeightsRespectCapsAndMinimums();
         SyntheticCandlesUsePriceStabilizedOhlc();
@@ -47,6 +52,7 @@ public static class SyntheticBasketBuilderTests
         EtfUniverseRecognitionAndIsolation();
         KnownEtfEpicsOverrideCapitalShareType();
         EtfMetadataMergeUsesCapitalDetailsForGrouping();
+        EtfMetadataMergeReappliesCurrentApiEligibility();
         EtfMetadataMergeUsesDeterministicFallbacks();
         EtfMetadataMergeDerivesRegionFromCapitalCountry();
         EncryptedEtfCatalogIncludesLoadedEtfEpics();
@@ -61,6 +67,8 @@ public static class SyntheticBasketBuilderTests
         SyntheticComponentDisplayPriceFallsBackToBaseline();
         SyntheticTerminalPayloadIncludesCandlesComponentsCurrencyAndMas();
         SyntheticTerminalPayloadIncludesSelectionBasis();
+        TerminalPayloadUsesComponentIdentityAndExplicitQuoteFreshness();
+        LegacySyntheticDetailsExposeBidAskAndStalenessOnly();
         SyntheticTerminalSelectorChoosesHighestSimilarityBasket();
         SyntheticTerminalSelectorUsesThreeYearComparisonWindow();
         SyntheticTerminalSelectorReturnsFullSelectedHistory();
@@ -72,7 +80,7 @@ public static class SyntheticBasketBuilderTests
         SeededSyntheticSelectorBuildsSapFromEncryptedChunks();
         SeededSyntheticSelectorBuildsSapFromEncryptedChunksForIntradayIntervals();
         SeededSyntheticSelectorDoesNotResolveShortTickersByLooseNameContains();
-        SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
+        SyntheticTerminalLiveUpdateReturnsIncrementalTick();
         StreamingQuoteClearsMissingAndZeroSides();
         StreamingQuoteClearsUnavailableSidesWithoutUsablePrice();
         SyntheticTerminalHtmlExposesRequiredFunctions();
@@ -84,13 +92,16 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlExposesResizableRailAndPersistentDrawingTools();
         SyntheticTerminalHtmlDisablesNativeLastCloseDecorations();
         SyntheticTerminalHtmlResetsTransientDrawingStateBeforeRestore();
+        SyntheticTerminalHtmlCoalescesIncrementalTicksAndUsesStableDrawingIdentity();
         CapComTerminalUsesTask6PayloadBridge();
         SyntheticTerminalHtmlExposesResizeFunction();
         SyntheticTerminalHtmlExposesDecisionChartControls();
         SyntheticTerminalHtmlExposesV2TerminalControls();
+        TerminalOrderPreviewUsesProductionSizingBridge();
         CapComTerminalUsesClearActionLabelsAndSymbolDropdown();
         SeedSearchOptionsIncludePalantirByNameAndSymbolAcrossBlocks();
         SeededSyntheticBuildsDoNotUseGenericHistoryFallback();
+        EmptyCachedHistoryLoadsBoundedApiCandidatesAndBuildsBasket();
         CapComTerminalIntradayMinimumsFitCachedHourlyHistory();
         StockRefreshFetchesDeepHourlyHistory();
         DesktopDefaultSearchDoesNotFilterStocksByEtf();
@@ -103,6 +114,8 @@ public static class SyntheticBasketBuilderTests
         CapComTerminalShowsActionableConnectionFailures();
         CapitalApiClientAllowsReconnectAfterRequests();
         CapitalApiClientParsesMarketDetailsSnapshotAndDealingRules();
+        CapitalStreamingClientRejectsClosedSocketsAndWindowRecreates();
+        CapitalStreamingClientReportsRemoteClose();
         StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy();
         CapComTerminalLoadsFullEncryptedStockChunks();
         TerminalWorkspaceModeNameIsAvailable();
@@ -113,8 +126,10 @@ public static class SyntheticBasketBuilderTests
         SyntheticQuoteUsesFormulaMultipliersForBidAsk();
         SyntheticQuoteTreatsMissingOrZeroSidesAsUnavailable();
         SyntheticOrderSizingUsesCapitalDealRules();
+        AdaptiveDisplayMultiplierPreservesSmallNonzeroValues();
         ExecutablePreviewUsesCurrentEqualNotionalAndDealRules();
         ExecutablePreviewRoundsUpToCapitalDealMinimumAndIncrement();
+        ExecutableOrderPreviewUsesCurrentSideQuotesAndReportsImbalance();
         SavedSyntheticBasketStorePersistsFormulaDetails();
         FinalStaticAcceptanceChecks();
     }
@@ -273,6 +288,16 @@ public static class SyntheticBasketBuilderTests
             "terminal operation progress must bind its read-only Percent value one-way");
     }
 
+    private static void TerminalProgressPanelAvoidsWebViewAirspace()
+    {
+        var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml"));
+        if (!xaml.Contains("<Border Grid.Row=\"2\" x:Name=\"OperationProgressPanel\"", StringComparison.Ordinal) ||
+            !xaml.Contains("<Border Grid.Row=\"3\" Background=\"{StaticResource PanelBrush}\"", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal progress must occupy a dedicated root row outside the WebView HwndHost region");
+        }
+    }
+
     private static void CapComTerminalOperationGuardCompletesFailsAndRestoresControls()
     {
         var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
@@ -316,6 +341,43 @@ public static class SyntheticBasketBuilderTests
         AssertEqual(TimeSpan.FromDays(365), (TimeSpan)historicalWindow.Invoke(null, ["DAY"])!, "daily history window");
         AssertEqual(TimeSpan.FromDays(3650), (TimeSpan)historicalWindow.Invoke(null, ["WEEK"])!, "weekly history window");
     }
+
+    private static void CapitalHistoryPagingRetainsSuccessfulRowsAtTerminalBoundary()
+    {
+        var handler = new HistoryPagingHandler(HttpStatusCode.BadRequest, "{\"errorCode\":\"error.invalid.from\"}");
+        using var client = new CapitalApiClient(handler);
+        client.LoginAsync(TestCredentials()).GetAwaiter().GetResult();
+
+        var rows = client.GetAllAvailableOhlcPricesAsync("TEST", "DAY").GetAwaiter().GetResult();
+
+        AssertEqual(2, rows.Count, "terminal history boundary must retain all successful pages");
+        AssertEqual(DateTimeOffset.Parse("2026-06-01T00:00:00Z"), rows[0].Time, "older successful history page");
+        AssertEqual(DateTimeOffset.Parse("2026-07-01T00:00:00Z"), rows[1].Time, "newer successful history page");
+    }
+
+    private static void CapitalHistoryPagingDoesNotSwallowAuthFailure()
+    {
+        var handler = new HistoryPagingHandler(HttpStatusCode.Unauthorized, "{\"errorCode\":\"error.security.client-token-invalid\"}");
+        using var client = new CapitalApiClient(handler);
+        client.LoginAsync(TestCredentials()).GetAwaiter().GetResult();
+
+        try
+        {
+            client.GetAllAvailableOhlcPricesAsync("TEST", "DAY").GetAwaiter().GetResult();
+            throw new Exception("history paging must propagate authentication failures");
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("401", StringComparison.Ordinal))
+        {
+        }
+    }
+
+    private static ApiCredentials TestCredentials() => new()
+    {
+        UseDemo = true,
+        Identifier = "user@example.com",
+        Password = "password",
+        ApiKey = "key",
+    };
 
     private static void SyntheticHistoryServiceAggregatesHourlyCandlesLocally()
     {
@@ -364,6 +426,7 @@ public static class SyntheticBasketBuilderTests
             "US / USD / Tech",
             selected,
             history,
+            "Daily",
             periodsPerYear: 252,
             minimumCandles: 120);
 
@@ -396,6 +459,7 @@ public static class SyntheticBasketBuilderTests
             "US / USD / Tech",
             selected,
             new HistoryLoadResult(candles, start, start.AddDays(119), 120),
+            "Daily",
             periodsPerYear: 252,
             minimumCandles: 120);
 
@@ -405,30 +469,76 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
-    private static void SyntheticHistoryServiceUsesStableUtcBucketsAndRejectsGaps()
+    private static void SelectedHistoryValidationUsesDailyAndWeeklyAlignmentKeys()
     {
-        var start = DateTimeOffset.Parse("2026-07-20T09:00:00Z");
-        var firstLeg = HourlyCandles(start, 4);
-        var secondLeg = HourlyCandles(start.AddHours(1), 4);
+        var selected = new[]
+        {
+            CreateStock("OFFSET-A", "Offset A"),
+            CreateStock("OFFSET-B", "Offset B"),
+            CreateStock("OFFSET-C", "Offset C"),
+        };
+        var starts = new[]
+        {
+            DateTimeOffset.Parse("2026-01-05T16:00:00-05:00"),
+            DateTimeOffset.Parse("2026-01-05T22:00:00+01:00"),
+            DateTimeOffset.Parse("2026-01-05T21:00:00Z"),
+        };
 
-        var firstTwoHour = SyntheticHistoryService.Transform(firstLeg, "2H");
-        var secondTwoHour = SyntheticHistoryService.Transform(secondLeg, "2H");
-        var sharedTimes = firstTwoHour.Select(candle => candle.Time).Intersect(secondTwoHour.Select(candle => candle.Time)).ToList();
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> DailyRows() => selected
+            .Select((instrument, index) => new
+            {
+                instrument.Epic,
+                Rows = (IReadOnlyList<OhlcPoint>)Enumerable.Range(0, 3)
+                    .Select(day => FlatCandle(starts[index].AddDays(day), 100m + day + index))
+                    .ToList(),
+            })
+            .ToDictionary(item => item.Epic, item => item.Rows, StringComparer.OrdinalIgnoreCase);
 
-        AssertEqual(1, sharedTimes.Count, "different source offsets must retain their shared 2H UTC bucket");
-        AssertEqual(start.AddHours(2), sharedTimes[0], "2H buckets must use a deterministic UTC bucket-end timestamp");
+        var daily = SyntheticHistoryService.BuildSelected(
+            "US / USD / Tech", selected, new HistoryLoadResult(DailyRows(), null, null, 3),
+            timeframe: "Daily", periodsPerYear: 252, minimumCandles: 3);
+        if (daily is null) throw new Exception("daily validation must align matching calendar dates across market timestamp offsets");
 
-        var twoHourWithGap = SyntheticHistoryService.Transform(
-            HourlyCandles(start.AddHours(1), 4).Where(candle => candle.Time != start.AddHours(2)).ToList(),
-            "2H");
-        AssertEqual(1, twoHourWithGap.Count, "a missing hourly candle must omit its 2H bucket");
-        AssertEqual(start.AddHours(4), twoHourWithGap[0].Time, "the next complete 2H bucket must remain available");
+        var weeklyRows = DailyRows().ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<OhlcPoint>)pair.Value.Select((row, index) => row with { Time = row.Time.AddDays(index * 6) }).ToList(),
+            StringComparer.OrdinalIgnoreCase);
+        var weekly = SyntheticHistoryService.BuildSelected(
+            "US / USD / Tech", selected, new HistoryLoadResult(weeklyRows, null, null, 3),
+            timeframe: "Weekly", periodsPerYear: 52, minimumCandles: 3);
+        if (weekly is null) throw new Exception("weekly validation must align matching calendar weeks across market timestamp offsets");
+    }
 
-        var sixHourWithGap = SyntheticHistoryService.Transform(
-            HourlyCandles(start.AddHours(3), 12).Where(candle => candle.Time != start.AddHours(5)).ToList(),
-            "6H");
-        AssertEqual(1, sixHourWithGap.Count, "a missing hourly candle must omit its 6H bucket");
-        AssertEqual(start.AddHours(14), sixHourWithGap[0].Time, "the next complete 6H bucket must use its UTC bucket-end timestamp");
+    private static void SyntheticHistoryServiceAggregatesTradingSessionsAndRejectsGaps()
+    {
+        var nonMidnightStart = DateTimeOffset.Parse("2026-07-20T09:30:00+02:00");
+        var nonMidnight = SyntheticHistoryService.Transform(HourlyCandles(nonMidnightStart, 6), "6H");
+        AssertEqual(1, nonMidnight.Count, "a six-hour trading session must aggregate from its actual first bar");
+        AssertEqual(nonMidnightStart.AddHours(5), nonMidnight[0].Time, "session aggregate must retain the final source timestamp");
+
+        var dstRows = new[]
+        {
+            DateTimeOffset.Parse("2026-03-08T00:00:00-05:00"),
+            DateTimeOffset.Parse("2026-03-08T01:00:00-05:00"),
+            DateTimeOffset.Parse("2026-03-08T03:00:00-04:00"),
+            DateTimeOffset.Parse("2026-03-08T04:00:00-04:00"),
+            DateTimeOffset.Parse("2026-03-08T05:00:00-04:00"),
+            DateTimeOffset.Parse("2026-03-08T06:00:00-04:00"),
+        }.Select((time, index) => FlatCandle(time, 100m + index)).ToList();
+        var dst = SyntheticHistoryService.Transform(dstRows, "6H");
+        AssertEqual(1, dst.Count, "DST clock changes must not break consecutive hourly trading bars");
+        AssertEqual(dstRows[^1].Time, dst[0].Time, "DST aggregate must retain the final source offset and timestamp");
+
+        var gapStart = DateTimeOffset.Parse("2026-07-20T09:00:00Z");
+        var gapRows = new[] { 0, 1, 3, 4, 5, 6 }
+            .Select(offset => FlatCandle(gapStart.AddHours(offset), 100m + offset))
+            .ToList();
+        var afterGap = SyntheticHistoryService.Transform(gapRows, "2H");
+        AssertEqual(3, afterGap.Count, "complete consecutive groups on either side of a gap must remain available");
+        if (afterGap.Any(candle => candle.Time == gapStart.AddHours(3)))
+        {
+            throw new Exception("a 2H candle must not bridge the missing hourly bar");
+        }
     }
 
     private static void SyntheticIndexStartsAtOneHundredOnFirstSharedCandle()
@@ -996,8 +1106,21 @@ public static class SyntheticBasketBuilderTests
         AssertEqual("EUR", merged.Currency, "ETF metadata merge should use Capital.com currency");
         AssertEqual("Equity ETFs", merged.Sector, "ETF metadata merge should use Capital.com sector");
         AssertEqual("Europe / EUR / Equity ETFs", merged.Group, "ETF metadata merge should build a meaningful group");
-        AssertEqual("CLOSED", merged.Status, "ETF metadata merge should preserve the cached closed status");
+        AssertEqual("TRADEABLE", merged.Status, "ETF metadata merge should prefer current Capital.com status");
         AssertNear(100m, merged.Price ?? 0m, "ETF metadata merge should retain the cached price");
+    }
+
+    private static void EtfMetadataMergeReappliesCurrentApiEligibility()
+    {
+        var merged = EtfMetadataMerger.Merge(
+            new MarketInstrument { Epic = "ETF-CFD", Type = "ETF", Status = "CLOSED" },
+            new MarketInstrument { Epic = "ETF-CFD", Type = "SHARES", Status = "CLOSE_ONLY" });
+
+        AssertEqual("CLOSE_ONLY", merged.Status, "current API close-only status must replace cached status");
+        if (TerminalUniverse.Accepts(TerminalUniverseKind.ETFs, merged))
+        {
+            throw new Exception("ETF metadata enrichment must reapply eligibility after current status merge");
+        }
     }
 
     private static void EtfMetadataMergeUsesDeterministicFallbacks()
@@ -1346,6 +1469,28 @@ public static class SyntheticBasketBuilderTests
         AssertNear(54.2m, payload.Components[0].FourYearReturnPct, "component row should expose four-year return");
     }
 
+    private static void TerminalPayloadUsesComponentIdentityAndExplicitQuoteFreshness()
+    {
+        var now = DateTimeOffset.Parse("2026-07-26T12:00:00Z");
+        var basket = new SyntheticBasket { Symbol = "SYN-IDENTITY", Block = "US / USD / Tech" };
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "B", Currency = "USD", LastTickAt = now.AddMinutes(-10) }, 50m, 0m, 0m));
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "A", Currency = "USD", LastTickAt = now.AddMinutes(-1) }, 50m, 0m, 0m));
+
+        var payload = SyntheticTerminalChartPayload.Build(basket, now);
+
+        AssertEqual("SYN-IDENTITY|A|B", payload.DrawingIdentity, "drawing identity must include the stable sorted component set");
+        AssertEqual("stale", payload.Components[0].QuoteStatus, "old component quote must be explicitly stale");
+        AssertEqual("fresh", payload.Components[1].QuoteStatus, "recent component quote must be explicitly fresh");
+        AssertEqual(now.AddMinutes(-1), payload.Components[1].QuoteTimestamp, "component quote timestamp must remain machine-readable");
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(payload));
+        if (json.RootElement.GetProperty("Components")[0].TryGetProperty("LastTickText", out _))
+        {
+            throw new Exception("terminal component payload must expose quote status instead of a synthetic last/tick display field");
+        }
+    }
+
     private static void SyntheticTerminalSelectorChoosesHighestSimilarityBasket()
     {
         var day = DateTimeOffset.Parse("2022-01-01T00:00:00Z");
@@ -1458,7 +1603,20 @@ public static class SyntheticBasketBuilderTests
         if (selected.Any(item => item.Epic == "SCAN-064")) throw new Exception("terminal history loading should respect the requested scan limit");
     }
 
-    private static void SyntheticTerminalLiveUpdateReturnsPayloadImmediately()
+    private static void LegacySyntheticDetailsExposeBidAskAndStalenessOnly()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml.cs"));
+        var start = source.IndexOf("private void ShowSyntheticDetails", StringComparison.Ordinal);
+        var end = source.IndexOf("private async void RenderSyntheticCandlesAsync", start, StringComparison.Ordinal);
+        var method = source[start..end];
+
+        AssertFalse(method.Contains("BasketPrice", StringComparison.Ordinal), "legacy synthetic details must not expose synthetic last price");
+        AssertTrue(method.Contains("BidPrice", StringComparison.Ordinal) && method.Contains("AskPrice", StringComparison.Ordinal),
+            "legacy synthetic details must display bid and ask");
+        AssertTrue(method.Contains("stale components", StringComparison.Ordinal), "legacy synthetic details must expose quote staleness");
+    }
+
+    private static void SyntheticTerminalLiveUpdateReturnsIncrementalTick()
     {
         var candleTime = DateTimeOffset.Parse("2026-07-25T00:00:00Z");
         var basket = new SyntheticBasket { Symbol = "SYN-LIVE", Block = "US / USD / Technology", BasketPrice = 10m, LastUpdated = candleTime };
@@ -1474,8 +1632,12 @@ public static class SyntheticBasketBuilderTests
 
         if (!result.Matched) throw new Exception("terminal live update must report matching component ticks");
         if (!result.CandleChanged) throw new Exception("terminal live update must update the current synthetic candle");
-        if (result.Payload is null) throw new Exception("terminal live update must return a fresh chart payload");
-        AssertNear(12m, result.Payload.Candles[^1].Close, "terminal payload must contain the updated synthetic close");
+        if (result.Tick is null) throw new Exception("terminal live update must return a compact tick payload");
+        if (result.Tick.Candle is null) throw new Exception("a changed live candle must be included in the compact tick payload");
+        AssertNear(12m, result.Tick.Candle.Close, "terminal tick must contain the updated synthetic close");
+        AssertEqual(1, result.Tick.ComponentQuotes.Count, "terminal tick should carry component quote metadata without full chart history");
+        AssertEqual(DateTimeOffset.Parse("2026-07-25T00:01:00Z"), result.Tick.ComponentQuotes[0].QuoteTimestamp,
+            "stream quote timestamp must flow into the terminal tick");
     }
 
     private static void FinalStaticAcceptanceChecks()
@@ -1736,6 +1898,36 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void EmptyCachedHistoryLoadsBoundedApiCandidatesAndBuildsBasket()
+    {
+        var start = DateTimeOffset.Parse("2025-01-01T00:00:00Z");
+        var candidates = Enumerable.Range(0, 6)
+            .Select(index => CreateStock($"API-{index}", $"API candidate {index}"))
+            .ToList();
+        var loadCalls = 0;
+
+        var candles = SyntheticTerminalBuildPolicy.LoadCandidateHistoryFallbackAsync(
+            SyntheticStrategyKind.DipInsideUptrend,
+            seedText: "",
+            candidates,
+            new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase),
+            maximumCandidates: 4,
+            selected =>
+            {
+                loadCalls++;
+                AssertEqual(4, selected.Count, "API fallback history load must remain bounded");
+                var loaded = selected.ToDictionary(
+                    item => item.Epic,
+                    item => CreateVariableCandles(start, 100m + selected.ToList().IndexOf(item) * 10m),
+                    StringComparer.OrdinalIgnoreCase);
+                return Task.FromResult(new HistoryLoadResult(loaded, start, start.AddDays(119), 120));
+            }).GetAwaiter().GetResult();
+
+        AssertEqual(1, loadCalls, "empty cache must trigger one bounded candidate-history load");
+        var basket = SyntheticTerminalSelector.SelectBest("US / USD / Tech", candidates, candles, 252, 120);
+        if (basket is null) throw new Exception("API fallback candidate history must support an end-to-end basket build");
+    }
+
     private static void SeedSearchOptionsIncludePalantirByNameAndSymbolAcrossBlocks()
     {
         var palantir = new MarketInstrument
@@ -1918,6 +2110,58 @@ public static class SyntheticBasketBuilderTests
             if (!html.Contains(required, StringComparison.Ordinal))
             {
                 throw new Exception($"terminal V3 HTML missing expected control {required}");
+            }
+        }
+    }
+
+    private static void TerminalOrderPreviewUsesProductionSizingBridge()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "CoreWebView2.WebMessageReceived += TerminalWebMessageReceived",
+            "SyntheticOrderSizing.BuildExecutableOrderPreview",
+            "window.setTerminalOrderPreview",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal order preview host bridge missing {required}");
+            }
+        }
+
+        var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
+        foreach (var required in new[]
+        {
+            "window.chrome.webview.postMessage",
+            "window.setTerminalOrderPreview",
+            "TotalExecutableNotional",
+            "WeightImbalancePct",
+        })
+        {
+            if (!html.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal order preview HTML bridge missing {required}");
+            }
+        }
+
+        if (html.Contains("function executableLegQuantity", StringComparison.Ordinal) ||
+            html.Contains("multiplier * formulaMultiplier", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal HTML must not independently calculate executable quantities from chart formula multipliers");
+        }
+
+        var dashboardSource = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "TerminalChartWebView.CoreWebView2.WebMessageReceived += TerminalWebMessageReceived",
+            "SyntheticOrderSizing.BuildExecutableOrderPreview",
+            "window.setTerminalOrderPreview",
+        })
+        {
+            if (!dashboardSource.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"dashboard terminal order preview host bridge missing {required}");
             }
         }
     }
@@ -2357,6 +2601,66 @@ public static class SyntheticBasketBuilderTests
         AssertEqual("Technology", details.Sector, "market details should parse sector");
     }
 
+    private static void CapitalStreamingClientRejectsClosedSocketsAndWindowRecreates()
+    {
+        var socket = new FakeCapitalStreamingSocket(WebSocketState.Closed);
+        var client = new CapitalStreamingClient(socket);
+        var statuses = new List<string>();
+        client.StatusChanged += (_, status) => statuses.Add(status);
+
+        if (client.IsConnected) throw new Exception("closed streaming socket must not report connected");
+        try
+        {
+            client.SubscribeQuotesAsync(new CapitalSession { Cst = "cst", SecurityToken = "token" }, ["A"]).GetAwaiter().GetResult();
+            throw new Exception("subscribe on a closed socket must fail");
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("not open", StringComparison.OrdinalIgnoreCase))
+        {
+        }
+        client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        if (!statuses.Any(status => status.Contains("disconnected", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new Exception("closed streaming socket must report disconnected status");
+        }
+
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "_streaming is null || !_streaming.IsConnected",
+            "await _streaming.DisposeAsync()",
+            "new CapitalStreamingClient()",
+            "streaming.Disconnected += Streaming_Disconnected",
+            "ReconnectStreamingAsync",
+            "SubscribeQuotesAsync",
+            "SubscribeOhlcAsync",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal streaming recreation/resubscription contract missing {required}");
+            }
+        }
+    }
+
+    private static void CapitalStreamingClientReportsRemoteClose()
+    {
+        var socket = new FakeCapitalStreamingSocket(WebSocketState.None, closeOnReceive: true);
+        var client = new CapitalStreamingClient(socket);
+        using var disconnected = new ManualResetEventSlim();
+        var reason = "";
+        client.Disconnected += (_, message) =>
+        {
+            reason = message;
+            disconnected.Set();
+        };
+
+        client.ConnectAsync(new CapitalSession { Cst = "cst", SecurityToken = "token" }).GetAwaiter().GetResult();
+        if (!disconnected.Wait(TimeSpan.FromSeconds(2))) throw new Exception("remote socket close must raise a disconnect event");
+        if (!reason.Contains("closed", StringComparison.OrdinalIgnoreCase)) throw new Exception($"disconnect reason must identify socket close, got {reason}");
+        if (client.IsConnected) throw new Exception("remote-close reader completion must clear connected state");
+        client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+
     private static void SyntheticTerminalHtmlExposesResizableRailAndPersistentDrawingTools()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
@@ -2445,6 +2749,41 @@ public static class SyntheticBasketBuilderTests
         if (anchorReset < 0 || previewReset < 0 || recordLoad < 0 || anchorReset > recordLoad || previewReset > recordLoad)
         {
             throw new Exception("drawing restore must reset anchors and preview state before loading another symbol's records");
+        }
+    }
+
+    private static void SyntheticTerminalHtmlCoalescesIncrementalTicksAndUsesStableDrawingIdentity()
+    {
+        var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
+        foreach (var required in new[]
+        {
+            "requestAnimationFrame(flushTerminalTick)",
+            "candleSeries.update",
+            "maSeries[period].update",
+            "DrawingIdentity",
+            "QuoteStatus",
+            "QuoteTimestamp",
+            "toPrecision(6)",
+        })
+        {
+            if (!html.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal incremental tick/drawing contract missing {required}");
+            }
+        }
+
+        if (html.Contains("LastTickText", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal HTML must show explicit quote freshness instead of a last/tick display field");
+        }
+
+        var tickStart = html.IndexOf("function flushTerminalTick", StringComparison.Ordinal);
+        var tickEnd = html.IndexOf("window.setTerminalBusy", tickStart, StringComparison.Ordinal);
+        if (tickStart < 0 || tickEnd < tickStart) throw new Exception("terminal incremental tick handler must remain a focused block");
+        var tickBlock = html[tickStart..tickEnd];
+        if (tickBlock.Contains("setData", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal live tick handler must not rebuild full chart series with setData");
         }
     }
 
@@ -2796,7 +3135,7 @@ public static class SyntheticBasketBuilderTests
             FormulaMultiplier = 0.06383855m,
         };
 
-        AssertNear(0.06m, SyntheticOrderSizing.DisplayMultiplier(component), "formula display should be rounded to two decimals");
+        AssertNear(0.06383855m, SyntheticOrderSizing.DisplayMultiplier(component), "formula display payload should preserve its multiplier");
         AssertNear(1m, SyntheticOrderSizing.ExecutableLegQuantity(component, 1m), "executable size must respect Capital.com min deal size");
         AssertNear(1.3m, SyntheticOrderSizing.ExecutableLegQuantity(component, 20m), "executable size must round up to Capital.com min size increment");
 
@@ -2804,7 +3143,20 @@ public static class SyntheticBasketBuilderTests
         {
             FormulaMultiplier = 3.93081368m,
         };
-        AssertNear(3.93m, SyntheticOrderSizing.DisplayMultiplier(freeSized), "display rounding should not require deal rules");
+        AssertNear(3.93081368m, SyntheticOrderSizing.DisplayMultiplier(freeSized), "formula display payload should remain separate from deal rules");
+    }
+
+    private static void AdaptiveDisplayMultiplierPreservesSmallNonzeroValues()
+    {
+        var component = new SyntheticComponent(new MarketInstrument { Epic = "SMALL" }, 25m, 0m, 0m)
+        {
+            FormulaMultiplier = 0.000012345678m,
+        };
+
+        AssertNear(component.FormulaMultiplier, SyntheticOrderSizing.DisplayMultiplier(component),
+            "display payload must preserve the chart multiplier", 0.0000000001m);
+        var formatted = SyntheticOrderSizing.FormatDisplayMultiplier(component);
+        AssertEqual("1.2345678E-05", formatted, "adaptive multiplier formatting must preserve small nonzero values");
     }
 
     private static void ExecutablePreviewUsesCurrentEqualNotionalAndDealRules()
@@ -2844,6 +3196,33 @@ public static class SyntheticBasketBuilderTests
         var incrementPreview = SyntheticOrderSizing.ExecutableLegPreview(incrementComponent, 300m, 50m);
         AssertNear(2.25m, incrementPreview.Quantity, "preview quantity must round upward to Capital.com size increment");
         AssertNear(112.5m, incrementPreview.Notional, "increment-rounded quantity must determine preview notional");
+    }
+
+    private static void ExecutableOrderPreviewUsesCurrentSideQuotesAndReportsImbalance()
+    {
+        var basket = new SyntheticBasket { Symbol = "SYN-ORDER" };
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "A", Bid = 49m, Offer = 51m, MinDealSize = 1m, MinSizeIncrement = 1m },
+            50m, 0m, 0m));
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "B", Bid = 24m, Offer = 26m, MinDealSize = 1m, MinSizeIncrement = 1m },
+            30m, 0m, 0m));
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "C", Bid = 9.8m, Offer = 10.2m, MinDealSize = 0.1m, MinSizeIncrement = 0.1m },
+            20m, 0m, 0m));
+
+        var preview = SyntheticOrderSizing.BuildExecutableOrderPreview(basket, "BUY", 300m);
+
+        AssertEqual("BUY", preview.Side, "order preview side");
+        AssertNear(300m, preview.RequestedBasketNotional, "requested basket notional");
+        AssertNear(317.18m, preview.TotalExecutableNotional, "total executable notional must use rounded leg quantities", 0.001m);
+        AssertNear(51m, preview.Legs[0].ReferencePrice, "buy preview must use the current offer");
+        AssertNear(3m, preview.Legs[0].Quantity, "first leg must round up to its deal increment");
+        AssertNear(153m, preview.Legs[0].Notional, "first leg notional must use the executable quantity");
+        if (preview.MaxAbsoluteWeightImbalancePct <= 1m)
+        {
+            throw new Exception("order preview must report weight imbalance introduced by dealing-rule rounding");
+        }
     }
 
     private static void SavedSyntheticBasketStorePersistsFormulaDetails()
@@ -3140,5 +3519,80 @@ public static class SyntheticBasketBuilderTests
             response.Headers.Add("X-SECURITY-TOKEN", "security-token");
             return Task.FromResult(response);
         }
+    }
+
+    private sealed class HistoryPagingHandler(HttpStatusCode terminalStatus, string terminalBody) : HttpMessageHandler
+    {
+        private int _priceRequestCount;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/api/v1/session", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var login = JsonResponse(HttpStatusCode.OK, "{}");
+                login.Headers.Add("CST", "cst-token");
+                login.Headers.Add("X-SECURITY-TOKEN", "security-token");
+                return Task.FromResult(login);
+            }
+
+            _priceRequestCount++;
+            if (_priceRequestCount == 1)
+            {
+                return Task.FromResult(JsonResponse(HttpStatusCode.OK, PricePage("2026-07-01T00:00:00Z", 101m)));
+            }
+            if (_priceRequestCount == 2)
+            {
+                return Task.FromResult(JsonResponse(HttpStatusCode.OK, PricePage("2026-06-01T00:00:00Z", 99m)));
+            }
+            return Task.FromResult(JsonResponse(terminalStatus, terminalBody));
+        }
+
+        private static HttpResponseMessage JsonResponse(HttpStatusCode status, string body) => new(status)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+
+        private static string PricePage(string timestamp, decimal close) => JsonSerializer.Serialize(new
+        {
+            prices = new[]
+            {
+                new
+                {
+                    snapshotTimeUTC = timestamp,
+                    openPrice = new { bid = close - 1m },
+                    highPrice = new { bid = close + 1m },
+                    lowPrice = new { bid = close - 2m },
+                    closePrice = new { bid = close },
+                },
+            },
+        });
+    }
+
+    private sealed class FakeCapitalStreamingSocket(WebSocketState state, bool closeOnReceive = false) : ICapitalStreamingSocket
+    {
+        public WebSocketState State { get; private set; } = state;
+
+        public Task ConnectAsync(Uri uri, CancellationToken cancellationToken)
+        {
+            State = WebSocketState.Open;
+            return Task.CompletedTask;
+        }
+
+        public Task SendAsync(ArraySegment<byte> bytes, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken)
+        {
+            if (closeOnReceive) State = WebSocketState.Closed;
+            return Task.FromResult(new WebSocketReceiveResult(0, WebSocketMessageType.Close, true, WebSocketCloseStatus.NormalClosure, "closed"));
+        }
+
+        public Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
+        {
+            State = WebSocketState.Closed;
+            return Task.CompletedTask;
+        }
+
+        public void Dispose() => State = WebSocketState.Closed;
     }
 }
