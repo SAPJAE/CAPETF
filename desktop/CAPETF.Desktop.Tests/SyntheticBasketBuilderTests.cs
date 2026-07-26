@@ -13,6 +13,7 @@ public static class SyntheticBasketBuilderTests
     {
         TerminalOperationStateRejectsDuplicatesAndTracksProgress();
         TerminalOperationStageResetsCompletedTotalsForIndeterminateWork();
+        TerminalProgressPercentUsesOneWayBinding();
         CapComTerminalOperationGuardCompletesFailsAndRestoresControls();
         NewOperationCancelsAndSupersedesEarlierWork();
         IncompleteOhlcRowsAreExcluded();
@@ -255,6 +256,21 @@ public static class SyntheticBasketBuilderTests
         AssertEqual<int?>(null, state.Total, "an indeterminate stage should clear the previous total");
         AssertEqual(0, state.Current, "an indeterminate stage should reset completed work");
         AssertTrue(state.IsIndeterminate, "a stage with no total should use indeterminate progress");
+    }
+
+    private static void TerminalProgressPercentUsesOneWayBinding()
+    {
+        var percent = typeof(TerminalOperationState).GetProperty(nameof(TerminalOperationState.Percent));
+        AssertTrue(percent is not null && !percent.CanWrite, "terminal operation percent must remain a calculated read-only value");
+
+        var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml"));
+        var progressStart = xaml.IndexOf("<ProgressBar x:Name=\"OperationProgressBar\"", StringComparison.Ordinal);
+        var progressEnd = xaml.IndexOf("/>", progressStart, StringComparison.Ordinal);
+        if (progressStart < 0 || progressEnd < progressStart) throw new Exception("terminal operation progress bar must exist");
+
+        var progressBar = xaml[progressStart..(progressEnd + 2)];
+        AssertTrue(progressBar.Contains("Value=\"{Binding Percent, Mode=OneWay}\"", StringComparison.Ordinal),
+            "terminal operation progress must bind its read-only Percent value one-way");
     }
 
     private static void CapComTerminalOperationGuardCompletesFailsAndRestoresControls()

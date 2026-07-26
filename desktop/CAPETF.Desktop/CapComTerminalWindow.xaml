@@ -117,7 +117,7 @@
                 <StackPanel>
                     <TextBlock Text="{Binding Label}" Foreground="{StaticResource InkBrush}" TextWrapping="Wrap"/>
                     <ProgressBar x:Name="OperationProgressBar" Margin="0,7,0,0" Height="6" Minimum="0" Maximum="100"
-                                 Value="{Binding Percent}" IsIndeterminate="{Binding IsIndeterminate}"/>
+                                 Value="{Binding Percent, Mode=OneWay}" IsIndeterminate="{Binding IsIndeterminate}"/>
                 </StackPanel>
             </Border>
         </Grid>
