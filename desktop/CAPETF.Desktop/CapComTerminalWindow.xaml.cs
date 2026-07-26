@@ -57,18 +57,14 @@ public partial class CapComTerminalWindow : Window
             ConnectionText.Text = $"connecting to {SavedCredentialLabel(saved)}...";
             await _api.LoginAsync(saved);
             ConnectionText.Text = $"connected to {SavedCredentialLabel(saved)}";
-            StatusText.Text = $"Connected to {SavedCredentialLabel(saved)}.";
+            StatusText.Text = $"Connected to {SavedCredentialLabel(saved)}. Loading universe...";
+            await LoadStocksAsync();
         }
         catch (Exception ex)
         {
             ConnectionText.Text = $"Connection failed: {ex.Message}";
             StatusText.Text = ex.Message;
         }
-    }
-
-    private async void LoadStocks_Click(object sender, RoutedEventArgs e)
-    {
-        await LoadStocksAsync();
     }
 
     private async Task LoadStocksAsync()
@@ -194,7 +190,9 @@ public partial class CapComTerminalWindow : Window
         }
 
         await RenderSyntheticChartAsync(_basket);
-        StatusText.Text = $"{_basket.Symbol}: {_basket.Components.Count} legs, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
+        var buildStatus = $"{_basket.Symbol}: {_basket.Components.Count} legs, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
+        StatusText.Text = buildStatus;
+        await TryStartStreamingCurrentBasketAsync(buildStatus);
     }
 
     private void SaveBasket_Click(object sender, RoutedEventArgs e)
@@ -255,7 +253,9 @@ public partial class CapComTerminalWindow : Window
 
         _basket = RenameBasket(_basket, saved.Symbol, saved.Block);
         await RenderSyntheticChartAsync(_basket);
-        StatusText.Text = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs.";
+        var loadStatus = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs.";
+        StatusText.Text = loadStatus;
+        await TryStartStreamingCurrentBasketAsync(loadStatus);
     }
 
     private static IReadOnlyList<MarketInstrument> SelectStrategyCandidates(
@@ -394,14 +394,27 @@ public partial class CapComTerminalWindow : Window
         return candles;
     }
 
-    private async void StreamSynthetic_Click(object sender, RoutedEventArgs e)
+    private async Task TryStartStreamingCurrentBasketAsync(string baseStatus)
     {
-        await EnsureConnectedAsync();
         if (_basket is null)
         {
-            StatusText.Text = "Build a synthetic symbol before streaming.";
             return;
         }
+
+        try
+        {
+            await StartStreamingCurrentBasketAsync();
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"{baseStatus} Live prices unavailable: {ex.Message}";
+        }
+    }
+
+    private async Task StartStreamingCurrentBasketAsync()
+    {
+        await EnsureConnectedAsync();
+        if (_basket is null) return;
 
         if (_streaming is null)
         {

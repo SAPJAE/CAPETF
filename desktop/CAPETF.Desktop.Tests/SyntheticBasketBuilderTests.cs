@@ -1392,9 +1392,7 @@ public static class SyntheticBasketBuilderTests
         var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml"));
         foreach (var required in new[]
         {
-            "Content=\"Load Universe\"",
             "Content=\"Build Basket\"",
-            "Content=\"Start Live Prices\"",
             "Content=\"Legs / Formula\"",
             "Content=\"Live\"",
             "Content=\"Zoom +\"",
@@ -1421,6 +1419,8 @@ public static class SyntheticBasketBuilderTests
 
         foreach (var misleading in new[]
         {
+            "Content=\"Load Universe\"",
+            "Content=\"Start Live Prices\"",
             "Content=\"Load Stocks\"",
             "Content=\"Build Synthetic\"",
             "Content=\"Nike Sample\"",
@@ -1460,6 +1460,8 @@ public static class SyntheticBasketBuilderTests
             "SavedBaskets_SelectionChanged",
             "SavedSyntheticBasketStore",
             "LoadSavedBasketAsync",
+            "await LoadStocksAsync();",
+            "StartStreamingCurrentBasketAsync",
             "BlockBox_SelectionChanged",
             "SearchBox.ItemsSource",
         })
@@ -1473,6 +1475,14 @@ public static class SyntheticBasketBuilderTests
             source.Contains("SearchBox.Text = \"NKE\"", StringComparison.Ordinal))
         {
             throw new Exception("NKE sample shortcut must be removed from cap.com Terminal");
+        }
+
+        var blockIndex = xaml.IndexOf("x:Name=\"BlockBox\"", StringComparison.Ordinal);
+        var searchIndex = xaml.IndexOf("x:Name=\"SearchBox\"", StringComparison.Ordinal);
+        var connectIndex = xaml.IndexOf("Click=\"Connect_Click\"", StringComparison.Ordinal);
+        if (blockIndex < 0 || searchIndex < 0 || connectIndex < 0 || blockIndex > searchIndex || blockIndex > connectIndex)
+        {
+            throw new Exception("block selector must be the first working field in the cap.com Terminal toolbar");
         }
 
         var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
