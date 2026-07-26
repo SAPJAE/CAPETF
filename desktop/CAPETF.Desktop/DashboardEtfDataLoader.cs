@@ -11,7 +11,8 @@ public sealed record EtfDataLoadResult(
     IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> OhlcByEpic,
     DateTimeOffset? RefreshedAtUtc,
     DateOnly? SourceAsOf,
-    IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> OhlcByEpicAndResolution);
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> OhlcByEpicAndResolution,
+    IReadOnlySet<string> KnownEtfEpics);
 
 public static class DashboardEtfDataLoader
 {
@@ -22,7 +23,7 @@ public static class DashboardEtfDataLoader
         var path = FindEtfDataFile();
         if (path is null)
         {
-            return new EtfDataLoadResult([], EmptyCandles(), null, null, EmptyCandlesByResolution());
+            return new EtfDataLoadResult([], EmptyCandles(), null, null, EmptyCandlesByResolution(), EmptyEtfEpics());
         }
 
         using var encryptedDocument = JsonDocument.Parse(File.ReadAllText(path));
@@ -32,6 +33,7 @@ public static class DashboardEtfDataLoader
         var ohlcByEpic = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
         var ohlcByEpicAndResolution = new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
         var instruments = new List<MarketInstrument>();
+        var knownEtfEpics = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         if (root.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
         {
@@ -39,6 +41,7 @@ public static class DashboardEtfDataLoader
             {
                 var epic = ReadString(item, "epic");
                 if (string.IsNullOrWhiteSpace(epic)) continue;
+                knownEtfEpics.Add(epic);
 
                 var instrument = new MarketInstrument
                 {
@@ -86,7 +89,8 @@ public static class DashboardEtfDataLoader
             ohlcByEpic,
             ReadDateTimeOffset(summary, "refreshedAtUtc"),
             ReadDateOnly(summary, "sourceAsOf"),
-            ohlcByEpicAndResolution);
+            ohlcByEpicAndResolution,
+            knownEtfEpics);
     }
 
     private static string? FindEtfDataFile()
@@ -131,6 +135,9 @@ public static class DashboardEtfDataLoader
 
     private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> EmptyCandlesByResolution() =>
         new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
+
+    private static IReadOnlySet<string> EmptyEtfEpics() =>
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     private static IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> BuildCandlesByResolution(JsonElement item)
     {

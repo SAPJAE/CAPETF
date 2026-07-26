@@ -41,6 +41,11 @@ public static class SyntheticBasketBuilderTests
         SyntheticBasketsUseCallerSuppliedCandidates();
         StockTypeMatchingIsCaseInsensitive();
         EtfUniverseRecognitionAndIsolation();
+        KnownEtfEpicsOverrideCapitalShareType();
+        EtfMetadataMergeUsesCapitalDetailsForGrouping();
+        EtfMetadataMergeUsesDeterministicFallbacks();
+        EtfMetadataMergeDerivesRegionFromCapitalCountry();
+        EncryptedEtfCatalogIncludesLoadedEtfEpics();
         EncryptedEtfCacheKeepsOnlyEtfInstruments();
         SimilarityPrefersCorrelatedPricePathsOverVolatilityOnlyNeighbors();
         SyntheticComponentEpicsTakePrecedenceOverVisibleInstruments();
@@ -79,6 +84,8 @@ public static class SyntheticBasketBuilderTests
         CapComTerminalIntradayMinimumsFitCachedHourlyHistory();
         StockRefreshFetchesDeepHourlyHistory();
         DesktopDefaultSearchDoesNotFilterStocksByEtf();
+        MainWindowTerminalFiltersStocksBeforeGenericSelection();
+        CapComTerminalUsesEtfCatalogForFilteringAndMetadata();
         DesktopResizesTerminalChartWhenWorkspaceOpens();
         DesktopTerminalWorkspaceExposesChartFirstControls();
         DesktopTerminalWorkspaceExposesV2ProfessionalControls();
@@ -850,6 +857,119 @@ public static class SyntheticBasketBuilderTests
         if (cached.OhlcByEpic.Count == 0)
         {
             throw new Exception("encrypted ETF cache must retain chart history");
+        }
+    }
+
+    private static void KnownEtfEpicsOverrideCapitalShareType()
+    {
+        var knownEtfEpics = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ETF-CFD" };
+        var knownEtf = new MarketInstrument { Epic = "ETF-CFD", Type = "SHARES", Status = "CLOSED" };
+        var ordinaryShare = new MarketInstrument { Epic = "ORDINARY-SHARE", Type = "SHARES", Status = "CLOSED" };
+
+        if (!TerminalUniverse.Accepts(TerminalUniverseKind.ETFs, knownEtf, knownEtfEpics))
+        {
+            throw new Exception("known ETF epics must be accepted as ETFs even when Capital.com reports SHARES");
+        }
+        if (TerminalUniverse.Accepts(TerminalUniverseKind.Stocks, knownEtf, knownEtfEpics))
+        {
+            throw new Exception("known ETF epics must be excluded from the stock universe");
+        }
+        if (!TerminalUniverse.Accepts(TerminalUniverseKind.Stocks, ordinaryShare, knownEtfEpics))
+        {
+            throw new Exception("ordinary SHARES epics must remain stock-only");
+        }
+        if (TerminalUniverse.Accepts(TerminalUniverseKind.ETFs, ordinaryShare, knownEtfEpics))
+        {
+            throw new Exception("ordinary SHARES epics must be excluded from the ETF universe");
+        }
+    }
+
+    private static void EtfMetadataMergeUsesCapitalDetailsForGrouping()
+    {
+        var cached = new MarketInstrument
+        {
+            Epic = "ETF-CFD",
+            Name = "Cached ETF",
+            Type = "ETF",
+            Status = "CLOSED",
+            Price = 100m,
+        };
+        var details = new MarketInstrument
+        {
+            Epic = "ETF-CFD",
+            Type = "SHARES",
+            Country = "Ireland",
+            Region = "Europe",
+            Currency = "EUR",
+            Sector = "Equity ETFs",
+            Status = "TRADEABLE",
+            Price = 101m,
+        };
+
+        var merged = EtfMetadataMerger.Merge(cached, details);
+
+        AssertEqual("Ireland", merged.Country, "ETF metadata merge should use Capital.com country");
+        AssertEqual("Europe", merged.Region, "ETF metadata merge should use Capital.com region");
+        AssertEqual("EUR", merged.Currency, "ETF metadata merge should use Capital.com currency");
+        AssertEqual("Equity ETFs", merged.Sector, "ETF metadata merge should use Capital.com sector");
+        AssertEqual("Europe / EUR / Equity ETFs", merged.Group, "ETF metadata merge should build a meaningful group");
+        AssertEqual("CLOSED", merged.Status, "ETF metadata merge should preserve the cached closed status");
+        AssertNear(100m, merged.Price ?? 0m, "ETF metadata merge should retain the cached price");
+    }
+
+    private static void EtfMetadataMergeUsesDeterministicFallbacks()
+    {
+        var merged = EtfMetadataMerger.Merge(
+            new MarketInstrument { Epic = "ETF-CFD", Type = "ETF", Sector = "All" },
+            new MarketInstrument { Epic = "ETF-CFD", Type = "SHARES" });
+
+        AssertEqual("Other / Currency / All", merged.Group, "ETF metadata fallback group should remain deterministic without Capital metadata");
+    }
+
+    private static void EncryptedEtfCatalogIncludesLoadedEtfEpics()
+    {
+        var cached = DashboardEtfDataLoader.LoadEtfs();
+        if (cached.Instruments.Any(item => !cached.KnownEtfEpics.Contains(item.Epic)))
+        {
+            throw new Exception("the ETF cache catalog must retain every loaded ETF epic as authoritative identity");
+        }
+    }
+
+    private static void EtfMetadataMergeDerivesRegionFromCapitalCountry()
+    {
+        var merged = EtfMetadataMerger.Merge(
+            new MarketInstrument { Epic = "ETF-CFD", Type = "ETF", Sector = "All" },
+            new MarketInstrument { Epic = "ETF-CFD", Type = "SHARES", Country = "United States", Currency = "USD" });
+
+        AssertEqual("US / USD / All", merged.Group, "ETF metadata merge should derive a deterministic region from Capital country when region is absent");
+    }
+
+    private static void MainWindowTerminalFiltersStocksBeforeGenericSelection()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml.cs"));
+        var stockFilter = source.IndexOf("var stockInstruments = _instruments.Where(CapitalInstrumentTypes.IsStock).ToList();", StringComparison.Ordinal);
+        var genericSelection = source.IndexOf("SyntheticTerminalSelector.HistoryLoadCandidates(block, stockInstruments)", StringComparison.Ordinal);
+        if (stockFilter < 0 || genericSelection < stockFilter)
+        {
+            throw new Exception("MainWindow terminal must filter stocks before calling the generic history candidate selector");
+        }
+    }
+
+    private static void CapComTerminalUsesEtfCatalogForFilteringAndMetadata()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "EnsureEtfCatalogLoaded",
+            "TerminalUniverse.Accepts(universe, item, _knownEtfEpics)",
+            "EnrichEtfMetadataAsync",
+            "EtfMetadataMerger.Merge",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal must use the ETF catalog for filtering and metadata enrichment: {required}");
+            }
         }
     }
 
@@ -2022,6 +2142,9 @@ public static class SyntheticBasketBuilderTests
                 "name": "Advanced Micro Devices",
                 "type": "SHARES",
                 "currency": "USD",
+                "country": "United States",
+                "region": "US",
+                "sector": "Technology",
                 "lotSize": 1
               },
               "dealingRules": {
@@ -2047,6 +2170,9 @@ public static class SyntheticBasketBuilderTests
         AssertNear(1m, details.MinDealSize ?? 0m, "market details should parse min deal size");
         AssertNear(0.1m, details.MinSizeIncrement ?? 0m, "market details should parse min size increment");
         if (details.Status != "TRADEABLE") throw new Exception("market details should parse market status");
+        AssertEqual("United States", details.Country, "market details should parse country");
+        AssertEqual("US", details.Region, "market details should parse region");
+        AssertEqual("Technology", details.Sector, "market details should parse sector");
     }
 
     private static void StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy()

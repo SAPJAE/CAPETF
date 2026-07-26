@@ -9,12 +9,21 @@ public enum TerminalUniverseKind
 public static class TerminalUniverse
 {
     public static bool Accepts(TerminalUniverseKind kind, MarketInstrument instrument) =>
+        Accepts(kind, instrument, knownEtfEpics: null);
+
+    public static bool Accepts(
+        TerminalUniverseKind kind,
+        MarketInstrument instrument,
+        IReadOnlySet<string>? knownEtfEpics) =>
         IsOpenEligible(instrument) && kind switch
         {
-            TerminalUniverseKind.Stocks => CapitalInstrumentTypes.IsStock(instrument),
-            TerminalUniverseKind.ETFs => CapitalInstrumentTypes.IsEtf(instrument),
+            TerminalUniverseKind.Stocks => CapitalInstrumentTypes.IsStock(instrument) && !IsKnownEtf(instrument, knownEtfEpics),
+            TerminalUniverseKind.ETFs => CapitalInstrumentTypes.IsEtf(instrument) || IsKnownEtf(instrument, knownEtfEpics),
             _ => false,
         };
+
+    private static bool IsKnownEtf(MarketInstrument instrument, IReadOnlySet<string>? knownEtfEpics) =>
+        knownEtfEpics is not null && !string.IsNullOrWhiteSpace(instrument.Epic) && knownEtfEpics.Contains(instrument.Epic);
 
     private static bool IsOpenEligible(MarketInstrument instrument)
     {

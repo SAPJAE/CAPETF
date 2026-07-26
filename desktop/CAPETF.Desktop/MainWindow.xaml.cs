@@ -341,7 +341,8 @@ public partial class MainWindow : Window
         {
             _terminalBasket = null;
             await ClearTerminalAsync();
-            var instruments = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments);
+            var stockInstruments = _instruments.Where(CapitalInstrumentTypes.IsStock).ToList();
+            var instruments = SyntheticTerminalSelector.HistoryLoadCandidates(block, stockInstruments);
             var terminalResolution = SelectedTerminalResolution();
             var requestResolution = TerminalRequestResolution(terminalResolution);
             var minimumCandles = TerminalMinimumCandles(terminalResolution);

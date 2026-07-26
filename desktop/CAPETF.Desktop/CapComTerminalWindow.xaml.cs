@@ -17,6 +17,8 @@ public partial class CapComTerminalWindow : Window
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>> _instrumentsByUniverse = [];
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> _candlesByUniverse = [];
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>> _candlesByUniverseByResolution = [];
+    private EtfDataLoadResult? _etfCache;
+    private IReadOnlySet<string> _knownEtfEpics = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> _cachedCandlesByEpic =
         new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> _cachedCandlesByEpicByResolution =
@@ -78,6 +80,7 @@ public partial class CapComTerminalWindow : Window
     {
         try
         {
+            var etfCache = EnsureEtfCatalogLoaded();
             if (_instrumentsByUniverse.TryGetValue(universe, out var instruments))
             {
                 ApplyUniverse(universe, instruments, _candlesByUniverse[universe], _candlesByUniverseByResolution[universe]);
@@ -93,7 +96,7 @@ public partial class CapComTerminalWindow : Window
                 {
                     ApplyUniverse(
                         universe,
-                        cached.Instruments.Where(item => TerminalUniverse.Accepts(universe, item)).ToList(),
+                        cached.Instruments.Where(item => TerminalUniverse.Accepts(universe, item, _knownEtfEpics)).ToList(),
                         cached.OhlcByEpic,
                         cached.OhlcByEpicAndResolution ?? EmptyCandlesByResolution());
                     var source = cached.SourceAsOf is null ? "" : $" Source date {cached.SourceAsOf:yyyy-MM-dd}.";
@@ -104,11 +107,11 @@ public partial class CapComTerminalWindow : Window
             else
             {
                 StatusText.Text = "Loading cached ETFs...";
-                var cached = DashboardEtfDataLoader.LoadEtfs();
-                if (cached.Instruments.Count > 0)
+                if (etfCache.Instruments.Count > 0)
                 {
-                    ApplyUniverse(universe, cached.Instruments, cached.OhlcByEpic, cached.OhlcByEpicAndResolution);
-                    var source = cached.SourceAsOf is null ? "" : $" Source date {cached.SourceAsOf:yyyy-MM-dd}.";
+                    var enriched = await EnrichEtfMetadataAsync(etfCache.Instruments);
+                    ApplyUniverse(universe, enriched, etfCache.OhlcByEpic, etfCache.OhlcByEpicAndResolution);
+                    var source = etfCache.SourceAsOf is null ? "" : $" Source date {etfCache.SourceAsOf:yyyy-MM-dd}.";
                     StatusText.Text = $"{_instruments.Count} ETFs loaded from the cached ETF file.{source}";
                     return;
                 }
@@ -141,7 +144,7 @@ public partial class CapComTerminalWindow : Window
         var strategy = SelectedStrategy();
         var periodsPerYear = PeriodsPerYear(resolution);
         var minCandles = MinimumCandles(resolution);
-        var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments.Where(item => TerminalUniverse.Accepts(SelectedUniverse(), item)).ToList(), limit: 500);
+        var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments.Where(item => TerminalUniverse.Accepts(SelectedUniverse(), item, _knownEtfEpics)).ToList(), limit: 500);
         var activeCachedCandles = CachedCandlesForResolution(resolution);
         var candles = BuildCachedCandles(candidates, activeCachedCandles, minCandles, candidateLimit: 500);
         var seedText = SeedText();
@@ -308,9 +311,10 @@ public partial class CapComTerminalWindow : Window
     private async Task LoadUniverseFromApiAsync(TerminalUniverseKind universe)
     {
         await EnsureConnectedAsync();
+        EnsureEtfCatalogLoaded();
         StatusText.Text = $"Loading Capital.com {UniverseLabel(universe).ToLowerInvariant()}...";
         var markets = await _api.SearchMarketsAsync(SeedText());
-        ApplyUniverse(universe, markets.Where(item => TerminalUniverse.Accepts(universe, item)).ToList(), EmptyCandles(), EmptyCandlesByResolution());
+        ApplyUniverse(universe, markets.Where(item => TerminalUniverse.Accepts(universe, item, _knownEtfEpics)).ToList(), EmptyCandles(), EmptyCandlesByResolution());
         StatusText.Text = $"{_instruments.Count} {UniverseLabel(universe).ToLowerInvariant()} loaded from Capital.com API.";
     }
 
@@ -587,13 +591,47 @@ public partial class CapComTerminalWindow : Window
     private static string UniverseLabel(TerminalUniverseKind universe) =>
         universe == TerminalUniverseKind.ETFs ? "ETFs" : "Stocks";
 
+    private EtfDataLoadResult EnsureEtfCatalogLoaded()
+    {
+        _etfCache ??= DashboardEtfDataLoader.LoadEtfs();
+        _knownEtfEpics = _etfCache.KnownEtfEpics;
+        return _etfCache;
+    }
+
+    private async Task<IReadOnlyList<MarketInstrument>> EnrichEtfMetadataAsync(IReadOnlyList<MarketInstrument> instruments)
+    {
+        if (_api.Session is null) return instruments;
+
+        var enriched = new List<MarketInstrument>(instruments.Count);
+        foreach (var instrument in instruments)
+        {
+            if (!_knownEtfEpics.Contains(instrument.Epic) || !EtfMetadataMerger.NeedsEnrichment(instrument))
+            {
+                enriched.Add(instrument);
+                continue;
+            }
+
+            try
+            {
+                var details = await _api.GetMarketDetailsAsync(instrument.Epic);
+                enriched.Add(details is null ? instrument : EtfMetadataMerger.Merge(instrument, details));
+            }
+            catch
+            {
+                enriched.Add(instrument);
+            }
+        }
+
+        return enriched;
+    }
+
     private void ApplyUniverse(
         TerminalUniverseKind universe,
         IReadOnlyList<MarketInstrument> instruments,
         IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
         IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> candlesByResolution)
     {
-        var accepted = instruments.Where(item => TerminalUniverse.Accepts(universe, item)).ToList();
+        var accepted = instruments.Where(item => TerminalUniverse.Accepts(universe, item, _knownEtfEpics)).ToList();
         _instrumentsByUniverse[universe] = accepted;
         _candlesByUniverse[universe] = candles;
         _candlesByUniverseByResolution[universe] = candlesByResolution;
