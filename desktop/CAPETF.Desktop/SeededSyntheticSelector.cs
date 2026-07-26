@@ -25,7 +25,6 @@ public static class SeededSyntheticSelector
         if (seed is null || !candles.TryGetValue(seed.Epic, out var seedCandles) || seedCandles.Count < minimumCandles) return null;
 
         var peerPool = instruments
-            .Where(CapitalInstrumentTypes.IsStock)
             .Where(item => !string.Equals(item.Epic, seed.Epic, StringComparison.OrdinalIgnoreCase))
             .Where(item => SameCurrency(seed, item))
             .Where(item => candles.TryGetValue(item.Epic, out var rows) &&
@@ -101,7 +100,6 @@ public static class SeededSyntheticSelector
     {
         var query = seedText.Trim();
         var eligible = instruments
-            .Where(CapitalInstrumentTypes.IsStock)
             .Where(item => !requireCandles || (candles is not null && candles.TryGetValue(item.Epic, out var rows) && rows.Count >= minimumCandles))
             .ToList();
 

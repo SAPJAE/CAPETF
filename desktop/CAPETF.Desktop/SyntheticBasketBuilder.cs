@@ -14,7 +14,6 @@ public static class SyntheticBasketBuilder
         if (minimumCandles < 2) throw new ArgumentOutOfRangeException(nameof(minimumCandles));
 
         var candidates = instruments
-            .Where(CapitalInstrumentTypes.IsStock)
             .Where(item => !string.IsNullOrWhiteSpace(item.Epic))
             .Where(item => candles.TryGetValue(item.Epic, out var rows) && rows.Count >= minimumCandles)
             .Select(item =>

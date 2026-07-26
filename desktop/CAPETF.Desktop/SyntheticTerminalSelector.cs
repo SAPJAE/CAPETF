@@ -48,7 +48,6 @@ public static class SyntheticTerminalSelector
         int limit = 160) =>
         instruments
             .Where(item => string.Equals(item.Group, block, StringComparison.OrdinalIgnoreCase))
-            .Where(CapitalInstrumentTypes.IsStock)
             .Where(item => !string.IsNullOrWhiteSpace(item.Epic))
             .OrderBy(item => string.IsNullOrWhiteSpace(item.Sector) ? 1 : 0)
             .ThenBy(item => item.Price is null ? 1 : 0)

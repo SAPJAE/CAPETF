@@ -38,8 +38,10 @@ public static class SyntheticBasketBuilderTests
         TrailingReturnsUseIntervalAwareHorizonsFromFinalCandle();
         LiveQuoteUpdatesBasketPriceAndTimestamp();
         FirstLiveQuoteUsesLatestHistoricalComponentPrice();
-        SyntheticBasketsExcludeNonStockMarkets();
+        SyntheticBasketsUseCallerSuppliedCandidates();
         StockTypeMatchingIsCaseInsensitive();
+        EtfUniverseRecognitionAndIsolation();
+        EncryptedEtfCacheKeepsOnlyEtfInstruments();
         SimilarityPrefersCorrelatedPricePathsOverVolatilityOnlyNeighbors();
         SyntheticComponentEpicsTakePrecedenceOverVisibleInstruments();
         SyntheticQuoteDistinguishesMatchFromCandleChange();
@@ -694,7 +696,7 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
-    private static void SyntheticBasketsExcludeNonStockMarkets()
+    private static void SyntheticBasketsUseCallerSuppliedCandidates()
     {
         var day = DateTimeOffset.Parse("2022-01-01T00:00:00Z");
         var instruments = new[]
@@ -707,11 +709,11 @@ public static class SyntheticBasketBuilderTests
             instrument => instrument.Epic,
             instrument => CreateVariableCandles(day, 100m));
 
-        var result = SyntheticBasketBuilder.Build("Non-stock block", instruments, candles);
+        var result = SyntheticBasketBuilder.Build("Caller-supplied block", instruments, candles);
 
-        if (result.Baskets.Count != 0)
+        if (result.Baskets.Count != 1 || result.Baskets[0].Components.Count != instruments.Length)
         {
-            throw new Exception("Capital markets whose instrument type is not SHARES must not form synthetic baskets");
+            throw new Exception("generic basket building must use the candidates supplied by its caller");
         }
     }
 
@@ -793,6 +795,62 @@ public static class SyntheticBasketBuilderTests
         var result = SyntheticBasketBuilder.Build("Case-insensitive stocks", instruments, candles);
 
         if (result.Baskets.Count != 1) throw new Exception("SHARES instrument matching must be case-insensitive");
+    }
+
+    private static void EtfUniverseRecognitionAndIsolation()
+    {
+        var etf = new MarketInstrument { Epic = "ETF", Type = "ETF" };
+        var etfs = new MarketInstrument { Epic = "ETFS", Type = "ETFS" };
+        var etfThree = new MarketInstrument { Epic = "ETF-THREE", Type = "ETF" };
+        var stock = new MarketInstrument { Epic = "STOCK", Type = "SHARES" };
+        var closedEtf = new MarketInstrument { Epic = "CLOSED-ETF", Type = "ETF", Status = "CLOSED" };
+        var closeOnlyEtf = new MarketInstrument { Epic = "CLOSE-ONLY-ETF", Type = "ETF", Status = "CLOSE_ONLY" };
+        var obsoleteEtf = new MarketInstrument { Epic = "OBSOLETE-ETF", Type = "ETF", Status = "OBSOLETE" };
+
+        if (!CapitalInstrumentTypes.IsEtf(etf)) throw new Exception("ETF type must be recognized as an ETF");
+        if (!CapitalInstrumentTypes.IsEtf(etfs)) throw new Exception("ETFS type must be recognized as an ETF");
+        if (CapitalInstrumentTypes.IsEtf(stock)) throw new Exception("SHARES must remain stock-only");
+        if (!TerminalUniverse.Accepts(TerminalUniverseKind.ETFs, etf)) throw new Exception("ETF universe must accept ETFs");
+        if (TerminalUniverse.Accepts(TerminalUniverseKind.ETFs, stock)) throw new Exception("ETF universe must exclude stocks");
+        if (!TerminalUniverse.Accepts(TerminalUniverseKind.Stocks, stock)) throw new Exception("stock universe must accept stocks");
+        if (TerminalUniverse.Accepts(TerminalUniverseKind.Stocks, etf)) throw new Exception("stock universe must exclude ETFs");
+        if (!TerminalUniverse.Accepts(TerminalUniverseKind.ETFs, closedEtf)) throw new Exception("closed ETFs must remain eligible");
+        if (TerminalUniverse.Accepts(TerminalUniverseKind.ETFs, closeOnlyEtf)) throw new Exception("close-only ETFs must be excluded");
+        if (TerminalUniverse.Accepts(TerminalUniverseKind.ETFs, obsoleteEtf)) throw new Exception("obsolete ETFs must be excluded");
+
+        var etfCandidates = new[] { etf, etfs, etfThree, stock }
+            .Where(item => TerminalUniverse.Accepts(TerminalUniverseKind.ETFs, item))
+            .ToList();
+        var candles = etfCandidates.ToDictionary(
+            item => item.Epic,
+            item => CreateVariableCandles(DateTimeOffset.Parse("2024-01-01T00:00:00Z"), 100m));
+        var basket = SyntheticBasketBuilder.Build("ETF / USD / All", etfCandidates, candles, maxBaskets: 1).Baskets.Single();
+        if (basket.Components.Any(component => !CapitalInstrumentTypes.IsEtf(component.Instrument)))
+        {
+            throw new Exception("ETF basket requests must exclude stock components");
+        }
+    }
+
+    private static void EncryptedEtfCacheKeepsOnlyEtfInstruments()
+    {
+        var cached = DashboardEtfDataLoader.LoadEtfs();
+        if (cached.Instruments.Count == 0)
+        {
+            throw new Exception("encrypted ETF cache must load ETF instruments");
+        }
+
+        if (cached.Instruments.Any(item => !CapitalInstrumentTypes.IsEtf(item)))
+        {
+            throw new Exception("encrypted ETF cache must not include stock instruments");
+        }
+        if (cached.Instruments.Any(item => !TerminalUniverse.Accepts(TerminalUniverseKind.ETFs, item)))
+        {
+            throw new Exception("encrypted ETF cache must keep only ETF-universe candidates");
+        }
+        if (cached.OhlcByEpic.Count == 0)
+        {
+            throw new Exception("encrypted ETF cache must retain chart history");
+        }
     }
 
     private static void LiveQuoteUpdatesBasketPriceAndTimestamp()

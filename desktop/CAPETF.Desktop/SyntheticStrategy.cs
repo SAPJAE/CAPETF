@@ -44,7 +44,6 @@ public static class SyntheticStrategyRanker
     {
         if (strategy == SyntheticStrategyKind.SimilarToSelectedSymbol) return [];
         return instruments
-            .Where(CapitalInstrumentTypes.IsStock)
             .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Epic))
             .Select(instrument => candles.TryGetValue(instrument.Epic, out var rows)
                 ? Score(strategy, instrument, rows.OrderBy(row => row.Time).ToList(), periodsPerYear)

@@ -7,7 +7,6 @@ public static class SeedSearchOptionBuilder
         string selectedBlock)
     {
         return instruments
-            .Where(CapitalInstrumentTypes.IsStock)
             .Where(item => !string.IsNullOrWhiteSpace(item.Epic))
             .OrderBy(item => string.Equals(item.Group, selectedBlock, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
             .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)

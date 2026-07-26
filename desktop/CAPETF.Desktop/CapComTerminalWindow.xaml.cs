@@ -14,6 +14,9 @@ public partial class CapComTerminalWindow : Window
     private readonly SyntheticHistoryService _history;
     private readonly List<MarketInstrument> _instruments = [];
     private readonly ObservableCollection<TerminalComponentRow> _components = [];
+    private readonly Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>> _instrumentsByUniverse = [];
+    private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> _candlesByUniverse = [];
+    private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>> _candlesByUniverseByResolution = [];
     private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> _cachedCandlesByEpic =
         new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> _cachedCandlesByEpicByResolution =
@@ -69,30 +72,53 @@ public partial class CapComTerminalWindow : Window
         }
     }
 
-    private async Task LoadStocksAsync()
+    private Task LoadStocksAsync() => LoadUniverseAsync(SelectedUniverse());
+
+    private async Task LoadUniverseAsync(TerminalUniverseKind universe)
     {
         try
         {
-            StatusText.Text = "Loading cached stock chunks...";
-            var cached = DashboardStockChunkLoader.LoadStocks();
-            if (cached.Instruments.Count > 0)
+            if (_instrumentsByUniverse.TryGetValue(universe, out var instruments))
             {
-                _instruments.Clear();
-                _instruments.AddRange(cached.Instruments.Where(CapitalInstrumentTypes.IsStock));
-                _cachedCandlesByEpic = cached.OhlcByEpic;
-                _cachedCandlesByEpicByResolution = cached.OhlcByEpicAndResolution ??
-                    new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
-                RebuildBlocks();
-                var source = cached.SourceAsOf is null ? "" : $" Source date {cached.SourceAsOf:yyyy-MM-dd}.";
-                StatusText.Text = $"{_instruments.Count} stocks loaded from {cached.ChunkCount} cached stock chunks.{source}";
+                ApplyUniverse(universe, instruments, _candlesByUniverse[universe], _candlesByUniverseByResolution[universe]);
+                StatusText.Text = $"{_instruments.Count} {UniverseLabel(universe).ToLowerInvariant()} loaded from the selected universe cache.";
                 return;
+            }
+
+            if (universe == TerminalUniverseKind.Stocks)
+            {
+                StatusText.Text = "Loading cached stock chunks...";
+                var cached = DashboardStockChunkLoader.LoadStocks();
+                if (cached.Instruments.Count > 0)
+                {
+                    ApplyUniverse(
+                        universe,
+                        cached.Instruments.Where(item => TerminalUniverse.Accepts(universe, item)).ToList(),
+                        cached.OhlcByEpic,
+                        cached.OhlcByEpicAndResolution ?? EmptyCandlesByResolution());
+                    var source = cached.SourceAsOf is null ? "" : $" Source date {cached.SourceAsOf:yyyy-MM-dd}.";
+                    StatusText.Text = $"{_instruments.Count} stocks loaded from {cached.ChunkCount} cached stock chunks.{source}";
+                    return;
+                }
+            }
+            else
+            {
+                StatusText.Text = "Loading cached ETFs...";
+                var cached = DashboardEtfDataLoader.LoadEtfs();
+                if (cached.Instruments.Count > 0)
+                {
+                    ApplyUniverse(universe, cached.Instruments, cached.OhlcByEpic, cached.OhlcByEpicAndResolution);
+                    var source = cached.SourceAsOf is null ? "" : $" Source date {cached.SourceAsOf:yyyy-MM-dd}.";
+                    StatusText.Text = $"{_instruments.Count} ETFs loaded from the cached ETF file.{source}";
+                    return;
+                }
             }
 
             await LoadStocksFromApiAsync();
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"Cached chunk load failed; trying Capital.com API. {ex.Message}";
+            StatusText.Text = $"Cached {UniverseLabel(universe).ToLowerInvariant()} load failed; trying Capital.com API. {ex.Message}";
             await LoadStocksFromApiAsync();
         }
     }
@@ -115,7 +141,7 @@ public partial class CapComTerminalWindow : Window
         var strategy = SelectedStrategy();
         var periodsPerYear = PeriodsPerYear(resolution);
         var minCandles = MinimumCandles(resolution);
-        var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments, limit: 500);
+        var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments.Where(item => TerminalUniverse.Accepts(SelectedUniverse(), item)).ToList(), limit: 500);
         var activeCachedCandles = CachedCandlesForResolution(resolution);
         var candles = BuildCachedCandles(candidates, activeCachedCandles, minCandles, candidateLimit: 500);
         var seedText = SeedText();
@@ -277,22 +303,15 @@ public partial class CapComTerminalWindow : Window
             .ToList();
     }
 
-    private async Task LoadStocksFromApiAsync()
+    private Task LoadStocksFromApiAsync() => LoadUniverseFromApiAsync(SelectedUniverse());
+
+    private async Task LoadUniverseFromApiAsync(TerminalUniverseKind universe)
     {
         await EnsureConnectedAsync();
-        StatusText.Text = "Loading Capital.com stocks...";
-        _instruments.Clear();
-        _cachedCandlesByEpic = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
-        _cachedCandlesByEpicByResolution =
-            new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
+        StatusText.Text = $"Loading Capital.com {UniverseLabel(universe).ToLowerInvariant()}...";
         var markets = await _api.SearchMarketsAsync(SeedText());
-        foreach (var item in markets.Where(CapitalInstrumentTypes.IsStock))
-        {
-            _instruments.Add(item);
-        }
-
-        RebuildBlocks();
-        StatusText.Text = $"{_instruments.Count} stocks loaded from Capital.com API.";
+        ApplyUniverse(universe, markets.Where(item => TerminalUniverse.Accepts(universe, item)).ToList(), EmptyCandles(), EmptyCandlesByResolution());
+        StatusText.Text = $"{_instruments.Count} {UniverseLabel(universe).ToLowerInvariant()} loaded from Capital.com API.";
     }
 
     private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> BuildCachedCandles(
@@ -500,7 +519,6 @@ public partial class CapComTerminalWindow : Window
     private void RebuildBlocks()
     {
         var blocks = _instruments
-            .Where(CapitalInstrumentTypes.IsStock)
             .GroupBy(item => item.Group)
             .OrderByDescending(group => group.Count())
             .Select(group => $"{group.Key}")
@@ -543,6 +561,14 @@ public partial class CapComTerminalWindow : Window
 
     private void BlockBox_SelectionChanged(object sender, SelectionChangedEventArgs e) => RebuildSeedOptions();
 
+    private async void UniverseBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_api.Session is null) return;
+        await LoadUniverseAsync(SelectedUniverse());
+        _basket = null;
+        await ClearTerminalChartAsync();
+    }
+
     private string SeedText()
     {
         var text = SearchBox.Text.Trim();
@@ -552,6 +578,37 @@ public partial class CapComTerminalWindow : Window
 
     private string SelectedBlock() =>
         BlockBox.SelectedItem?.ToString() ?? _instruments.FirstOrDefault()?.Group ?? "US / USD / Other";
+
+    private TerminalUniverseKind SelectedUniverse() =>
+        (UniverseBox.SelectedItem as ComboBoxItem)?.Content?.ToString() == "ETFs"
+            ? TerminalUniverseKind.ETFs
+            : TerminalUniverseKind.Stocks;
+
+    private static string UniverseLabel(TerminalUniverseKind universe) =>
+        universe == TerminalUniverseKind.ETFs ? "ETFs" : "Stocks";
+
+    private void ApplyUniverse(
+        TerminalUniverseKind universe,
+        IReadOnlyList<MarketInstrument> instruments,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> candlesByResolution)
+    {
+        var accepted = instruments.Where(item => TerminalUniverse.Accepts(universe, item)).ToList();
+        _instrumentsByUniverse[universe] = accepted;
+        _candlesByUniverse[universe] = candles;
+        _candlesByUniverseByResolution[universe] = candlesByResolution;
+        _instruments.Clear();
+        _instruments.AddRange(accepted);
+        _cachedCandlesByEpic = candles;
+        _cachedCandlesByEpicByResolution = candlesByResolution;
+        RebuildBlocks();
+    }
+
+    private static IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> EmptyCandles() =>
+        new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
+
+    private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> EmptyCandlesByResolution() =>
+        new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
 
     private string SelectedResolution() =>
         (ResolutionBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Weekly";

@@ -73,6 +73,10 @@
                 </DockPanel>
 
                 <WrapPanel Grid.Row="1" Margin="0,7,0,0" VerticalAlignment="Center">
+                    <ComboBox x:Name="UniverseBox" MinWidth="94" SelectionChanged="UniverseBox_SelectionChanged">
+                        <ComboBoxItem Content="Stocks" IsSelected="True"/>
+                        <ComboBoxItem Content="ETFs"/>
+                    </ComboBox>
                     <ComboBox x:Name="BlockBox" MinWidth="190" SelectionChanged="BlockBox_SelectionChanged"/>
                     <ComboBox x:Name="SearchBox" AutomationProperties.Name="Seed symbol" Width="230" IsEditable="True" IsTextSearchEnabled="True" StaysOpenOnEdit="True" ToolTip="Choose a symbol from the selected block, or type one." Margin="0,0,6,0"/>
                     <Button Content="Connect" Click="Connect_Click"/>
