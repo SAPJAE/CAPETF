@@ -573,7 +573,7 @@
 
     function money(value) {
       const numeric = Number(value);
-      if (!Number.isFinite(numeric)) return 'n/a';
+      if (!Number.isFinite(numeric) || numeric <= 0) return 'n/a';
       if (Math.abs(numeric) >= 1000) return numeric.toFixed(2);
       if (Math.abs(numeric) >= 10) return numeric.toFixed(4);
       return numeric.toFixed(5);
@@ -784,7 +784,7 @@
 
     function addPriceLine(price, title, color) {
       const numeric = Number(price);
-      if (!priceLinesVisible || !candleSeries || !Number.isFinite(numeric)) return;
+      if (!priceLinesVisible || !candleSeries || !Number.isFinite(numeric) || numeric <= 0) return;
       syntheticPriceLines.push(candleSeries.createPriceLine({
         price: numeric,
         color,
@@ -811,9 +811,9 @@
       return components.map(component => {
         const allocation = Number(getField(component, 'Weight', 'weight', 0));
         const fallbackMultiplier = allocation / 100;
-        const multiplier = Number(getField(component, 'FormulaMultiplier', 'formulaMultiplier', fallbackMultiplier));
+        const multiplier = Number(getField(component, 'DisplayMultiplier', 'displayMultiplier', getField(component, 'FormulaMultiplier', 'formulaMultiplier', fallbackMultiplier)));
         const epic = getField(component, 'Epic', 'epic', '');
-        return `${multiplier.toFixed(8)} * ${epic}  (${allocation.toFixed(2)}% notional)`;
+        return `${formatMultiplier(multiplier)} * ${epic}  (${allocation.toFixed(2)}% notional)`;
       }).join('\n+ ');
     }
 
@@ -824,7 +824,10 @@
       const weight = Number(getField(component, 'Weight', 'weight', 0));
       const fallbackMultiplier = weight / 100;
       const formulaMultiplier = Number(getField(component, 'FormulaMultiplier', 'formulaMultiplier', fallbackMultiplier));
+      const displayMultiplier = Number(getField(component, 'DisplayMultiplier', 'displayMultiplier', formulaMultiplier));
       const referencePrice = getField(component, 'FormulaReferencePrice', 'formulaReferencePrice', null);
+      const minDealSize = getField(component, 'MinDealSize', 'minDealSize', null);
+      const minSizeIncrement = getField(component, 'MinSizeIncrement', 'minSizeIncrement', null);
       const last = getField(component, 'Last', 'last', null);
       const bid = getField(component, 'Bid', 'bid', null);
       const offer = getField(component, 'Offer', 'offer', null);
@@ -835,11 +838,35 @@
       return `<div class="component">
         <strong>${escapeHtml(name)}</strong>
         <div class="muted">${escapeHtml(epic)} ${escapeHtml(currency)}</div>
-        <div>Role ${escapeHtml(role)} | allocation ${weight.toFixed(2)}% | multiplier ${formulaMultiplier.toFixed(8)}</div>
+        <div>Role ${escapeHtml(role)} | allocation ${weight.toFixed(2)}% | multiplier ${formatMultiplier(displayMultiplier)}</div>
+        <div class="muted">min deal ${formatNullable(minDealSize)} | size step ${formatNullable(minSizeIncrement)}</div>
         <div class="muted">reference ${money(referencePrice)} | last ${money(last)}</div>
         <div class="muted">Annualized vol ${vol.toFixed(2)}% | 4Y return ${fourYear.toFixed(2)}%</div>
         <div class="muted">bid ${money(bid)} | offer ${money(offer)} | ${escapeHtml(tick)}</div>
       </div>`;
+    }
+
+    function formatMultiplier(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return 'n/a';
+      return numeric.toFixed(2).replace(/\.?0+$/, '');
+    }
+
+    function formatNullable(value) {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) && numeric > 0 ? formatMultiplier(numeric) : 'n/a';
+    }
+
+    function executableLegQuantity(component, quantity) {
+      const weight = Number(getField(component, 'Weight', 'weight', 0));
+      const fallbackMultiplier = weight / 100;
+      const formulaMultiplier = Number(getField(component, 'FormulaMultiplier', 'formulaMultiplier', fallbackMultiplier));
+      const minDeal = Number(getField(component, 'MinDealSize', 'minDealSize', 0));
+      const step = Number(getField(component, 'MinSizeIncrement', 'minSizeIncrement', 0));
+      let sized = Math.abs(quantity * formulaMultiplier);
+      if (Number.isFinite(minDeal) && minDeal > 0 && sized < minDeal) sized = minDeal;
+      if (Number.isFinite(step) && step > 0) sized = Math.ceil(sized / step) * step;
+      return Number.isFinite(sized) ? sized : 0;
     }
 
     function escapeHtml(value) {
@@ -1026,7 +1053,8 @@
         const fallbackMultiplier = weight / 100;
         const formulaMultiplier = Number(getField(component, 'FormulaMultiplier', 'formulaMultiplier', fallbackMultiplier));
         const epic = getField(component, 'Epic', 'epic', '');
-        return `${String(side).toUpperCase()} ${(multiplier * formulaMultiplier).toFixed(4)} x ${epic}`;
+        const legSide = multiplier * formulaMultiplier >= 0 ? String(side).toUpperCase() : String(side).toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
+        return `${legSide} ${executableLegQuantity(component, multiplier).toFixed(4).replace(/\.?0+$/, '')} x ${epic}`;
       });
       document.getElementById('order-preview').textContent = rows.length ? rows.join(' | ') : 'Build a synthetic symbol first.';
     };

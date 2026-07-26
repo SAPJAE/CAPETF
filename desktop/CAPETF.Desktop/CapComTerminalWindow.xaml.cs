@@ -189,6 +189,7 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
+        await RefreshBasketMarketDetailsAsync(_basket);
         await RenderSyntheticChartAsync(_basket);
         var buildStatus = $"{_basket.Symbol}: {_basket.Components.Count} legs, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
         StatusText.Text = buildStatus;
@@ -252,6 +253,7 @@ public partial class CapComTerminalWindow : Window
         }
 
         _basket = RenameBasket(_basket, saved.Symbol, saved.Block);
+        await RefreshBasketMarketDetailsAsync(_basket);
         await RenderSyntheticChartAsync(_basket);
         var loadStatus = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs.";
         StatusText.Text = loadStatus;
@@ -429,6 +431,53 @@ public partial class CapComTerminalWindow : Window
         await _streaming.SubscribeOhlcAsync(_api.Session!, epics, RequestResolution(SelectedResolution()));
         ConnectionText.Text = $"Streaming {_basket.Symbol}";
         StatusText.Text = $"Streaming {_basket.Symbol}: {epics.Count} component epics.";
+    }
+
+    private async Task RefreshBasketMarketDetailsAsync(SyntheticBasket basket)
+    {
+        try
+        {
+            await EnsureConnectedAsync();
+        }
+        catch
+        {
+            return;
+        }
+
+        foreach (var component in basket.Components)
+        {
+            try
+            {
+                var details = await _api.GetMarketDetailsAsync(component.Instrument.Epic);
+                if (details is not null)
+                {
+                    ApplyMarketDetails(component.Instrument, details);
+                    component.NotifyInstrumentPriceChanged();
+                }
+            }
+            catch (Exception ex)
+            {
+                component.Instrument.Status = $"Market snapshot n/a: {ex.Message}";
+            }
+        }
+
+        SyntheticQuoteCalculator.Refresh(basket);
+    }
+
+    private static void ApplyMarketDetails(MarketInstrument target, MarketInstrument details)
+    {
+        if (details.Bid is > 0) target.Bid = details.Bid;
+        if (details.Offer is > 0) target.Offer = details.Offer;
+        if (details.Price is > 0)
+        {
+            target.Price = details.Price;
+            target.LastTickAt = DateTimeOffset.UtcNow;
+        }
+
+        if (details.LotSize is > 0) target.LotSize = details.LotSize;
+        if (details.MinDealSize is > 0) target.MinDealSize = details.MinDealSize;
+        if (details.MinSizeIncrement is > 0) target.MinSizeIncrement = details.MinSizeIncrement;
+        if (!string.IsNullOrWhiteSpace(details.Status)) target.Status = details.Status;
     }
 
     private void BuyPreview_Click(object sender, RoutedEventArgs e) => PreviewSyntheticOrder("BUY");
@@ -646,7 +695,7 @@ public partial class CapComTerminalWindow : Window
         SymbolText.Text = $"{payload.Symbol}  {payload.Block}";
         ChartMetaText.Text = $"{payload.CurrencyLabel} | bid {FormatQuote(payload.BidPrice)} | ask {FormatQuote(payload.AskPrice)} | last {FormatQuote(payload.LastPrice)}";
         SyntheticFormulaText.Text = string.Join(Environment.NewLine + "+ ", basket.Components.Select(component =>
-            $"{component.FormulaMultiplier:0.########} * {component.Instrument.Epic}"));
+            $"{SyntheticOrderSizing.FormatDisplayMultiplier(component)} * {component.Instrument.Epic}"));
 
         _components.Clear();
         foreach (var component in payload.Components) _components.Add(component);
@@ -782,7 +831,12 @@ public partial class CapComTerminalWindow : Window
         _ = decimal.TryParse(QuantityBox.Text, out var quantity);
         if (quantity <= 0) quantity = 1m;
         OrderPreviewText.Text = string.Join(Environment.NewLine, _basket.Components.Select(component =>
-            $"{side} {quantity * component.FormulaMultiplier:0.####} x {component.Instrument.Epic}"));
+        {
+            var raw = quantity * component.FormulaMultiplier;
+            var legSide = raw >= 0 ? side : side == "BUY" ? "SELL" : "BUY";
+            var executable = SyntheticOrderSizing.ExecutableLegQuantity(component, quantity);
+            return $"{legSide} {executable:0.####} x {component.Instrument.Epic} (calc {raw:0.##})";
+        }));
         _ = InvokeTerminalScriptAsync($"window.placeSyntheticPreviewOrder && window.placeSyntheticPreviewOrder('{side}', {quantity});");
     }
 

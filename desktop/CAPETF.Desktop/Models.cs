@@ -43,6 +43,9 @@ public sealed class MarketInstrument : INotifyPropertyChanged
     public string Country { get; init; } = "";
     public string Sector { get; init; } = "";
     public string Region { get; init; } = "";
+    public decimal? LotSize { get; set; }
+    public decimal? MinDealSize { get; set; }
+    public decimal? MinSizeIncrement { get; set; }
     public ObservableCollection<ChartPoint> Points { get; } = [];
 
     public decimal? Price

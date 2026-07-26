@@ -72,6 +72,7 @@ public static class SyntheticBasketBuilderTests
         CapComTerminalStartsWithoutDevExpressStockSharpRuntimeCrash();
         CapComTerminalShowsActionableConnectionFailures();
         CapitalApiClientAllowsReconnectAfterRequests();
+        CapitalApiClientParsesMarketDetailsSnapshotAndDealingRules();
         StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy();
         CapComTerminalLoadsFullEncryptedStockChunks();
         TerminalWorkspaceModeNameIsAvailable();
@@ -81,6 +82,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticStrategiesReturnClosestFallbackCandidates();
         SyntheticQuoteUsesFormulaMultipliersForBidAskLast();
         SyntheticQuoteIgnoresZeroBidAskQuotes();
+        SyntheticOrderSizingUsesCapitalDealRules();
         SavedSyntheticBasketStorePersistsFormulaDetails();
     }
 
@@ -770,6 +772,7 @@ public static class SyntheticBasketBuilderTests
         if (payload.Candles.Count != 220) throw new Exception("terminal payload must include all synthetic candles");
         if (payload.Components.Count != 2) throw new Exception("terminal payload must include component rows");
         AssertNear(0.6m, payload.Components[0].FormulaMultiplier, "component row must include executable formula multiplier");
+        AssertNear(0.6m, payload.Components[0].DisplayMultiplier, "component row should expose rounded formula display multiplier");
         if (payload.Ma20.Count == 0 || payload.Ma50.Count == 0 || payload.Ma200.Count == 0)
         {
             throw new Exception("terminal payload must include MA 20, MA 50, and MA 200 when enough candles exist");
@@ -1536,6 +1539,9 @@ public static class SyntheticBasketBuilderTests
             "4Y return",
             "Role",
             "FormulaMultiplier",
+            "DisplayMultiplier",
+            "MinDealSize",
+            "MinSizeIncrement",
             "FormulaReferencePrice",
             "goToRealtime",
             "scrollToRealTime",
@@ -1657,6 +1663,9 @@ public static class SyntheticBasketBuilderTests
             "RenderSyntheticChart",
             "SyntheticTerminalChartPayload.Build",
             "PreviewSyntheticOrder",
+            "RefreshBasketMarketDetailsAsync",
+            "GetMarketDetailsAsync",
+            "ApplyMarketDetails",
             "InitializeChartHostAsync",
             "SendTerminalPayloadAsync",
             "window.renderTerminal",
@@ -1712,6 +1721,44 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception("Capital API client should allow reconnecting on the same instance after requests");
         }
+    }
+
+    private static void CapitalApiClientParsesMarketDetailsSnapshotAndDealingRules()
+    {
+        const string json =
+            """
+            {
+              "instrument": {
+                "epic": "AMD",
+                "symbol": "AMD",
+                "name": "Advanced Micro Devices",
+                "type": "SHARES",
+                "currency": "USD",
+                "lotSize": 1
+              },
+              "dealingRules": {
+                "minDealSize": { "unit": "POINTS", "value": 1 },
+                "minSizeIncrement": { "unit": "POINTS", "value": 0.1 }
+              },
+              "snapshot": {
+                "marketStatus": "TRADEABLE",
+                "bid": 158.12,
+                "offer": 158.18
+              }
+            }
+            """;
+
+        var details = CapitalApiClient.ParseMarketDetails(json);
+
+        if (details is null) throw new Exception("market details should parse a valid Capital.com market response");
+        if (details.Epic != "AMD") throw new Exception("market details should parse instrument epic");
+        AssertNear(158.12m, details.Bid ?? 0m, "market details should parse current bid");
+        AssertNear(158.18m, details.Offer ?? 0m, "market details should parse current ask");
+        AssertNear(158.15m, details.Price ?? 0m, "market details should set midpoint price");
+        AssertNear(1m, details.LotSize ?? 0m, "market details should parse lot size");
+        AssertNear(1m, details.MinDealSize ?? 0m, "market details should parse min deal size");
+        AssertNear(0.1m, details.MinSizeIncrement ?? 0m, "market details should parse min size increment");
+        if (details.Status != "TRADEABLE") throw new Exception("market details should parse market status");
     }
 
     private static void StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy()
@@ -1965,6 +2012,30 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception("zero bid/ask inputs must display as unavailable, not as a tradable synthetic price");
         }
+    }
+
+    private static void SyntheticOrderSizingUsesCapitalDealRules()
+    {
+        var instrument = new MarketInstrument
+        {
+            Epic = "AMD",
+            MinDealSize = 1m,
+            MinSizeIncrement = 0.1m,
+        };
+        var component = new SyntheticComponent(instrument, 33.3333m, 0m, 0m)
+        {
+            FormulaMultiplier = 0.06383855m,
+        };
+
+        AssertNear(0.06m, SyntheticOrderSizing.DisplayMultiplier(component), "formula display should be rounded to two decimals");
+        AssertNear(1m, SyntheticOrderSizing.ExecutableLegQuantity(component, 1m), "executable size must respect Capital.com min deal size");
+        AssertNear(1.3m, SyntheticOrderSizing.ExecutableLegQuantity(component, 20m), "executable size must round up to Capital.com min size increment");
+
+        var freeSized = new SyntheticComponent(new MarketInstrument { Epic = "BB" }, 33.3333m, 0m, 0m)
+        {
+            FormulaMultiplier = 3.93081368m,
+        };
+        AssertNear(3.93m, SyntheticOrderSizing.DisplayMultiplier(freeSized), "display rounding should not require deal rules");
     }
 
     private static void SavedSyntheticBasketStorePersistsFormulaDetails()

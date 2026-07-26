@@ -73,6 +73,13 @@ public sealed class CapitalApiClient : IDisposable
         return ExtractMarkets(doc.RootElement).ToList();
     }
 
+    public async Task<MarketInstrument?> GetMarketDetailsAsync(string epic, CancellationToken cancellationToken = default)
+    {
+        EnsureSession();
+        using var doc = await GetJsonAsync($"api/v1/markets/{Uri.EscapeDataString(epic)}", cancellationToken);
+        return ParseMarketDetails(doc.RootElement);
+    }
+
     public async Task<IReadOnlyList<ChartPoint>> GetPricesAsync(string epic, string resolution, int max, CancellationToken cancellationToken = default)
     {
         EnsureSession();
@@ -175,6 +182,43 @@ public sealed class CapitalApiClient : IDisposable
         return ParseOhlcPrices(document.RootElement);
     }
 
+    internal static MarketInstrument? ParseMarketDetails(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return ParseMarketDetails(document.RootElement);
+    }
+
+    internal static MarketInstrument? ParseMarketDetails(JsonElement root)
+    {
+        if (!root.TryGetProperty("instrument", out var instrument) || instrument.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var bid = root.TryGetProperty("snapshot", out var snapshot) ? ReadDecimal(snapshot, "bid") : null;
+        var offer = root.TryGetProperty("snapshot", out snapshot) ? ReadDecimal(snapshot, "offer") : null;
+        var price = bid is > 0 && offer is > 0 ? (bid.Value + offer.Value) / 2m : bid is > 0 ? bid : offer is > 0 ? offer : null;
+        var result = new MarketInstrument
+        {
+            Epic = ReadString(instrument, "epic") ?? "",
+            Name = ReadString(instrument, "name") ?? ReadString(instrument, "instrumentName") ?? "",
+            Symbol = ReadString(instrument, "symbol") ?? "",
+            Type = ReadString(instrument, "type") ?? ReadString(instrument, "instrumentType") ?? "",
+            Currency = ReadString(instrument, "currency") ?? "",
+            LotSize = ReadDecimal(instrument, "lotSize"),
+            MinDealSize = ReadRuleValue(root, "minDealSize"),
+            MinSizeIncrement = ReadRuleValue(root, "minSizeIncrement"),
+            Bid = bid,
+            Offer = offer,
+            Price = price,
+            Status = root.TryGetProperty("snapshot", out snapshot)
+                ? ReadString(snapshot, "marketStatus") ?? ""
+                : "",
+        };
+
+        return string.IsNullOrWhiteSpace(result.Epic) ? null : result;
+    }
+
     private static IReadOnlyList<OhlcPoint> ParseOhlcPrices(JsonElement root)
     {
         if (!root.TryGetProperty("prices", out var prices) || prices.ValueKind != JsonValueKind.Array) return [];
@@ -241,6 +285,7 @@ public sealed class CapitalApiClient : IDisposable
                 Country = ReadString(market, "country") ?? ReadString(market, "countryName") ?? "",
                 Sector = ReadString(market, "sector") ?? ReadString(market, "industry") ?? "",
                 Region = ReadString(market, "region") ?? "",
+                LotSize = ReadDecimal(market, "lotSize"),
                 Status = ReadString(market, "marketStatus") ?? ReadString(market, "status") ?? "",
             };
         }
@@ -264,6 +309,22 @@ public sealed class CapitalApiClient : IDisposable
             }
         }
         return null;
+    }
+
+    private static decimal? ReadDecimal(JsonElement element, string name)
+    {
+        return element.TryGetProperty(name, out var value) &&
+            value.ValueKind == JsonValueKind.Number &&
+            value.TryGetDecimal(out var result)
+                ? result
+                : null;
+    }
+
+    private static decimal? ReadRuleValue(JsonElement root, string ruleName)
+    {
+        if (!root.TryGetProperty("dealingRules", out var rules) || rules.ValueKind != JsonValueKind.Object) return null;
+        if (!rules.TryGetProperty(ruleName, out var rule) || rule.ValueKind != JsonValueKind.Object) return null;
+        return ReadDecimal(rule, "value");
     }
 
     public void Dispose()
