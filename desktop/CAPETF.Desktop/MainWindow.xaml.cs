@@ -360,7 +360,10 @@ public partial class MainWindow : Window
                     var rows = await _api.GetAllAvailableOhlcPricesAsync(item.Epic, requestResolution, operation.Token);
                     rows = TransformTerminalCandles(rows, terminalResolution);
                     if (!_dataOperations.IsCurrent(operation)) return;
-                    if (rows.Count >= minimumCandles) candles[item.Epic] = rows;
+                    if (SyntheticHistoryService.DistinctAlignmentKeyCount(rows, terminalResolution) >= minimumCandles)
+                    {
+                        candles[item.Epic] = rows;
+                    }
                     TerminalStatusText.Text = $"Loading {TerminalTimeframeText().ToLowerInvariant()} candles for {block}: {candles.Count} usable of {checkedCount} checked...";
                     if (candles.Count >= 32 && checkedCount >= 40) break;
                 }

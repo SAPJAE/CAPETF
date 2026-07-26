@@ -27,6 +27,8 @@ public static class SyntheticBasketBuilderTests
         SyntheticHistoryServiceAggregatesHourlyCandlesLocally();
         SyntheticHistoryServiceAggregatesTradingSessionsAndRejectsGaps();
         CachedIntradayLoadersAggregateOnlyConsecutiveHourlyRuns();
+        LegacyWeeklyCacheNormalizesAllObservationsAndBuildsSelectedBasket();
+        BundledPalantirWeeklyCacheHasDistinctMultiYearKeys();
         SelectedHistoryRebuildKeepsTheExactSelectedEpics();
         SelectedHistoryRebuildRejectsMissingSelectedLeg();
         SelectedHistoryValidationUsesDailyAndWeeklyAlignmentKeys();
@@ -107,6 +109,7 @@ public static class SyntheticBasketBuilderTests
         EmptyCachedHistoryLoadsBoundedApiCandidatesAndBuildsBasket();
         CapComTerminalIntradayMinimumsFitCachedHourlyHistory();
         StockRefreshFetchesDeepHourlyHistory();
+        WeeklyProducerPreservesFullDates();
         DesktopDefaultSearchDoesNotFilterStocksByEtf();
         MainWindowTerminalFiltersStocksBeforeGenericSelection();
         CapComTerminalUsesEtfCatalogForFilteringAndMetadata();
@@ -689,6 +692,147 @@ public static class SyntheticBasketBuilderTests
             string.Join("|", expected.Select(time => time.ToUniversalTime().ToString("O"))),
             string.Join("|", actual.Select(row => row.Time.ToUniversalTime().ToString("O"))),
             message);
+    }
+
+    private static void LegacyWeeklyCacheNormalizesAllObservationsAndBuildsSelectedBasket()
+    {
+        var actualWeeks = Enumerable.Range(0, 156)
+            .Select(index => DateTimeOffset.Parse("2023-07-03T00:00:00Z").AddDays(index * 7))
+            .ToList();
+        var legacyLabels = actualWeeks.Select(time => time.ToString("yyyy-MM")).ToList();
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> LoadStock(decimal baseline)
+        {
+            var json = JsonSerializer.Serialize(new
+            {
+                weeklyPoints = legacyLabels.Select((label, index) => new
+                {
+                    d = label,
+                    p = baseline + index + (index % 2 == 0 ? 1m : -1m),
+                }),
+            });
+            using var document = JsonDocument.Parse(json);
+            return DashboardStockChunkLoader.BuildSyntheticCandlesByResolution(document.RootElement);
+        }
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> LoadEtf(decimal baseline)
+        {
+            var json = JsonSerializer.Serialize(new
+            {
+                weeklyPoints = legacyLabels.Select((label, index) => new
+                {
+                    d = label,
+                    p = baseline + index + (index % 2 == 0 ? 1m : -1m),
+                }),
+            });
+            using var document = JsonDocument.Parse(json);
+            return DashboardEtfDataLoader.BuildCandlesByResolution(document.RootElement);
+        }
+        DateTime WeeklyKey(DateTimeOffset time)
+        {
+            var date = time.Date;
+            return date.AddDays(-(((int)date.DayOfWeek + 6) % 7));
+        }
+        void AssertLegacyRows(IReadOnlyList<OhlcPoint> rows, decimal baseline, string source)
+        {
+            AssertEqual(156, rows.Count, $"{source} legacy weekly row count");
+            AssertEqual(156, rows.Select(row => WeeklyKey(row.Time)).Distinct().Count(), $"{source} distinct weekly key count");
+            AssertTrue(rows.Zip(rows.Skip(1), (left, right) => left.Time < right.Time).All(value => value),
+                $"{source} normalized weekly timestamps must be strictly ordered");
+            for (var index = 0; index < rows.Count; index++)
+            {
+                AssertEqual(legacyLabels[index], rows[index].Time.ToString("yyyy-MM"), $"{source} row must stay in its labeled month");
+                AssertNear(baseline + index + (index % 2 == 0 ? 1m : -1m), rows[index].Close,
+                    $"{source} normalization must preserve source prices");
+            }
+        }
+
+        var stockA = LoadStock(100m)["Weekly"];
+        var etfB = LoadEtf(200m)["Weekly"];
+        var stockC = LoadStock(300m)["Weekly"];
+        AssertLegacyRows(stockA, 100m, "stock");
+        AssertLegacyRows(etfB, 200m, "ETF");
+
+        var selected = new[]
+        {
+            CreateStock("LEG-A", "Leg A"),
+            CreateStock("LEG-B", "Leg B"),
+            CreateStock("LEG-C", "Leg C"),
+        };
+        var cached = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["LEG-A"] = stockA,
+            ["LEG-B"] = etfB,
+            ["LEG-C"] = stockC,
+        };
+        var apiRow = stockA[100] with { Time = stockA[100].Time.AddDays(1), Open = 999m, High = 999m, Low = 999m, Close = 999m };
+        var merged = SyntheticHistoryService.MergeSelectedHistory(
+            selected,
+            "Weekly",
+            new HistoryLoadResult(
+                new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase) { ["LEG-A"] = [apiRow] },
+                null,
+                null,
+                0),
+            cached);
+        AssertEqual(156, merged.SharedCount, "normalized legacy histories must retain a 156-week strict intersection");
+        AssertNear(999m, merged.CandlesByEpic["LEG-A"].Single(row => WeeklyKey(row.Time) == WeeklyKey(apiRow.Time)).Close,
+            "API rows must remain authoritative over normalized legacy cache rows");
+        var basket = SyntheticHistoryService.BuildSelected("US / USD / Tech", selected, merged, "Weekly", 52, 120);
+        if (basket is null || basket.Candles.Count < 120)
+        {
+            throw new Exception("a normalized three-leg legacy weekly cache must build a multi-year selected basket");
+        }
+
+        var malformed = legacyLabels.Select((label, index) => FlatCandle(
+            DateTimeOffset.Parse($"{label}-01T00:00:00Z"), 100m + index)).ToList();
+        var malformedByEpic = selected.ToDictionary(
+            item => item.Epic,
+            _ => (IReadOnlyList<OhlcPoint>)malformed,
+            StringComparer.OrdinalIgnoreCase);
+        AssertEqual(0, SyntheticBasketBuilder.Build("US / USD / Tech", selected, malformedByEpic, 1, 52, 120).Baskets.Count,
+            "candidate eligibility must count distinct weekly keys rather than duplicated raw rows");
+        if (SyntheticHistoryService.BuildSelected(
+                "US / USD / Tech",
+                selected,
+                new HistoryLoadResult(malformedByEpic, null, null, 36),
+                "Weekly",
+                52,
+                120) is not null)
+        {
+            throw new Exception("BuildSelected minimums must count distinct weekly keys rather than duplicated raw rows");
+        }
+    }
+
+    private static void BundledPalantirWeeklyCacheHasDistinctMultiYearKeys()
+    {
+        DateTime WeeklyKey(DateTimeOffset time)
+        {
+            var date = time.Date;
+            return date.AddDays(-(((int)date.DayOfWeek + 6) % 7));
+        }
+        var cache = DashboardStockChunkLoader.LoadStocks();
+        if (cache.Instruments.Count == 0 || cache.OhlcByEpicAndResolution is null) return;
+        var weekly = cache.OhlcByEpicAndResolution
+            .Where(pair => pair.Value.TryGetValue("Weekly", out var rows) && rows.Count >= 120)
+            .ToDictionary(pair => pair.Key, pair => pair.Value["Weekly"], StringComparer.OrdinalIgnoreCase);
+        foreach (var epic in new[] { "PLTR", "CVNA", "HOOD" })
+        {
+            AssertTrue(weekly.TryGetValue(epic, out var rows), $"bundled cache must include normalized {epic} weekly history");
+            AssertEqual(rows!.Count, rows.Select(row => WeeklyKey(row.Time)).Distinct().Count(), $"bundled {epic} weekly keys must be unique");
+            AssertTrue(rows.Count >= 120, $"bundled {epic} must retain multi-year weekly history");
+        }
+
+        var basket = SeededSyntheticSelector.SelectSeededBasket("Palantir", "", cache.Instruments, weekly, 52, 120);
+        if (basket is null || basket.Candles.Count < 120)
+        {
+            throw new Exception("bundled normalized Palantir weekly history must build a multi-year three-leg basket");
+        }
+    }
+
+    private static void WeeklyProducerPreservesFullDates()
+    {
+        var source = File.ReadAllText(SourcePath("scripts", "update_capital_etfs.py"));
+        AssertTrue(source.Contains("label_len = 10 if period == \"weekly\" else 7", StringComparison.Ordinal),
+            "stock and ETF producer must preserve full dates for weekly points while retaining monthly labels");
     }
 
     private static void SyntheticIndexStartsAtOneHundredOnFirstSharedCandle()

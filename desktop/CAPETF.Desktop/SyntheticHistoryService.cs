@@ -138,7 +138,7 @@ public sealed class SyntheticHistoryService
             requestedEpics.Count != requested.Count ||
             requested.Any(component =>
                 !history.CandlesByEpic.TryGetValue(component.Epic, out var candles) ||
-                candles.Count < minimumCandles) ||
+                DistinctAlignmentKeyCount(candles, timeframe) < minimumCandles) ||
             FindSharedTimes(history.CandlesByEpic, requested, timeframe).Count == 0)
         {
             return null;
@@ -177,6 +177,9 @@ public sealed class SyntheticHistoryService
         foreach (var rows in rowsByKey.Skip(1)) shared.IntersectWith(rows.Keys);
         return shared.Select(key => rowsByKey[0][key]).OrderBy(time => time).ToList();
     }
+
+    internal static int DistinctAlignmentKeyCount(IReadOnlyList<OhlcPoint> candles, string timeframe) =>
+        candles.Select(candle => AlignmentKey(candle.Time, timeframe)).Distinct(StringComparer.Ordinal).Count();
 
     private static string AlignmentKey(DateTimeOffset time, string timeframe) => timeframe switch
     {

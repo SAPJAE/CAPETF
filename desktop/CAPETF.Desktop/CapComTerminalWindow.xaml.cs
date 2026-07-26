@@ -148,7 +148,7 @@ public partial class CapComTerminalWindow : Window
         var minCandles = MinimumCandles(resolution);
         var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments.Where(item => TerminalUniverse.Accepts(SelectedUniverse(), item, _knownEtfEpics)).ToList(), limit: 500);
         var activeCachedCandles = CachedCandlesForResolution(resolution);
-        var candles = BuildCachedCandles(candidates, activeCachedCandles, minCandles, candidateLimit: 500);
+        var candles = BuildCachedCandles(candidates, activeCachedCandles, resolution, minCandles, candidateLimit: 500);
         var seedText = SeedText();
         candles = await SyntheticTerminalBuildPolicy.LoadCandidateHistoryFallbackAsync(
             strategy,
@@ -174,13 +174,14 @@ public partial class CapComTerminalWindow : Window
         {
             var seed = SeededSyntheticSelector.ResolveSeed(seedText, block, _instruments);
             if (seed is not null &&
-                (!seededCandles.TryGetValue(seed.Epic, out var seedRows) || seedRows.Count < minCandles))
+                (!seededCandles.TryGetValue(seed.Epic, out var seedRows) ||
+                 SyntheticHistoryService.DistinctAlignmentKeyCount(seedRows, resolution) < minCandles))
             {
                 var seedLabel = string.IsNullOrWhiteSpace(seed.Symbol) ? seed.Epic : seed.Symbol;
                 StatusText.Text = $"Loading Capital.com history for {seedLabel}...";
                 var seedHistory = await LoadSelectedHistoryAsync([seed], resolution);
                 var loadedRows = seedHistory.CandlesByEpic.TryGetValue(seed.Epic, out var loaded) ? loaded : [];
-                if (loadedRows.Count >= minCandles)
+                if (SyntheticHistoryService.DistinctAlignmentKeyCount(loadedRows, resolution) >= minCandles)
                 {
                     seededCandles[seed.Epic] = loadedRows;
                     candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(candles, StringComparer.OrdinalIgnoreCase)
@@ -211,7 +212,7 @@ public partial class CapComTerminalWindow : Window
         {
             await ClearTerminalChartAsync();
             var usableHistoryCount = isSeededSimilarBuild
-                ? seededCandles.Count(pair => pair.Value.Count >= minCandles)
+                ? seededCandles.Count(pair => SyntheticHistoryService.DistinctAlignmentKeyCount(pair.Value, resolution) >= minCandles)
                 : candles.Count;
             StatusText.Text = $"No synthetic basket could be built. {usableHistoryCount} symbols had usable {resolution} history in {block}.";
             return;
@@ -341,6 +342,7 @@ public partial class CapComTerminalWindow : Window
     private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> BuildCachedCandles(
         IReadOnlyList<MarketInstrument> candidates,
         IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> source,
+        string resolution,
         int minCandles,
         int candidateLimit)
     {
@@ -354,7 +356,8 @@ public partial class CapComTerminalWindow : Window
         {
             checkedCount++;
             _operationState.Report("Scanning cached history", checkedCount, total);
-            if (source.TryGetValue(item.Epic, out var rows) && rows.Count >= minCandles)
+            if (source.TryGetValue(item.Epic, out var rows) &&
+                SyntheticHistoryService.DistinctAlignmentKeyCount(rows, resolution) >= minCandles)
             {
                 candles[item.Epic] = rows;
             }
@@ -374,7 +377,8 @@ public partial class CapComTerminalWindow : Window
         var result = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
         foreach (var (epic, byResolution) in _cachedCandlesByEpicByResolution)
         {
-            if (byResolution.TryGetValue(resolution, out var rows) && rows.Count >= 2)
+            if (byResolution.TryGetValue(resolution, out var rows) &&
+                SyntheticHistoryService.DistinctAlignmentKeyCount(rows, resolution) >= 2)
             {
                 result[epic] = rows;
             }

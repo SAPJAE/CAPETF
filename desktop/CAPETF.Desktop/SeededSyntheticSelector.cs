@@ -22,13 +22,13 @@ public static class SeededSyntheticSelector
         if (string.IsNullOrWhiteSpace(seedText)) return null;
 
         var seed = FindSeed(seedText, fallbackBlock, instruments, candles, requireCandles: true, minimumCandles: minimumCandles);
-        if (seed is null || !candles.TryGetValue(seed.Epic, out var seedCandles) || seedCandles.Count < minimumCandles) return null;
+        if (seed is null || !candles.TryGetValue(seed.Epic, out var seedCandles) || AlignedPointCount(seedCandles, seedCandles) < minimumCandles) return null;
 
         var peerPool = instruments
             .Where(item => !string.Equals(item.Epic, seed.Epic, StringComparison.OrdinalIgnoreCase))
             .Where(item => SameCurrency(seed, item))
             .Where(item => candles.TryGetValue(item.Epic, out var rows) &&
-                           rows.Count >= minimumCandles &&
+                           AlignedPointCount(rows, rows) >= minimumCandles &&
                            AnnualizedVolatilityPct(rows, periodsPerYear) > 0 &&
                            SharedAlignedPointCount(seedCandles, rows) >= RequiredSharedPointCount(seedCandles, rows, minimumCandles))
             .ToList();
@@ -100,7 +100,7 @@ public static class SeededSyntheticSelector
     {
         var query = seedText.Trim();
         var eligible = instruments
-            .Where(item => !requireCandles || (candles is not null && candles.TryGetValue(item.Epic, out var rows) && rows.Count >= minimumCandles))
+            .Where(item => !requireCandles || (candles is not null && candles.TryGetValue(item.Epic, out var rows) && AlignedPointCount(rows, rows) >= minimumCandles))
             .ToList();
 
         var preferred = eligible

@@ -15,7 +15,7 @@ public static class SyntheticBasketBuilder
 
         var candidates = instruments
             .Where(item => !string.IsNullOrWhiteSpace(item.Epic))
-            .Where(item => candles.TryGetValue(item.Epic, out var rows) && rows.Count >= minimumCandles)
+            .Where(item => candles.TryGetValue(item.Epic, out var rows) && DistinctAlignedCandleCount(rows) >= minimumCandles)
             .Select(item =>
             {
                 var history = candles[item.Epic].OrderBy(row => row.Time).ToList();
@@ -464,6 +464,13 @@ public static class SyntheticBasketBuilder
 
     private static bool UsesWeeklyAlignment(IReadOnlyList<OhlcPoint> left, IReadOnlyList<OhlcPoint> right) =>
         HasWeeklyCadence(left) || HasWeeklyCadence(right);
+
+    private static int DistinctAlignedCandleCount(IReadOnlyList<OhlcPoint> candles)
+    {
+        if (HasSubDailyCadence(candles)) return candles.Select(row => row.Time).Distinct().Count();
+        if (HasWeeklyCadence(candles)) return candles.Select(row => WeekStart(row.Time.Date)).Distinct().Count();
+        return candles.Select(row => row.Time.Date).Distinct().Count();
+    }
 
     private static bool HasSubDailyCadence(IReadOnlyList<OhlcPoint> candles)
     {

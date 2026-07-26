@@ -142,7 +142,7 @@ public static class DashboardEtfDataLoader
     internal static IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> BuildCandlesByResolution(JsonElement item)
     {
         var result = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
-        AddCandles(result, "Weekly", ReadChartPoints(item, "weeklyPoints"));
+        AddCandles(result, "Weekly", ReadChartPoints(item, "weeklyPoints"), normalizeLegacyWeekly: true);
         AddCandles(result, "Daily", ReadChartPoints(item, "dailyPoints"));
         var hourly = ClosePointsToCandles(ReadChartPoints(item, "hourlyPoints"));
         if (hourly.Count >= 2)
@@ -156,9 +156,14 @@ public static class DashboardEtfDataLoader
         return result.Where(pair => pair.Value.Count >= 2).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
     }
 
-    private static void AddCandles(Dictionary<string, IReadOnlyList<OhlcPoint>> target, string resolution, IReadOnlyList<ChartPoint> points)
+    private static void AddCandles(
+        Dictionary<string, IReadOnlyList<OhlcPoint>> target,
+        string resolution,
+        IReadOnlyList<ChartPoint> points,
+        bool normalizeLegacyWeekly = false)
     {
         var candles = ClosePointsToCandles(points);
+        if (normalizeLegacyWeekly) candles = LegacyWeeklyHistoryNormalizer.Normalize(candles);
         if (candles.Count >= 2) target[resolution] = candles;
     }
 

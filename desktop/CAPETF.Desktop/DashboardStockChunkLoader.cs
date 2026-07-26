@@ -170,13 +170,13 @@ public static class DashboardStockChunkLoader
         if (points.Count < 2) points = ReadChartPoints(item, "dailyPoints");
         if (points.Count < 2) points = ReadChartPoints(item, "monthlyPoints");
         if (points.Count < 2) points = ReadChartPoints(item, "hourlyPoints");
-        return ClosePointsToCandles(points);
+        return LegacyWeeklyHistoryNormalizer.Normalize(ClosePointsToCandles(points));
     }
 
     internal static IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> BuildSyntheticCandlesByResolution(JsonElement item)
     {
         var result = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
-        var weekly = ClosePointsToCandles(ReadChartPoints(item, "weeklyPoints"));
+        var weekly = LegacyWeeklyHistoryNormalizer.Normalize(ClosePointsToCandles(ReadChartPoints(item, "weeklyPoints")));
         var daily = ClosePointsToCandles(ReadChartPoints(item, "dailyPoints"));
         var hourly = ClosePointsToCandles(ReadChartPoints(item, "hourlyPoints"));
 

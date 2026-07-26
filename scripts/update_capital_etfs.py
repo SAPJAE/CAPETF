@@ -603,7 +603,7 @@ def aggregate_points(rows, period):
         selected = [selected_by_period[key] for key in sorted(selected_by_period)]
         if period == "weekly":
             selected = selected[-156:]
-        label_len = 7
+        label_len = 10 if period == "weekly" else 7
 
     if not selected:
         return []
