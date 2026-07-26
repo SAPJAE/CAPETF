@@ -48,7 +48,8 @@ public static class SyntheticBasketBuilder
                 var clusterSize = PreferredClusterSize(remaining.Count);
                 var cluster = SelectMostSimilarCluster(remaining, clusterSize);
                 var weights = CalculateEqualWeights(cluster.Count);
-                var syntheticCandles = BuildCandles(cluster, weights).ToList();
+                var multipliers = CalculatePriceStabilizedMultipliers(cluster, weights);
+                var syntheticCandles = BuildCandles(cluster, multipliers).ToList();
                 var basket = new SyntheticBasket
                 {
                     Symbol = $"SYN-{NormalizeSymbol(block)}-{baskets.Count + 1:00}",
@@ -67,6 +68,8 @@ public static class SyntheticBasketBuilder
                         cluster[index].VolatilityPct,
                         cluster[index].FourYearReturnPct)
                     {
+                        FormulaMultiplier = multipliers[index],
+                        FormulaReferencePrice = cluster[index].Candles[^1].Close,
                         SyntheticBaselinePrice = cluster[index].Candles[^1].Close,
                     });
                 }
@@ -102,6 +105,18 @@ public static class SyntheticBasketBuilder
         return weights;
     }
 
+    private static IReadOnlyList<decimal> CalculatePriceStabilizedMultipliers(
+        IReadOnlyList<Candidate> cluster,
+        IReadOnlyList<decimal> weights)
+    {
+        return cluster.Select((item, index) =>
+        {
+            var referencePrice = item.Candles[^1].Close;
+            if (referencePrice <= 0) return 0m;
+            return decimal.Round(weights[index] / referencePrice, 8);
+        }).ToList();
+    }
+
     private static IReadOnlyList<decimal> ApplyWeightBounds(IReadOnlyList<decimal> source, decimal minimum, decimal maximum)
     {
         var weights = source.Select(value => Math.Clamp(value, minimum, maximum)).ToList();
@@ -122,7 +137,7 @@ public static class SyntheticBasketBuilder
         return weights.Select(value => decimal.Round(value, 4)).ToList();
     }
 
-    private static IEnumerable<OhlcPoint> BuildCandles(IReadOnlyList<Candidate> cluster, IReadOnlyList<decimal> weights)
+    private static IEnumerable<OhlcPoint> BuildCandles(IReadOnlyList<Candidate> cluster, IReadOnlyList<decimal> multipliers)
     {
         var candlesByDate = cluster
             .Select(item => item.Candles
@@ -148,11 +163,11 @@ public static class SyntheticBasketBuilder
             for (var index = 0; index < cluster.Count; index++)
             {
                 var candle = candlesByDate[index][date];
-                var weight = weights[index] / 100m;
-                open += candle.Open * weight;
-                high += candle.High * weight;
-                low += candle.Low * weight;
-                close += candle.Close * weight;
+                var multiplier = multipliers[index];
+                open += candle.Open * multiplier;
+                high += candle.High * multiplier;
+                low += candle.Low * multiplier;
+                close += candle.Close * multiplier;
                 time = candle.Time;
             }
             yield return new OhlcPoint(time, decimal.Round(open, 6), decimal.Round(high, 6), decimal.Round(low, 6), decimal.Round(close, 6));

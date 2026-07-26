@@ -484,7 +484,7 @@ public partial class CapComTerminalWindow : Window
         SymbolText.Text = $"{payload.Symbol}  {payload.Block}";
         ChartMetaText.Text = $"{payload.CurrencyLabel} | last {basket.BasketPrice:0.####}";
         SyntheticFormulaText.Text = string.Join(Environment.NewLine + "+ ", basket.Components.Select(component =>
-            $"{component.Weight / 100m:0.0000} * {component.Instrument.Epic}"));
+            $"{component.FormulaMultiplier:0.########} * {component.Instrument.Epic}"));
 
         _components.Clear();
         foreach (var component in payload.Components) _components.Add(component);
@@ -579,7 +579,7 @@ public partial class CapComTerminalWindow : Window
         _ = decimal.TryParse(QuantityBox.Text, out var quantity);
         if (quantity <= 0) quantity = 1m;
         OrderPreviewText.Text = string.Join(Environment.NewLine, _basket.Components.Select(component =>
-            $"{side} {quantity * component.Weight / 100m:0.####} x {component.Instrument.Epic}"));
+            $"{side} {quantity * component.FormulaMultiplier:0.####} x {component.Instrument.Epic}"));
         _ = InvokeTerminalScriptAsync($"window.placeSyntheticPreviewOrder && window.placeSyntheticPreviewOrder('{side}', {quantity});");
     }
 

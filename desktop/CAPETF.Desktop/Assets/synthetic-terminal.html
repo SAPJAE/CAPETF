@@ -110,7 +110,7 @@
 
     #workspace {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 320px;
+      grid-template-columns: minmax(0, 1fr) minmax(360px, 420px);
       min-height: 0;
     }
 
@@ -158,12 +158,13 @@
     }
 
     #side-rail {
-      display: grid;
-      grid-template-rows: auto auto minmax(0, 1fr);
+      display: flex;
+      flex-direction: column;
       min-width: 0;
       min-height: 0;
       border-left: 1px solid var(--line);
       background: var(--panel);
+      overflow: hidden;
     }
 
     #side-rail.hidden {
@@ -190,6 +191,13 @@
       font-family: Consolas, monospace;
       font-size: 12px;
       line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    #selection-basis,
+    #order-preview {
+      overflow-wrap: anywhere;
+      line-height: 1.4;
     }
 
     #order-ticket {
@@ -221,6 +229,7 @@
     }
 
     #components {
+      flex: 1 1 auto;
       min-height: 0;
       overflow: auto;
       padding: 0 10px 10px;
@@ -554,9 +563,11 @@
     function buildFormula(components) {
       if (!components.length) return 'Build a synthetic symbol.';
       return components.map(component => {
-        const weight = Number(getField(component, 'Weight', 'weight', 0)) / 100;
+        const allocation = Number(getField(component, 'Weight', 'weight', 0));
+        const fallbackMultiplier = allocation / 100;
+        const multiplier = Number(getField(component, 'FormulaMultiplier', 'formulaMultiplier', fallbackMultiplier));
         const epic = getField(component, 'Epic', 'epic', '');
-        return `${weight.toFixed(4)} * ${epic}`;
+        return `${multiplier.toFixed(8)} * ${epic}  (${allocation.toFixed(2)}% notional)`;
       }).join('\n+ ');
     }
 
@@ -565,6 +576,9 @@
       const epic = getField(component, 'Epic', 'epic', '');
       const currency = getField(component, 'Currency', 'currency', '');
       const weight = Number(getField(component, 'Weight', 'weight', 0));
+      const fallbackMultiplier = weight / 100;
+      const formulaMultiplier = Number(getField(component, 'FormulaMultiplier', 'formulaMultiplier', fallbackMultiplier));
+      const referencePrice = getField(component, 'FormulaReferencePrice', 'formulaReferencePrice', null);
       const last = getField(component, 'Last', 'last', null);
       const bid = getField(component, 'Bid', 'bid', null);
       const offer = getField(component, 'Offer', 'offer', null);
@@ -575,7 +589,8 @@
       return `<div class="component">
         <strong>${escapeHtml(name)}</strong>
         <div class="muted">${escapeHtml(epic)} ${escapeHtml(currency)}</div>
-        <div>Role ${escapeHtml(role)} | ${weight.toFixed(2)}% | last ${money(last)}</div>
+        <div>Role ${escapeHtml(role)} | allocation ${weight.toFixed(2)}% | multiplier ${formulaMultiplier.toFixed(8)}</div>
+        <div class="muted">reference ${money(referencePrice)} | last ${money(last)}</div>
         <div class="muted">Annualized vol ${vol.toFixed(2)}% | 4Y return ${fourYear.toFixed(2)}%</div>
         <div class="muted">bid ${money(bid)} | offer ${money(offer)} | ${escapeHtml(tick)}</div>
       </div>`;
@@ -676,8 +691,10 @@
       const components = getField(payload, 'Components', 'components', []);
       const rows = components.map(component => {
         const weight = Number(getField(component, 'Weight', 'weight', 0));
+        const fallbackMultiplier = weight / 100;
+        const formulaMultiplier = Number(getField(component, 'FormulaMultiplier', 'formulaMultiplier', fallbackMultiplier));
         const epic = getField(component, 'Epic', 'epic', '');
-        return `${String(side).toUpperCase()} ${(multiplier * weight / 100).toFixed(4)} x ${epic}`;
+        return `${String(side).toUpperCase()} ${(multiplier * formulaMultiplier).toFixed(4)} x ${epic}`;
       });
       document.getElementById('order-preview').textContent = rows.length ? rows.join(' | ') : 'Build a synthetic symbol first.';
     };

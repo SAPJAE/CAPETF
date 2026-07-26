@@ -18,6 +18,8 @@ public sealed class SyntheticComponent(
     public decimal Weight { get; } = weight;
     public decimal AnnualizedVolatilityPct { get; } = annualizedVolatilityPct;
     public decimal FourYearReturnPct { get; } = fourYearReturnPct;
+    public decimal FormulaMultiplier { get; set; } = weight / 100m;
+    public decimal? FormulaReferencePrice { get; set; }
 
     public decimal? SyntheticBaselinePrice
     {
