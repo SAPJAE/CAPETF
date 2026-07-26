@@ -57,6 +57,7 @@ public static class SyntheticBasketBuilderTests
         DesktopTerminalWorkspaceExposesChartFirstControls();
         DesktopTerminalWorkspaceExposesV2ProfessionalControls();
         CapComTerminalStartsWithoutDevExpressStockSharpRuntimeCrash();
+        StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy();
         CapComTerminalLoadsFullEncryptedStockChunks();
         TerminalWorkspaceModeNameIsAvailable();
         TerminalStreamingEpicsUseOnlySelectedSyntheticComponents();
@@ -1337,6 +1338,21 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy()
+    {
+        var chosen = DashboardStockChunkLoader.SelectBestStockDataFiles(
+            [
+                new StockDataFileCandidate("stocks-000.enc.json", 326_940),
+                new StockDataFileCandidate("stocks-001.enc.json", 328_285),
+            ],
+            new StockDataFileCandidate("stocks.enc.json", 38_406_649));
+
+        if (chosen.Count != 1 || chosen[0].Path != "stocks.enc.json")
+        {
+            throw new Exception("loader should prefer the full legacy stock file when refreshed chunks are clearly partial");
+        }
+    }
+
     private static void CapComTerminalLoadsFullEncryptedStockChunks()
     {
         var loaderPath = SourcePath("desktop", "CAPETF.Desktop", "DashboardStockChunkLoader.cs");
@@ -1365,7 +1381,8 @@ public static class SyntheticBasketBuilderTests
         var project = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CAPETF.Desktop.csproj"));
         if (!project.Contains("..\\..\\data\\stocks-*.enc.json", StringComparison.Ordinal) ||
             !project.Contains("..\\..\\data\\stocks.enc.json", StringComparison.Ordinal) ||
-            !project.Contains("Link=\"data\\%(Filename)%(Extension)\"", StringComparison.Ordinal))
+            !project.Contains("Link=\"data\\%(Filename)%(Extension)\"", StringComparison.Ordinal) ||
+            !project.Contains("<CopyToPublishDirectory>Always</CopyToPublishDirectory>", StringComparison.Ordinal))
         {
             throw new Exception("desktop package must include encrypted stock chunks");
         }
