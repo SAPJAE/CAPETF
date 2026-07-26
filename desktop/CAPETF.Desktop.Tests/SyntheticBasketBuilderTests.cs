@@ -46,6 +46,8 @@ public static class SyntheticBasketBuilderTests
         EtfMetadataMergeUsesDeterministicFallbacks();
         EtfMetadataMergeDerivesRegionFromCapitalCountry();
         EncryptedEtfCatalogIncludesLoadedEtfEpics();
+        EtfMetadataEnrichmentRequiresConnectedEtfLoad();
+        FailedEtfCatalogUsesEtfSpecificApiFallbackOnce();
         EncryptedEtfCacheKeepsOnlyEtfInstruments();
         SimilarityPrefersCorrelatedPricePathsOverVolatilityOnlyNeighbors();
         SyntheticComponentEpicsTakePrecedenceOverVisibleInstruments();
@@ -935,6 +937,61 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void EtfMetadataEnrichmentRequiresConnectedEtfLoad()
+    {
+        var missingMetadata = new MarketInstrument { Epic = "ETF-CFD", Type = "ETF", Sector = "All" };
+
+        if (!TerminalUniverseLoadPolicy.RequiresEtfMetadataEnrichment(TerminalUniverseKind.ETFs, [missingMetadata]))
+        {
+            throw new Exception("ETF universe loads with missing metadata must require connected enrichment");
+        }
+        if (TerminalUniverseLoadPolicy.RequiresEtfMetadataEnrichment(TerminalUniverseKind.Stocks, [missingMetadata]))
+        {
+            throw new Exception("stock universe loads must not trigger ETF metadata enrichment");
+        }
+    }
+
+    private static void FailedEtfCatalogUsesEtfSpecificApiFallbackOnce()
+    {
+        var catalog = new EtfCatalogCache();
+        var attempts = 0;
+        var first = catalog.LoadOnce(() =>
+        {
+            attempts++;
+            throw new InvalidOperationException("cache unavailable");
+        });
+        var second = catalog.LoadOnce(() =>
+        {
+            attempts++;
+            throw new InvalidOperationException("must not retry during fallback");
+        });
+
+        if (first is not null || second is not null || attempts != 1 || catalog.KnownEtfEpics.Count != 0)
+        {
+            throw new Exception("a failed ETF catalog must become an empty one-shot fallback catalog");
+        }
+        AssertEqual("ETF", TerminalUniverseLoadPolicy.ApiSearchTerm(TerminalUniverseKind.ETFs, "AAPL"), "ETF fallback search term");
+
+        var fallbackMarkets = new[]
+        {
+            new MarketInstrument { Epic = "ETF-CFD", Name = "Global Equity ETF", Type = "SHARES", Status = "CLOSED" },
+            new MarketInstrument { Epic = "STOCK", Name = "Ordinary Company", Type = "SHARES", Status = "CLOSED" },
+        };
+        var etfs = TerminalUniverseLoadPolicy.NormalizeApiFallback(TerminalUniverseKind.ETFs, fallbackMarkets, catalog.KnownEtfEpics);
+        if (etfs.Count != 1 || etfs[0].Epic != "ETF-CFD" || !CapitalInstrumentTypes.IsEtf(etfs[0]))
+        {
+            throw new Exception("ETF fallback must normalize only ETF-specific search results into the ETF universe");
+        }
+        var stocks = TerminalUniverseLoadPolicy.NormalizeApiFallback(
+            TerminalUniverseKind.Stocks,
+            fallbackMarkets,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ETF-CFD" });
+        if (stocks.Count != 1 || stocks[0].Epic != "STOCK")
+        {
+            throw new Exception("stock fallback must exclude ETF catalog epics when the catalog is available");
+        }
+    }
+
     private static void EtfMetadataMergeDerivesRegionFromCapitalCountry()
     {
         var merged = EtfMetadataMerger.Merge(
@@ -961,15 +1018,27 @@ public static class SyntheticBasketBuilderTests
         foreach (var required in new[]
         {
             "EnsureEtfCatalogLoaded",
+            "EtfCatalogCache",
             "TerminalUniverse.Accepts(universe, item, _knownEtfEpics)",
             "EnrichEtfMetadataAsync",
             "EtfMetadataMerger.Merge",
+            "TerminalUniverseLoadPolicy.RequiresEtfMetadataEnrichment",
+            "TerminalUniverseLoadPolicy.ApiSearchTerm",
+            "TerminalUniverseLoadPolicy.NormalizeApiFallback",
         })
         {
             if (!source.Contains(required, StringComparison.Ordinal))
             {
                 throw new Exception($"cap.com Terminal must use the ETF catalog for filtering and metadata enrichment: {required}");
             }
+        }
+
+        var enrichStart = source.IndexOf("private async Task<IReadOnlyList<MarketInstrument>> EnrichEtfMetadataAsync", StringComparison.Ordinal);
+        var ensureConnection = source.IndexOf("await EnsureConnectedAsync();", enrichStart, StringComparison.Ordinal);
+        var enrichmentLoop = source.IndexOf("var enriched = new List<MarketInstrument>", enrichStart, StringComparison.Ordinal);
+        if (enrichStart < 0 || ensureConnection < enrichStart || enrichmentLoop < ensureConnection)
+        {
+            throw new Exception("connected ETF universe loading must ensure a session before metadata enrichment");
         }
     }
 

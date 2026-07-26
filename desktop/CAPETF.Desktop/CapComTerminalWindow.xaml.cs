@@ -17,7 +17,7 @@ public partial class CapComTerminalWindow : Window
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>> _instrumentsByUniverse = [];
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> _candlesByUniverse = [];
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>> _candlesByUniverseByResolution = [];
-    private EtfDataLoadResult? _etfCache;
+    private readonly EtfCatalogCache _etfCatalog = new();
     private IReadOnlySet<string> _knownEtfEpics = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> _cachedCandlesByEpic =
         new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
@@ -107,9 +107,11 @@ public partial class CapComTerminalWindow : Window
             else
             {
                 StatusText.Text = "Loading cached ETFs...";
-                if (etfCache.Instruments.Count > 0)
+                if (etfCache is not null && etfCache.Instruments.Count > 0)
                 {
-                    var enriched = await EnrichEtfMetadataAsync(etfCache.Instruments);
+                    var enriched = TerminalUniverseLoadPolicy.RequiresEtfMetadataEnrichment(universe, etfCache.Instruments)
+                        ? await EnrichEtfMetadataAsync(etfCache.Instruments)
+                        : etfCache.Instruments;
                     ApplyUniverse(universe, enriched, etfCache.OhlcByEpic, etfCache.OhlcByEpicAndResolution);
                     var source = etfCache.SourceAsOf is null ? "" : $" Source date {etfCache.SourceAsOf:yyyy-MM-dd}.";
                     StatusText.Text = $"{_instruments.Count} ETFs loaded from the cached ETF file.{source}";
@@ -313,8 +315,9 @@ public partial class CapComTerminalWindow : Window
         await EnsureConnectedAsync();
         EnsureEtfCatalogLoaded();
         StatusText.Text = $"Loading Capital.com {UniverseLabel(universe).ToLowerInvariant()}...";
-        var markets = await _api.SearchMarketsAsync(SeedText());
-        ApplyUniverse(universe, markets.Where(item => TerminalUniverse.Accepts(universe, item, _knownEtfEpics)).ToList(), EmptyCandles(), EmptyCandlesByResolution());
+        var markets = await _api.SearchMarketsAsync(TerminalUniverseLoadPolicy.ApiSearchTerm(universe, SeedText()));
+        var normalized = TerminalUniverseLoadPolicy.NormalizeApiFallback(universe, markets, _knownEtfEpics);
+        ApplyUniverse(universe, normalized, EmptyCandles(), EmptyCandlesByResolution());
         StatusText.Text = $"{_instruments.Count} {UniverseLabel(universe).ToLowerInvariant()} loaded from Capital.com API.";
     }
 
@@ -591,16 +594,16 @@ public partial class CapComTerminalWindow : Window
     private static string UniverseLabel(TerminalUniverseKind universe) =>
         universe == TerminalUniverseKind.ETFs ? "ETFs" : "Stocks";
 
-    private EtfDataLoadResult EnsureEtfCatalogLoaded()
+    private EtfDataLoadResult? EnsureEtfCatalogLoaded()
     {
-        _etfCache ??= DashboardEtfDataLoader.LoadEtfs();
-        _knownEtfEpics = _etfCache.KnownEtfEpics;
-        return _etfCache;
+        var cache = _etfCatalog.LoadOnce(() => DashboardEtfDataLoader.LoadEtfs());
+        _knownEtfEpics = _etfCatalog.KnownEtfEpics;
+        return cache;
     }
 
     private async Task<IReadOnlyList<MarketInstrument>> EnrichEtfMetadataAsync(IReadOnlyList<MarketInstrument> instruments)
     {
-        if (_api.Session is null) return instruments;
+        await EnsureConnectedAsync();
 
         var enriched = new List<MarketInstrument>(instruments.Count);
         foreach (var instrument in instruments)
