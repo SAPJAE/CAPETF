@@ -9,6 +9,7 @@ namespace CAPETF.Desktop;
 public partial class CapComTerminalWindow : Window
 {
     private readonly CredentialStore _credentialStore = new();
+    private readonly SavedSyntheticBasketStore _savedBasketStore = new();
     private readonly CapitalApiClient _api = new();
     private readonly List<MarketInstrument> _instruments = [];
     private readonly ObservableCollection<TerminalComponentRow> _components = [];
@@ -18,6 +19,7 @@ public partial class CapComTerminalWindow : Window
         new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
     private CapitalStreamingClient? _streaming;
     private SyntheticBasket? _basket;
+    private bool _loadingSavedBaskets;
     private SyntheticTerminalPayload? _pendingPayload;
     private bool _chartReady;
 
@@ -30,6 +32,7 @@ public partial class CapComTerminalWindow : Window
         StrategyBox.SelectedIndex = 0;
         ComponentsList.ItemsSource = _components;
         LoadSavedCredentials();
+        RefreshSavedBaskets();
         _ = InitializeChartHostAsync();
         SizeChanged += async (_, _) => await InvokeTerminalScriptAsync("window.resizeTerminal && window.resizeTerminal();");
     }
@@ -181,6 +184,67 @@ public partial class CapComTerminalWindow : Window
 
         await RenderSyntheticChartAsync(_basket);
         StatusText.Text = $"{_basket.Symbol}: {_basket.Components.Count} legs, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
+    }
+
+    private void SaveBasket_Click(object sender, RoutedEventArgs e)
+    {
+        if (_basket is null)
+        {
+            StatusText.Text = "Build a synthetic basket before saving.";
+            return;
+        }
+
+        var name = SuggestedSavedBasketName(_basket, SelectedStrategy());
+        _savedBasketStore.Save(SavedSyntheticBasket.FromBasket(name, SelectedStrategy(), _basket));
+        RefreshSavedBaskets(name);
+        StatusText.Text = $"Saved basket {name}.";
+    }
+
+    private async void SavedBaskets_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingSavedBaskets || SavedBasketsBox.SelectedItem is not SavedSyntheticBasket saved) return;
+        await LoadSavedBasketAsync(saved);
+    }
+
+    private async Task LoadSavedBasketAsync(SavedSyntheticBasket saved)
+    {
+        if (_instruments.Count == 0)
+        {
+            await LoadStocksAsync();
+        }
+
+        var resolution = SelectedResolution();
+        var periodsPerYear = PeriodsPerYear(resolution);
+        var minCandles = MinimumCandles(resolution);
+        var activeCachedCandles = CachedCandlesForResolution(resolution);
+        var selectedInstruments = saved.Components
+            .Select(component => _instruments.FirstOrDefault(instrument => string.Equals(instrument.Epic, component.Epic, StringComparison.OrdinalIgnoreCase)))
+            .OfType<MarketInstrument>()
+            .ToList();
+        if (selectedInstruments.Count < 3)
+        {
+            StatusText.Text = $"Saved basket {saved.Name} could not be loaded because some leg symbols are missing from the universe.";
+            return;
+        }
+
+        var candles = BuildCachedCandles(selectedInstruments, activeCachedCandles, minCandles, candidateLimit: selectedInstruments.Count);
+        if (candles.Count < 3)
+        {
+            candles = await LoadApiCandlesAsync(saved.Block, selectedInstruments, resolution, minCandles);
+        }
+
+        var result = SyntheticBasketBuilder.Build(saved.Block, selectedInstruments, candles, maxBaskets: 1, periodsPerYear: periodsPerYear);
+        _basket = result.Baskets.FirstOrDefault();
+        if (_basket is null)
+        {
+            await ClearTerminalChartAsync();
+            StatusText.Text = $"Saved basket {saved.Name} has no usable current history.";
+            return;
+        }
+
+        _basket = RenameBasket(_basket, saved.Symbol, saved.Block);
+        await RenderSyntheticChartAsync(_basket);
+        StatusText.Text = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs.";
     }
 
     private static IReadOnlyList<MarketInstrument> SelectStrategyCandidates(
@@ -394,6 +458,26 @@ public partial class CapComTerminalWindow : Window
         RebuildSeedOptions();
     }
 
+    private void RefreshSavedBaskets(string? selectedName = null)
+    {
+        _loadingSavedBaskets = true;
+        try
+        {
+            var saved = _savedBasketStore.LoadAll();
+            SavedBasketsBox.ItemsSource = saved;
+            SavedBasketsBox.DisplayMemberPath = nameof(SavedSyntheticBasket.Name);
+            SavedBasketsBox.SelectedValuePath = nameof(SavedSyntheticBasket.Id);
+            if (!string.IsNullOrWhiteSpace(selectedName))
+            {
+                SavedBasketsBox.SelectedItem = saved.FirstOrDefault(item => string.Equals(item.Name, selectedName, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+        finally
+        {
+            _loadingSavedBaskets = false;
+        }
+    }
+
     private void RebuildSeedOptions()
     {
         if (SearchBox is null) return;
@@ -435,6 +519,31 @@ public partial class CapComTerminalWindow : Window
 
     private static string StrategyLabel(SyntheticStrategyKind kind) =>
         SyntheticStrategyCatalog.All.FirstOrDefault(strategy => strategy.Kind == kind)?.Label ?? kind.ToString();
+
+    private static string SuggestedSavedBasketName(SyntheticBasket basket, SyntheticStrategyKind strategy)
+    {
+        var suffix = strategy == SyntheticStrategyKind.SimilarToSelectedSymbol ? "SIMILAR" : strategy.ToString().ToUpperInvariant();
+        return $"{basket.Symbol}-{suffix}";
+    }
+
+    private static SyntheticBasket RenameBasket(SyntheticBasket source, string symbol, string block)
+    {
+        var renamed = new SyntheticBasket
+        {
+            Symbol = symbol,
+            Block = block,
+            AverageVolatilityPct = source.AverageVolatilityPct,
+            SimilarityScore = source.SimilarityScore,
+            BasketPrice = source.BasketPrice,
+            BidPrice = source.BidPrice,
+            AskPrice = source.AskPrice,
+            LastPrice = source.LastPrice,
+            LastUpdated = source.LastUpdated,
+        };
+        foreach (var component in source.Components) renamed.Components.Add(component);
+        foreach (var candle in source.Candles) renamed.Candles.Add(candle);
+        return renamed;
+    }
 
     private static string RequestResolution(string resolution) =>
         resolution is "2H" or "6H" ? "HOUR" :

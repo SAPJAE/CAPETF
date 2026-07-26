@@ -64,7 +64,9 @@ public static class SyntheticBasketBuilderTests
         TerminalStreamingEpicsUseOnlySelectedSyntheticComponents();
         SyntheticStrategiesRankExpectedSetups();
         SyntheticStrategiesExposeBuildOptions();
+        SyntheticStrategiesReturnClosestFallbackCandidates();
         SyntheticQuoteUsesFormulaMultipliersForBidAskLast();
+        SavedSyntheticBasketStorePersistsFormulaDetails();
     }
 
     private static void NewOperationCancelsAndSupersedesEarlierWork()
@@ -1179,10 +1181,13 @@ public static class SyntheticBasketBuilderTests
             "Content=\"Start Live Prices\"",
             "Content=\"Legs / Formula\"",
             "Content=\"Live\"",
+            "Content=\"Save Basket\"",
             "ComboBox x:Name=\"SearchBox\"",
             "ComboBox x:Name=\"StrategyBox\"",
+            "ComboBox x:Name=\"SavedBasketsBox\"",
             "IsEditable=\"True\"",
             "SelectionChanged=\"BlockBox_SelectionChanged\"",
+            "SelectionChanged=\"SavedBaskets_SelectionChanged\"",
         })
         {
             if (!xaml.Contains(required, StringComparison.Ordinal))
@@ -1217,6 +1222,10 @@ public static class SyntheticBasketBuilderTests
             "SyntheticStrategyRanker.Rank",
             "GoToRealtime_Click",
             "window.goToRealtime",
+            "SaveBasket_Click",
+            "SavedBaskets_SelectionChanged",
+            "SavedSyntheticBasketStore",
+            "LoadSavedBasketAsync",
             "BlockBox_SelectionChanged",
             "SearchBox.ItemsSource",
         })
@@ -1500,6 +1509,40 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void SyntheticStrategiesReturnClosestFallbackCandidates()
+    {
+        var day = DateTimeOffset.Parse("2022-01-01T00:00:00Z");
+        var maInstruments = new[]
+        {
+            CreateSeedStock("NEAR-MA", "Near MA"),
+            CreateSeedStock("FAR-MA", "Far MA"),
+            CreateSeedStock("MID-MA", "Mid MA"),
+        };
+        var lowInstruments = new[]
+        {
+            CreateSeedStock("NEAR-LOW", "Near Low"),
+            CreateSeedStock("FAR-LOW", "Far Low"),
+            CreateSeedStock("MID-LOW", "Mid Low"),
+        };
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>
+        {
+            ["NEAR-MA"] = CreateAboveMaCandles(day, finalOffsetPct: 1m),
+            ["FAR-MA"] = CreateAboveMaCandles(day, finalOffsetPct: 20m),
+            ["MID-MA"] = CreateAboveMaCandles(day, finalOffsetPct: 8m),
+            ["NEAR-LOW"] = CreateNearTwoYearLowCandles(day, distancePct: 2m),
+            ["FAR-LOW"] = CreateNearTwoYearLowCandles(day, distancePct: 25m),
+            ["MID-LOW"] = CreateNearTwoYearLowCandles(day, distancePct: 10m),
+        };
+
+        var belowMa = SyntheticStrategyRanker.Rank(SyntheticStrategyKind.BelowMa200, maInstruments, candles, periodsPerYear: 52, maximum: 4);
+        var belowLow = SyntheticStrategyRanker.Rank(SyntheticStrategyKind.BelowTwoYearLow, lowInstruments, candles, periodsPerYear: 52, maximum: 4);
+
+        if (belowMa.Count < 3) throw new Exception("below-MA strategy should return closest fallback candidates when strict matches are scarce");
+        if (belowMa[0].Instrument.Epic != "NEAR-MA") throw new Exception("below-MA fallback should prefer the closest candidate");
+        if (belowLow.Count < 3) throw new Exception("below-2Y-low strategy should return closest fallback candidates when strict matches are scarce");
+        if (belowLow[0].Instrument.Epic != "NEAR-LOW") throw new Exception("below-2Y-low fallback should prefer the closest candidate");
+    }
+
     private static void SyntheticQuoteUsesFormulaMultipliersForBidAskLast()
     {
         var basket = new SyntheticBasket { Symbol = "SYN-QUOTE" };
@@ -1534,6 +1577,49 @@ public static class SyntheticBasketBuilderTests
         AssertNear(104m, basket.BidPrice ?? 0m, "live quote should recalculate synthetic bid");
         AssertNear(106m, basket.AskPrice ?? 0m, "live quote should recalculate synthetic ask");
         AssertNear(105m, basket.LastPrice ?? 0m, "live quote should recalculate synthetic last");
+    }
+
+    private static void SavedSyntheticBasketStorePersistsFormulaDetails()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"capetf-saved-{Guid.NewGuid():N}");
+        try
+        {
+            var store = new SavedSyntheticBasketStore(folder);
+            var basket = new SyntheticBasket
+            {
+                Symbol = "SYN-SAP-DIP-01",
+                Block = "Europe / EUR / All",
+                AverageVolatilityPct = 21.5m,
+                SimilarityScore = 88.2m,
+                BasketPrice = 100m,
+                LastUpdated = DateTimeOffset.Parse("2026-07-26T10:00:00Z"),
+            };
+            basket.Components.Add(new SyntheticComponent(new MarketInstrument { Epic = "SAPD", Name = "SAP", Currency = "EUR" }, 33.3333m, 20m, 10m)
+            {
+                FormulaMultiplier = 0.2625m,
+                FormulaReferencePrice = 127m,
+                SyntheticBaselinePrice = 127m,
+            });
+            basket.Components.Add(new SyntheticComponent(new MarketInstrument { Epic = "CTS", Name = "CTS Eventim", Currency = "EUR" }, 33.3333m, 19m, 9m)
+            {
+                FormulaMultiplier = 0.5952m,
+                FormulaReferencePrice = 56m,
+                SyntheticBaselinePrice = 56m,
+            });
+
+            store.Save(SavedSyntheticBasket.FromBasket("My SAP basket", SyntheticStrategyKind.DipInsideUptrend, basket));
+            var saved = store.LoadAll().Single();
+
+            if (saved.Name != "My SAP basket") throw new Exception("saved basket should preserve user name");
+            if (saved.Strategy != SyntheticStrategyKind.DipInsideUptrend) throw new Exception("saved basket should preserve strategy");
+            if (saved.Components.Count != 2) throw new Exception("saved basket should preserve component count");
+            AssertNear(0.2625m, saved.Components[0].FormulaMultiplier, "saved basket should preserve formula multiplier");
+            AssertNear(127m, saved.Components[0].ReferencePrice ?? 0m, "saved basket should preserve reference price");
+        }
+        finally
+        {
+            if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+        }
     }
 
     private static void AssertStrategyTop(
@@ -1605,11 +1691,30 @@ public static class SyntheticBasketBuilderTests
             })
             .ToList();
 
+    private static IReadOnlyList<OhlcPoint> CreateAboveMaCandles(DateTimeOffset day, decimal finalOffsetPct) =>
+        Enumerable.Range(0, 260)
+            .Select(index =>
+            {
+                var close = 100m;
+                if (index == 259) close = 100m * (1m + finalOffsetPct / 100m);
+                return FlatCandle(day.AddDays(index), close);
+            })
+            .ToList();
+
     private static IReadOnlyList<OhlcPoint> CreateBelowTwoYearLowCandles(DateTimeOffset day) =>
         Enumerable.Range(0, 260)
             .Select(index =>
             {
                 var close = index == 259 ? 70m : 95m + (index % 30) * 0.2m;
+                return FlatCandle(day.AddDays(index), close);
+            })
+            .ToList();
+
+    private static IReadOnlyList<OhlcPoint> CreateNearTwoYearLowCandles(DateTimeOffset day, decimal distancePct) =>
+        Enumerable.Range(0, 260)
+            .Select(index =>
+            {
+                var close = index == 259 ? 100m * (1m + distancePct / 100m) : 100m + (index % 20) * 0.5m;
                 return FlatCandle(day.AddDays(index), close);
             })
             .ToList();
