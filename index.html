@@ -444,7 +444,7 @@
     }
 
     function searchTokenMatches(itemToken, queryToken) {
-      return itemToken.includes(queryToken) || queryToken.includes(itemToken);
+      return itemToken.includes(queryToken);
     }
 
     function fromBase64Url(value) {
@@ -1441,6 +1441,24 @@
       let index = 0;
       grid.innerHTML = '<div class="sector-groups" id="stock-groups"></div>';
       const container = document.getElementById('stock-groups');
+      const renderExpandedCards = (section, groupItems, groupIndex) => {
+        const target = section.querySelector('.sector-group-grid');
+        let cardIndex = 0;
+        const chunkSize = 40;
+        function appendCards() {
+          if (token !== renderToken) return;
+          const nextCards = groupItems.slice(cardIndex, cardIndex + chunkSize).map(card).join('');
+          target.insertAdjacentHTML('beforeend', nextCards);
+          cardIndex += chunkSize;
+          if (cardIndex < groupItems.length) {
+            note.textContent = `Rendering ${Math.min(cardIndex, groupItems.length)} of ${groupItems.length} stocks in group ${groupIndex + 1} of ${entries.length}...`;
+            requestAnimationFrame(appendCards);
+            return;
+          }
+          note.textContent = finalNote;
+        }
+        appendCards();
+      };
       function appendGroup() {
         if (token !== renderToken) return;
         const entry = entries[index];
@@ -1456,8 +1474,10 @@
         const worst = groupItems.filter(item => (item.displayBand || item.band) === 'Worst').length;
         container.insertAdjacentHTML('beforeend', `<section class="sector-group ${collapsed ? 'collapsed' : ''}">
           <button type="button" class="sector-toggle" data-sector-family="${escapeHtml(key)}">${collapsed ? '+' : '-'} ${escapeHtml(label)} <span>${groupItems.length} stocks · Best ${best} · Mid ${mediocre} · Worst ${worst}</span></button>
-          <div class="sector-group-grid">${collapsed ? '' : groupItems.map(card).join('')}</div>
+          <div class="sector-group-grid"></div>
         </section>`);
+        const section = container.lastElementChild;
+        if (!collapsed) renderExpandedCards(section, groupItems, index);
         index += 1;
         if (index < entries.length) {
           note.textContent = `Rendering ${index} of ${entries.length} stock currency groups...`;

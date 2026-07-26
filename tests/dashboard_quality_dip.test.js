@@ -461,6 +461,20 @@ test('stock search wildcard matches plural sector queries', () => {
   assert.equal(run('matchesSearch(testItem, "semiconductors chip")'), true);
 });
 
+test('stock search does not match long words through short symbol prefixes', () => {
+  context.testItem = baseCardItem({
+    name: 'Continental AG',
+    symbol: 'CON',
+    epic: 'CON',
+    sector: 'Automobiles',
+    industry: 'Auto Parts',
+    region: 'Europe',
+    currency: 'EUR',
+  });
+
+  assert.equal(run('matchesSearch(testItem, "connector")'), false);
+});
+
 test('dashboard exposes Terminal tab and renderer', () => {
   assert.match(dashboardSource, /data-dataset="terminal">Terminal<\/button>/);
   assert.match(dashboardSource, /function renderTerminalWorkspace\(items\)/);
