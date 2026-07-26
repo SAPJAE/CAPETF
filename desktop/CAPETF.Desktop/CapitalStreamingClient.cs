@@ -98,7 +98,7 @@ public sealed class CapitalStreamingClient : IAsyncDisposable
                 var epic = ReadString(payload, "epic") ?? "";
                 var bid = ReadDecimal(payload, "bid");
                 var offer = ReadDecimal(payload, "ofr");
-                var price = bid ?? offer;
+                var price = bid is not null && offer is not null ? (bid.Value + offer.Value) / 2m : bid ?? offer;
                 var time = ReadTimestamp(payload);
                 QuoteReceived?.Invoke(this, new QuoteUpdate(epic, bid, offer, price, time));
                 return;

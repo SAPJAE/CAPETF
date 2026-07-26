@@ -71,6 +71,9 @@ public static class SeededSyntheticSelector
 
     private static SyntheticBasket CopyFrom(this SyntheticBasket target, SyntheticBasket source)
     {
+        target.BidPrice = source.BidPrice;
+        target.AskPrice = source.AskPrice;
+        target.LastPrice = source.LastPrice;
         foreach (var component in source.Components)
         {
             target.Components.Add(component);

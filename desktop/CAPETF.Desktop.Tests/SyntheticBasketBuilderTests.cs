@@ -35,6 +35,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalPayloadIncludesSelectionBasis();
         SyntheticTerminalSelectorChoosesHighestSimilarityBasket();
         SyntheticTerminalSelectorUsesThreeYearComparisonWindow();
+        SyntheticTerminalSelectorReturnsFullSelectedHistory();
         SyntheticTerminalSelectorPenalizesVolatilityMismatch();
         SyntheticTerminalHistoryLoadCandidatesScanPastTheFirstSparseRows();
         SeededSyntheticSelectorBuildsNikeBasket();
@@ -59,6 +60,9 @@ public static class SyntheticBasketBuilderTests
         CapComTerminalLoadsFullEncryptedStockChunks();
         TerminalWorkspaceModeNameIsAvailable();
         TerminalStreamingEpicsUseOnlySelectedSyntheticComponents();
+        SyntheticStrategiesRankExpectedSetups();
+        SyntheticStrategiesExposeBuildOptions();
+        SyntheticQuoteUsesFormulaMultipliersForBidAskLast();
     }
 
     private static void NewOperationCancelsAndSupersedesEarlierWork()
@@ -723,6 +727,25 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void SyntheticTerminalSelectorReturnsFullSelectedHistory()
+    {
+        var day = DateTimeOffset.Parse("2018-01-01T00:00:00Z");
+        var instruments = Enumerable.Range(0, 3)
+            .Select(index => CreateStock($"FULL-{index}", $"Full {index}"))
+            .ToList();
+        var candles = instruments.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => CreateLongReturnCandles(day, [0.01m, -0.004m, 0.006m], 320));
+
+        var selected = SyntheticTerminalSelector.SelectBest("US / USD / Tech", instruments, candles, 52);
+
+        if (selected is null) throw new Exception("terminal selector must return a full-history basket");
+        if (selected.Candles.Count != 320)
+        {
+            throw new Exception($"terminal chart should keep full selected history, got {selected.Candles.Count} candles");
+        }
+    }
+
     private static void SyntheticTerminalSelectorPenalizesVolatilityMismatch()
     {
         var day = DateTimeOffset.Parse("2022-01-01T00:00:00Z");
@@ -1153,7 +1176,9 @@ public static class SyntheticBasketBuilderTests
             "Content=\"Build Basket\"",
             "Content=\"Start Live Prices\"",
             "Content=\"Legs / Formula\"",
+            "Content=\"Live\"",
             "ComboBox x:Name=\"SearchBox\"",
+            "ComboBox x:Name=\"StrategyBox\"",
             "IsEditable=\"True\"",
             "SelectionChanged=\"BlockBox_SelectionChanged\"",
         })
@@ -1185,6 +1210,11 @@ public static class SyntheticBasketBuilderTests
         {
             "RebuildSeedOptions",
             "SeedText",
+            "SelectedStrategy",
+            "SelectStrategyCandidates",
+            "SyntheticStrategyRanker.Rank",
+            "GoToRealtime_Click",
+            "window.goToRealtime",
             "BlockBox_SelectionChanged",
             "SearchBox.ItemsSource",
         })
@@ -1210,6 +1240,8 @@ public static class SyntheticBasketBuilderTests
             "Role",
             "FormulaMultiplier",
             "FormulaReferencePrice",
+            "goToRealtime",
+            "scrollToRealTime",
             "flex-direction: column",
             "overflow-wrap: anywhere",
             "SYNTHETIC_PRICE_FLOOR = -10",
@@ -1385,6 +1417,102 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void SyntheticStrategiesRankExpectedSetups()
+    {
+        var day = DateTimeOffset.Parse("2022-01-01T00:00:00Z");
+        var instruments = new[]
+        {
+            CreateSeedStock("DIP", "Dip Inside Uptrend"),
+            CreateSeedStock("BELOW200", "Below 200 MA"),
+            CreateSeedStock("LOW2Y", "Below Two Year Low"),
+            CreateSeedStock("ATH", "Above All Time High"),
+            CreateSeedStock("BREAK", "Breakout Candidate"),
+        };
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>
+        {
+            ["DIP"] = CreateDipInsideUptrendCandles(day),
+            ["BELOW200"] = CreateBelowMaCandles(day),
+            ["LOW2Y"] = CreateBelowTwoYearLowCandles(day),
+            ["ATH"] = CreateAllTimeHighCandles(day),
+            ["BREAK"] = CreateBreakoutCandles(day),
+        };
+
+        AssertStrategyTop(SyntheticStrategyKind.DipInsideUptrend, "DIP", instruments, candles);
+        AssertStrategyTop(SyntheticStrategyKind.BelowMa200, "BELOW200", instruments, candles);
+        AssertStrategyTop(SyntheticStrategyKind.BelowTwoYearLow, "LOW2Y", instruments, candles);
+        AssertStrategyTop(SyntheticStrategyKind.AboveAllTimeHigh, "ATH", instruments, candles);
+        AssertStrategyTop(SyntheticStrategyKind.BreakoutCandidate, "BREAK", instruments, candles);
+    }
+
+    private static void SyntheticStrategiesExposeBuildOptions()
+    {
+        var kinds = SyntheticStrategyCatalog.All.Select(strategy => strategy.Kind).ToHashSet();
+        foreach (var required in new[]
+        {
+            SyntheticStrategyKind.SimilarToSelectedSymbol,
+            SyntheticStrategyKind.BelowMa200,
+            SyntheticStrategyKind.BelowTwoYearLow,
+            SyntheticStrategyKind.NearTwoYearLow,
+            SyntheticStrategyKind.AboveAllTimeHigh,
+            SyntheticStrategyKind.BreakoutCandidate,
+            SyntheticStrategyKind.DipInsideUptrend,
+            SyntheticStrategyKind.HighMomentum,
+            SyntheticStrategyKind.MeanReversion,
+        })
+        {
+            if (!kinds.Contains(required)) throw new Exception($"strategy catalog missing {required}");
+        }
+    }
+
+    private static void SyntheticQuoteUsesFormulaMultipliersForBidAskLast()
+    {
+        var basket = new SyntheticBasket { Symbol = "SYN-QUOTE" };
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "QA", Bid = 99m, Offer = 101m, Price = 100m },
+            50m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 0.5m,
+        });
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "QB", Bid = 198m, Offer = 202m, Price = 200m },
+            50m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 0.25m,
+        });
+
+        SyntheticQuoteCalculator.Refresh(basket);
+        AssertNear(99m, basket.BidPrice ?? 0m, "synthetic bid should use formula multipliers");
+        AssertNear(101m, basket.AskPrice ?? 0m, "synthetic ask should use formula multipliers");
+        AssertNear(100m, basket.LastPrice ?? 0m, "synthetic last should use formula multipliers");
+
+        var payload = SyntheticTerminalChartPayload.Build(basket);
+        AssertNear(99m, payload.BidPrice ?? 0m, "terminal payload should expose synthetic bid");
+        AssertNear(101m, payload.AskPrice ?? 0m, "terminal payload should expose synthetic ask");
+        AssertNear(100m, payload.LastPrice ?? 0m, "terminal payload should expose synthetic last");
+
+        SyntheticTerminalLiveUpdate.Apply(basket, new QuoteUpdate("QA", 109m, 111m, 110m, DateTimeOffset.UtcNow));
+        AssertNear(104m, basket.BidPrice ?? 0m, "live quote should recalculate synthetic bid");
+        AssertNear(106m, basket.AskPrice ?? 0m, "live quote should recalculate synthetic ask");
+        AssertNear(105m, basket.LastPrice ?? 0m, "live quote should recalculate synthetic last");
+    }
+
+    private static void AssertStrategyTop(
+        SyntheticStrategyKind strategy,
+        string expectedEpic,
+        IReadOnlyList<MarketInstrument> instruments,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles)
+    {
+        var top = SyntheticStrategyRanker.Rank(strategy, instruments, candles, periodsPerYear: 52, maximum: 5).FirstOrDefault();
+        if (top?.Instrument.Epic != expectedEpic)
+        {
+            throw new Exception($"{strategy} should rank {expectedEpic} first, got {top?.Instrument.Epic ?? "none"}");
+        }
+    }
+
     private static SyntheticBasket CreateLiveBasket(string symbol, string epic, decimal close, DateTimeOffset? time = null)
     {
         var candleTime = time ?? DateTimeOffset.UtcNow;
@@ -1432,6 +1560,57 @@ public static class SyntheticBasketBuilderTests
             .ToList();
     }
 
+    private static IReadOnlyList<OhlcPoint> CreateBelowMaCandles(DateTimeOffset day) =>
+        Enumerable.Range(0, 260)
+            .Select(index =>
+            {
+                var close = index < 230 ? 120m + index * 0.03m : 80m - (index - 230) * 0.2m;
+                return FlatCandle(day.AddDays(index), close);
+            })
+            .ToList();
+
+    private static IReadOnlyList<OhlcPoint> CreateBelowTwoYearLowCandles(DateTimeOffset day) =>
+        Enumerable.Range(0, 260)
+            .Select(index =>
+            {
+                var close = index == 259 ? 70m : 95m + (index % 30) * 0.2m;
+                return FlatCandle(day.AddDays(index), close);
+            })
+            .ToList();
+
+    private static IReadOnlyList<OhlcPoint> CreateAllTimeHighCandles(DateTimeOffset day) =>
+        Enumerable.Range(0, 260)
+            .Select(index =>
+            {
+                var close = 70m + index * 0.35m;
+                if (index == 259) close += 8m;
+                return FlatCandle(day.AddDays(index), close);
+            })
+            .ToList();
+
+    private static IReadOnlyList<OhlcPoint> CreateBreakoutCandles(DateTimeOffset day) =>
+        Enumerable.Range(0, 260)
+            .Select(index =>
+            {
+                var close = index < 220 ? 90m + index * 0.08m : 107m + (index - 220) * 0.08m;
+                if (index == 259) close = 109.9m;
+                return FlatCandle(day.AddDays(index), close);
+            })
+            .ToList();
+
+    private static IReadOnlyList<OhlcPoint> CreateDipInsideUptrendCandles(DateTimeOffset day) =>
+        Enumerable.Range(0, 260)
+            .Select(index =>
+            {
+                var close = 80m + index * 0.22m;
+                if (index > 232) close -= (index - 232) * 1.2m;
+                return FlatCandle(day.AddDays(index), close);
+            })
+            .ToList();
+
+    private static OhlcPoint FlatCandle(DateTimeOffset time, decimal close) =>
+        new(time, close, close, close, close);
+
     private static IReadOnlyList<OhlcPoint> CreateReturnCandles(DateTimeOffset day, IReadOnlyList<decimal> returns)
     {
         var price = 100m;
@@ -1440,6 +1619,18 @@ public static class SyntheticBasketBuilderTests
             {
                 if (index > 0) price *= 1m + returns[(index - 1) % returns.Count];
                 return new OhlcPoint(day.AddDays(index), price, price, price, price);
+            })
+            .ToList();
+    }
+
+    private static IReadOnlyList<OhlcPoint> CreateLongReturnCandles(DateTimeOffset day, IReadOnlyList<decimal> returns, int count)
+    {
+        var price = 100m;
+        return Enumerable.Range(0, count)
+            .Select(index =>
+            {
+                if (index > 0) price *= 1m + returns[(index - 1) % returns.Count];
+                return new OhlcPoint(day.AddDays(index * 7), price, price, price, price);
             })
             .ToList();
     }
