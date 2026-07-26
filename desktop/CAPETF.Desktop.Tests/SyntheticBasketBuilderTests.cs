@@ -115,6 +115,7 @@ public static class SyntheticBasketBuilderTests
         ExecutablePreviewUsesCurrentEqualNotionalAndDealRules();
         ExecutablePreviewRoundsUpToCapitalDealMinimumAndIncrement();
         SavedSyntheticBasketStorePersistsFormulaDetails();
+        FinalStaticAcceptanceChecks();
     }
 
     private static void NewOperationCancelsAndSupersedesEarlierWork()
@@ -1459,6 +1460,38 @@ public static class SyntheticBasketBuilderTests
         if (!result.CandleChanged) throw new Exception("terminal live update must update the current synthetic candle");
         if (result.Payload is null) throw new Exception("terminal live update must return a fresh chart payload");
         AssertNear(12m, result.Payload.Candles[^1].Close, "terminal payload must contain the updated synthetic close");
+    }
+
+    private static void FinalStaticAcceptanceChecks()
+    {
+        var terminalXaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml"));
+        foreach (var required in new[] { "x:Name=\"UniverseBox\"", "x:Name=\"OperationProgressBar\"" })
+        {
+            if (!terminalXaml.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal XAML must retain final acceptance control {required}");
+            }
+        }
+
+        var assetsPath = Path.Combine(AppContext.BaseDirectory, "Assets");
+        foreach (var required in new[] { "synthetic-terminal.html", "lightweight-charts.standalone.production.js" })
+        {
+            if (!File.Exists(Path.Combine(assetsPath, required)))
+            {
+                throw new Exception($"desktop output must include local chart asset {required}");
+            }
+        }
+
+        if (!File.Exists(Path.Combine(AppContext.BaseDirectory, "data", "etfs.enc.json")))
+        {
+            throw new Exception("desktop output must include encrypted ETF data");
+        }
+
+        var html = File.ReadAllText(Path.Combine(assetsPath, "synthetic-terminal.html"));
+        if (!html.Contains("<span>CAPETF Terminal V4</span>", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal HTML footer must identify Terminal V4");
+        }
     }
 
     private static void SyntheticTerminalHtmlExposesRequiredFunctions()
