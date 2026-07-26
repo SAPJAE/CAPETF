@@ -11,6 +11,7 @@ public static class SyntheticBasketBuilderTests
 {
     public static void RunAll()
     {
+        TerminalOperationStateRejectsDuplicatesAndTracksProgress();
         NewOperationCancelsAndSupersedesEarlierWork();
         IncompleteOhlcRowsAreExcluded();
         CapitalPricePathSupportsDatedHistoryWindows();
@@ -212,6 +213,25 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception("price-stabilized OHLC should preserve component high and low movement around close");
         }
+    }
+
+    private static void TerminalOperationStateRejectsDuplicatesAndTracksProgress()
+    {
+        var state = new TerminalOperationState();
+
+        AssertTrue(state.TryBegin("Loading history", 3), "the first operation should start");
+        AssertFalse(state.TryBegin("Loading history", 3), "a second operation should be rejected while the first is active");
+        state.Report(2);
+        AssertNear(66.67m, state.Percent, "progress should report the completed proportion", 0.01m);
+        state.Report(8);
+        AssertNear(100m, state.Percent, "progress should clamp at the known total");
+        state.Complete("History loaded");
+        AssertFalse(state.IsBusy, "completion should release the operation guard");
+
+        AssertTrue(state.TryBegin("Loading details"), "a completed operation should allow another operation to start");
+        state.Fail("Capital.com did not return details");
+        AssertFalse(state.IsBusy, "failure should release the operation guard");
+        AssertEqual("Capital.com did not return details", state.ErrorMessage, "failure should retain an actionable error message");
     }
 
     private static void SyntheticHistoryServiceMapsTerminalTimeframesToCapitalResolutions()
@@ -2867,6 +2887,16 @@ public static class SyntheticBasketBuilderTests
     private static void AssertNear(decimal expected, decimal actual, string message, decimal tolerance = 0.0001m)
     {
         if (Math.Abs(expected - actual) > tolerance) throw new Exception($"{message}. Expected {expected}, got {actual}");
+    }
+
+    private static void AssertTrue(bool value, string message)
+    {
+        if (!value) throw new Exception(message);
+    }
+
+    private static void AssertFalse(bool value, string message)
+    {
+        if (value) throw new Exception(message);
     }
 
     private static void AssertEqual<T>(T expected, T actual, string message)

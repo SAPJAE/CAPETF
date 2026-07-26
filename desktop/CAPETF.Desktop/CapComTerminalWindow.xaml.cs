@@ -12,6 +12,7 @@ public partial class CapComTerminalWindow : Window
     private readonly SavedSyntheticBasketStore _savedBasketStore = new();
     private readonly CapitalApiClient _api = new();
     private readonly SyntheticHistoryService _history;
+    private readonly TerminalOperationState _operationState = new();
     private readonly List<MarketInstrument> _instruments = [];
     private readonly ObservableCollection<TerminalComponentRow> _components = [];
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>> _instrumentsByUniverse = [];
@@ -32,6 +33,7 @@ public partial class CapComTerminalWindow : Window
     public CapComTerminalWindow()
     {
         InitializeComponent();
+        OperationProgressPanel.DataContext = _operationState;
         _history = new SyntheticHistoryService(_api);
         StrategyBox.ItemsSource = SyntheticStrategyCatalog.All;
         StrategyBox.DisplayMemberPath = nameof(SyntheticStrategy.Label);
@@ -52,26 +54,21 @@ public partial class CapComTerminalWindow : Window
 
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
-        try
+        var saved = _credentialStore.Load();
+        if (saved is null)
         {
-            var saved = _credentialStore.Load();
-            if (saved is null)
-            {
-                MessageBox.Show("Open the existing CAPETF dashboard once and save Capital.com keys locally.", "cap.com Terminal", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
+            MessageBox.Show("Open the existing CAPETF dashboard once and save Capital.com keys locally.", "cap.com Terminal", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
 
+        await RunOperationAsync("Connecting to Capital.com", async () =>
+        {
             ConnectionText.Text = $"connecting to {SavedCredentialLabel(saved)}...";
             await _api.LoginAsync(saved);
             ConnectionText.Text = $"connected to {SavedCredentialLabel(saved)}";
             StatusText.Text = $"Connected to {SavedCredentialLabel(saved)}. Loading universe...";
             await LoadStocksAsync();
-        }
-        catch (Exception ex)
-        {
-            ConnectionText.Text = $"Connection failed: {ex.Message}";
-            StatusText.Text = ex.Message;
-        }
+        });
     }
 
     private Task LoadStocksAsync() => LoadUniverseAsync(SelectedUniverse());
@@ -130,7 +127,7 @@ public partial class CapComTerminalWindow : Window
 
     private async void BuildSynthetic_Click(object sender, RoutedEventArgs e)
     {
-        await BuildSyntheticAsync();
+        await RunOperationAsync("Building synthetic basket", BuildSyntheticAsync);
     }
 
     private async Task BuildSyntheticAsync()
@@ -242,7 +239,7 @@ public partial class CapComTerminalWindow : Window
     private async void SavedBaskets_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loadingSavedBaskets || SavedBasketsBox.SelectedItem is not SavedSyntheticBasket saved) return;
-        await LoadSavedBasketAsync(saved);
+        await RunOperationAsync($"Loading saved basket {saved.Name}", () => LoadSavedBasketAsync(saved));
     }
 
     private async Task LoadSavedBasketAsync(SavedSyntheticBasket saved)
@@ -330,10 +327,13 @@ public partial class CapComTerminalWindow : Window
         var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>();
         var checkedCount = 0;
 
-        StatusText.Text = $"Scanning cached history for {Math.Min(candidates.Count, candidateLimit)} stocks...";
+        var total = Math.Min(candidates.Count, candidateLimit);
+        _operationState.Report("Scanning cached history", 0, total);
+        StatusText.Text = $"Scanning cached history for {total} stocks...";
         foreach (var item in candidates.Take(candidateLimit))
         {
             checkedCount++;
+            _operationState.Report("Scanning cached history", checkedCount, total);
             if (source.TryGetValue(item.Epic, out var rows) && rows.Count >= minCandles)
             {
                 candles[item.Epic] = rows;
@@ -365,8 +365,10 @@ public partial class CapComTerminalWindow : Window
         string resolution)
     {
         await EnsureConnectedAsync();
+        _operationState.Report($"Loading full {resolution} history", 0, selectedComponents.Count);
         var progress = new Progress<HistoryLoadProgress>(update =>
         {
+            _operationState.Report($"Loading full {resolution} history", update.CompletedComponents, update.TotalComponents);
             StatusText.Text = $"Loading full {resolution} history for selected leg {update.CompletedComponents} of {update.TotalComponents}: {update.Epic}.";
         });
         return await _history.LoadSelectedAsync(selectedComponents, resolution, progress);
@@ -390,12 +392,13 @@ public partial class CapComTerminalWindow : Window
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"{baseStatus} Live prices unavailable: {ex.Message}";
+            throw new InvalidOperationException($"{baseStatus} Live prices unavailable: {ex.Message}", ex);
         }
     }
 
     private async Task StartStreamingCurrentBasketAsync()
     {
+        _operationState.Report("Starting live stream", 0, 2);
         await EnsureConnectedAsync();
         if (_basket is null) return;
 
@@ -409,7 +412,9 @@ public partial class CapComTerminalWindow : Window
 
         var epics = SyntheticTerminalWorkspace.StreamingEpics(_basket);
         await _streaming.SubscribeQuotesAsync(_api.Session!, epics);
+        _operationState.Report("Starting live stream", 1, 2);
         await _streaming.SubscribeOhlcAsync(_api.Session!, epics, SyntheticHistoryService.RequestResolution(SelectedResolution()));
+        _operationState.Report("Starting live stream", 2, 2);
         ConnectionText.Text = $"Streaming {_basket.Symbol}";
         StatusText.Text = $"Streaming {_basket.Symbol}: {epics.Count} component epics.";
     }
@@ -425,6 +430,8 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
+        _operationState.Report("Loading market details", 0, basket.Components.Count);
+        var completed = 0;
         foreach (var component in basket.Components)
         {
             try
@@ -439,6 +446,11 @@ public partial class CapComTerminalWindow : Window
             catch (Exception ex)
             {
                 component.Instrument.Status = $"Market snapshot n/a: {ex.Message}";
+            }
+            finally
+            {
+                completed++;
+                _operationState.Report("Loading market details", completed, basket.Components.Count);
             }
         }
 
@@ -469,11 +481,18 @@ public partial class CapComTerminalWindow : Window
 
     private async void Resolution_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        await SetTerminalIntervalAsync();
-        if (_basket is not null)
+        if (_basket is null)
         {
-            await ReloadSelectedBasketHistoryAsync(_basket);
+            await SetTerminalIntervalAsync();
+            return;
         }
+
+        var basket = _basket;
+        await RunOperationAsync($"Reloading {SelectedResolution()} history", async () =>
+        {
+            await SetTerminalIntervalAsync();
+            await ReloadSelectedBasketHistoryAsync(basket);
+        });
     }
 
     private async Task ReloadSelectedBasketHistoryAsync(SyntheticBasket existingBasket)
@@ -521,6 +540,47 @@ public partial class CapComTerminalWindow : Window
         if (saved is null) throw new InvalidOperationException("No saved Capital.com keys found.");
         await _api.LoginAsync(saved);
         ConnectionText.Text = "connected";
+    }
+
+    private async Task<bool> RunOperationAsync(string operationName, Func<Task> action, int? total = null)
+    {
+        if (!_operationState.TryBegin(operationName, total))
+        {
+            StatusText.Text = $"{_operationState.Label} is already running.";
+            return false;
+        }
+
+        SetOperationControlsEnabled(false);
+        try
+        {
+            await action();
+            _operationState.Complete();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _operationState.Fail(ex.Message);
+            ConnectionText.Text = operationName.StartsWith("Connecting", StringComparison.Ordinal)
+                ? $"Connection failed: {ex.Message}"
+                : ConnectionText.Text;
+            StatusText.Text = ex.Message;
+            return false;
+        }
+        finally
+        {
+            SetOperationControlsEnabled(true);
+        }
+    }
+
+    private void SetOperationControlsEnabled(bool enabled)
+    {
+        ConnectButton.IsEnabled = enabled;
+        BuildBasketButton.IsEnabled = enabled;
+        UniverseBox.IsEnabled = enabled;
+        BlockBox.IsEnabled = enabled;
+        StrategyBox.IsEnabled = enabled;
+        SavedBasketsBox.IsEnabled = enabled;
+        ResolutionBox.IsEnabled = enabled;
     }
 
     private void RebuildBlocks()
@@ -571,9 +631,13 @@ public partial class CapComTerminalWindow : Window
     private async void UniverseBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_api.Session is null) return;
-        await LoadUniverseAsync(SelectedUniverse());
-        _basket = null;
-        await ClearTerminalChartAsync();
+        var universe = SelectedUniverse();
+        await RunOperationAsync($"Loading {UniverseLabel(universe).ToLowerInvariant()} universe", async () =>
+        {
+            await LoadUniverseAsync(universe);
+            _basket = null;
+            await ClearTerminalChartAsync();
+        });
     }
 
     private string SeedText()
@@ -606,11 +670,15 @@ public partial class CapComTerminalWindow : Window
         await EnsureConnectedAsync();
 
         var enriched = new List<MarketInstrument>(instruments.Count);
+        _operationState.Report("Loading ETF market details", 0, instruments.Count);
+        var completed = 0;
         foreach (var instrument in instruments)
         {
             if (!_knownEtfEpics.Contains(instrument.Epic) || !EtfMetadataMerger.NeedsEnrichment(instrument))
             {
                 enriched.Add(instrument);
+                completed++;
+                _operationState.Report("Loading ETF market details", completed, instruments.Count);
                 continue;
             }
 
@@ -622,6 +690,11 @@ public partial class CapComTerminalWindow : Window
             catch
             {
                 enriched.Add(instrument);
+            }
+            finally
+            {
+                completed++;
+                _operationState.Report("Loading ETF market details", completed, instruments.Count);
             }
         }
 
