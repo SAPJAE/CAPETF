@@ -54,7 +54,9 @@ public static class SyntheticBasketBuilderTests
         SeededSyntheticSelectorBuildsSapFromEncryptedChunksForIntradayIntervals();
         SeededSyntheticSelectorDoesNotResolveShortTickersByLooseNameContains();
         SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
+        StreamingQuoteClearsMissingAndZeroSides();
         SyntheticTerminalHtmlExposesRequiredFunctions();
+        SyntheticTerminalHtmlShowsBidAndAskWithoutLastPrice();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
         SyntheticTerminalHtmlRejectsKLineChartRuntime();
         SyntheticTerminalHtmlUsesV3LightweightChartsTerminal();
@@ -1015,6 +1017,33 @@ public static class SyntheticBasketBuilderTests
             if (!html.Contains(functionName, StringComparison.Ordinal))
             {
                 throw new Exception($"terminal chart HTML missing {functionName}");
+            }
+        }
+    }
+
+    private static void SyntheticTerminalHtmlShowsBidAndAskWithoutLastPrice()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
+        var html = File.ReadAllText(path);
+
+        if (!html.Contains("Bid ${money(bid)}  Ask ${money(ask)}", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal chart HTML must render bid and ask metadata");
+        }
+
+        foreach (var forbidden in new[]
+        {
+            "const syntheticLast",
+            "id=\"last-price\"",
+            "Last ${money(syntheticLast)}",
+            "addPriceLine(syntheticLast, 'Last'",
+            "getField(component, 'Last', 'last', null)",
+        })
+        {
+            if (html.Contains(forbidden, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal chart HTML must not render a synthetic last price: {forbidden}");
             }
         }
     }
@@ -2069,6 +2098,42 @@ public static class SyntheticBasketBuilderTests
         if (zeroBid.BidPrice is not null)
         {
             throw new Exception("a zero bid must display as unavailable, not as a tradable synthetic price");
+        }
+    }
+
+    private static void StreamingQuoteClearsMissingAndZeroSides()
+    {
+        var basket = new SyntheticBasket { Symbol = "SYN-STREAM" };
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "STREAM-A", Bid = 99m, Offer = 101m, Price = 100m },
+            50m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 0.5m,
+        });
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "STREAM-B", Bid = 198m, Offer = 202m, Price = 200m },
+            50m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 0.25m,
+        });
+        SyntheticQuoteCalculator.Refresh(basket);
+
+        var result = SyntheticLiveUpdate.ApplyQuote(
+            basket,
+            new QuoteUpdate("STREAM-A", 0m, null, 100m, DateTimeOffset.UtcNow));
+
+        if (!result.Matched) throw new Exception("matching streaming quote must update the synthetic component");
+        if (basket.Components[0].Instrument.Bid is not null || basket.Components[0].Instrument.Offer is not null)
+        {
+            throw new Exception("zero or missing streaming quote sides must clear stale component quote state");
+        }
+        if (basket.BidPrice is not null || basket.AskPrice is not null)
+        {
+            throw new Exception("zero or missing streaming quote sides must make synthetic bid and ask unavailable");
         }
     }
 

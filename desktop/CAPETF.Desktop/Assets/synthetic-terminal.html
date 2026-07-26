@@ -93,7 +93,7 @@
       font-size: 12px;
     }
 
-    #last-price {
+    #quote-prices {
       color: #86efac;
       font-size: 13px;
       font-weight: 700;
@@ -298,7 +298,7 @@
         <span id="symbol">No synthetic</span>
         <span id="block"></span>
         <span id="currency"></span>
-        <span id="last-price"></span>
+        <span id="quote-prices"></span>
         <span id="vol-match">VOL MATCH n/a</span>
       </div>
       <div id="toolbar">
@@ -764,8 +764,7 @@
       document.getElementById('currency').textContent = getField(payload, 'CurrencyLabel', 'currencyLabel', '');
       const bid = getField(payload, 'BidPrice', 'bidPrice', null);
       const ask = getField(payload, 'AskPrice', 'askPrice', null);
-      const syntheticLast = getField(payload, 'LastPrice', 'lastPrice', last && last.close);
-      document.getElementById('last-price').textContent = `Bid ${money(bid)}  Ask ${money(ask)}  Last ${money(syntheticLast)}`;
+      document.getElementById('quote-prices').textContent = `Bid ${money(bid)}  Ask ${money(ask)}`;
       document.getElementById('vol-match').textContent = components.length ? `VOL MATCH ${components.length} legs` : 'VOL MATCH n/a';
       document.getElementById('period').textContent = `${activeInterval} ${chartMode === 'heikin' ? 'Heikin Ashi' : 'Candles'}`;
       document.getElementById('formula').textContent = buildFormula(components);
@@ -797,13 +796,10 @@
 
     function renderPriceLines() {
       clearPriceLines();
-      const last = displayCandles[displayCandles.length - 1];
       const bid = getField(payload, 'BidPrice', 'bidPrice', null);
       const ask = getField(payload, 'AskPrice', 'askPrice', null);
-      const syntheticLast = getField(payload, 'LastPrice', 'lastPrice', last && last.close);
       addPriceLine(bid, 'Bid', '#22c55e');
       addPriceLine(ask, 'Ask', '#ef4444');
-      addPriceLine(syntheticLast, 'Last', '#60a5fa');
     }
 
     function buildFormula(components) {
@@ -828,7 +824,6 @@
       const referencePrice = getField(component, 'FormulaReferencePrice', 'formulaReferencePrice', null);
       const minDealSize = getField(component, 'MinDealSize', 'minDealSize', null);
       const minSizeIncrement = getField(component, 'MinSizeIncrement', 'minSizeIncrement', null);
-      const last = getField(component, 'Last', 'last', null);
       const bid = getField(component, 'Bid', 'bid', null);
       const offer = getField(component, 'Offer', 'offer', null);
       const tick = getField(component, 'LastTickText', 'lastTickText', 'n/a');
@@ -840,7 +835,7 @@
         <div class="muted">${escapeHtml(epic)} ${escapeHtml(currency)}</div>
         <div>Role ${escapeHtml(role)} | allocation ${weight.toFixed(2)}% | multiplier ${formatMultiplier(displayMultiplier)}</div>
         <div class="muted">min deal ${formatNullable(minDealSize)} | size step ${formatNullable(minSizeIncrement)}</div>
-        <div class="muted">reference ${money(referencePrice)} | last ${money(last)}</div>
+        <div class="muted">reference ${money(referencePrice)}</div>
         <div class="muted">Annualized vol ${vol.toFixed(2)}% | 4Y return ${fourYear.toFixed(2)}%</div>
         <div class="muted">bid ${money(bid)} | offer ${money(offer)} | ${escapeHtml(tick)}</div>
       </div>`;

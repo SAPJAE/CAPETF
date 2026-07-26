@@ -22,8 +22,8 @@ public static class SyntheticLiveUpdate
         if (component is null || update.Price is null || update.Price <= 0) return default;
 
         var componentPreviousPrice = component.LastAppliedPrice ?? component.SyntheticBaselinePrice ?? component.Instrument.Price;
-        component.Instrument.Bid = update.Bid > 0 ? update.Bid : component.Instrument.Bid;
-        component.Instrument.Offer = update.Offer > 0 ? update.Offer : component.Instrument.Offer;
+        component.Instrument.Bid = update.Bid is > 0 ? update.Bid : null;
+        component.Instrument.Offer = update.Offer is > 0 ? update.Offer : null;
         component.Instrument.Price = update.Price;
         component.LastAppliedPrice = update.Price;
         component.NotifyInstrumentPriceChanged();
