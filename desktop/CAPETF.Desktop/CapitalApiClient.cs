@@ -168,7 +168,7 @@ public sealed class CapitalApiClient : IDisposable
             "HOUR" => TimeSpan.FromDays(30),
             "HOUR_4" => TimeSpan.FromDays(120),
             "MINUTE" or "MINUTE_5" or "MINUTE_15" or "MINUTE_30" => TimeSpan.FromDays(5),
-            "DAY" => TimeSpan.FromDays(730),
+            "DAY" => TimeSpan.FromDays(365),
             "WEEK" => TimeSpan.FromDays(3650),
             _ => TimeSpan.FromDays(365),
         };

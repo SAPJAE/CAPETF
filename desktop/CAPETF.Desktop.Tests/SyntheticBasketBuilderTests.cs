@@ -14,6 +14,10 @@ public static class SyntheticBasketBuilderTests
         NewOperationCancelsAndSupersedesEarlierWork();
         IncompleteOhlcRowsAreExcluded();
         CapitalPricePathSupportsDatedHistoryWindows();
+        CapitalHistoryPagingWindowsMatchCapitalResolutions();
+        SyntheticHistoryServiceMapsTerminalTimeframesToCapitalResolutions();
+        SyntheticHistoryServiceAggregatesHourlyCandlesLocally();
+        SelectedHistoryRebuildKeepsTheExactSelectedEpics();
         InverseVolatilityWeightsSumToOneHundred();
         InverseVolatilityWeightsRespectCapsAndMinimums();
         SyntheticCandlesUsePriceStabilizedOhlc();
@@ -195,6 +199,85 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception("price-stabilized OHLC should preserve component high and low movement around close");
         }
+    }
+
+    private static void SyntheticHistoryServiceMapsTerminalTimeframesToCapitalResolutions()
+    {
+        AssertEqual("HOUR", SyntheticHistoryService.RequestResolution("2H"), "2H source");
+        AssertEqual("HOUR", SyntheticHistoryService.RequestResolution("6H"), "6H source");
+        AssertEqual("HOUR_4", SyntheticHistoryService.RequestResolution("4H"), "4H source");
+        AssertEqual("DAY", SyntheticHistoryService.RequestResolution("Daily"), "daily source");
+        AssertEqual("WEEK", SyntheticHistoryService.RequestResolution("Weekly"), "weekly source");
+    }
+
+    private static void CapitalHistoryPagingWindowsMatchCapitalResolutions()
+    {
+        var historicalWindow = typeof(CapitalApiClient).GetMethod(
+            "HistoricalWindow",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        if (historicalWindow is null) throw new Exception("Capital API client must define historical paging windows");
+
+        AssertEqual(TimeSpan.FromDays(30), (TimeSpan)historicalWindow.Invoke(null, ["HOUR"])!, "hourly history window");
+        AssertEqual(TimeSpan.FromDays(120), (TimeSpan)historicalWindow.Invoke(null, ["HOUR_4"])!, "four-hour history window");
+        AssertEqual(TimeSpan.FromDays(365), (TimeSpan)historicalWindow.Invoke(null, ["DAY"])!, "daily history window");
+        AssertEqual(TimeSpan.FromDays(3650), (TimeSpan)historicalWindow.Invoke(null, ["WEEK"])!, "weekly history window");
+    }
+
+    private static void SyntheticHistoryServiceAggregatesHourlyCandlesLocally()
+    {
+        var start = DateTimeOffset.Parse("2026-07-20T09:00:00Z");
+        var hourly = Enumerable.Range(0, 6)
+            .Select(index => new OhlcPoint(
+                start.AddHours(index),
+                10m + index,
+                12m + index,
+                9m + index,
+                11m + index))
+            .ToList();
+
+        var twoHour = SyntheticHistoryService.Transform(hourly, "2H");
+        AssertEqual(3, twoHour.Count, "2H local aggregation count");
+        AssertEqual(start.AddHours(1), twoHour[0].Time, "2H candle time");
+        AssertNear(10m, twoHour[0].Open, "2H open must use first hourly candle");
+        AssertNear(13m, twoHour[0].High, "2H high must span both hourly candles");
+        AssertNear(9m, twoHour[0].Low, "2H low must span both hourly candles");
+        AssertNear(12m, twoHour[0].Close, "2H close must use final hourly candle");
+
+        var sixHour = SyntheticHistoryService.Transform(hourly, "6H");
+        AssertEqual(1, sixHour.Count, "6H local aggregation count");
+        AssertEqual(start.AddHours(5), sixHour[0].Time, "6H candle time");
+        AssertNear(10m, sixHour[0].Open, "6H open must use first hourly candle");
+        AssertNear(17m, sixHour[0].High, "6H high must span all hourly candles");
+        AssertNear(9m, sixHour[0].Low, "6H low must span all hourly candles");
+        AssertNear(16m, sixHour[0].Close, "6H close must use final hourly candle");
+    }
+
+    private static void SelectedHistoryRebuildKeepsTheExactSelectedEpics()
+    {
+        var start = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var selected = new[]
+        {
+            CreateStock("SELECTED-A", "Selected A"),
+            CreateStock("SELECTED-B", "Selected B"),
+            CreateStock("SELECTED-C", "Selected C"),
+        };
+        var candles = selected.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => CreateVariableCandles(start, instrument.Epic == "SELECTED-A" ? 100m : instrument.Epic == "SELECTED-B" ? 150m : 225m));
+        var history = new HistoryLoadResult(candles, start, start.AddDays(119), 120);
+
+        var basket = SyntheticHistoryService.BuildSelected(
+            "US / USD / Tech",
+            selected,
+            history,
+            periodsPerYear: 252,
+            minimumCandles: 120);
+
+        if (basket is null) throw new Exception("selected-leg history should rebuild a basket");
+        AssertEqual(
+            string.Join(",", selected.Select(instrument => instrument.Epic).OrderBy(epic => epic)),
+            string.Join(",", basket.Components.Select(component => component.Instrument.Epic).OrderBy(epic => epic)),
+            "refreshed history must rebuild from the exact selected epics");
     }
 
     private static void SyntheticIndexStartsAtOneHundredOnFirstSharedCandle()
@@ -2463,6 +2546,14 @@ public static class SyntheticBasketBuilderTests
     private static void AssertNear(decimal expected, decimal actual, string message, decimal tolerance = 0.0001m)
     {
         if (Math.Abs(expected - actual) > tolerance) throw new Exception($"{message}. Expected {expected}, got {actual}");
+    }
+
+    private static void AssertEqual<T>(T expected, T actual, string message)
+    {
+        if (!EqualityComparer<T>.Default.Equals(expected, actual))
+        {
+            throw new Exception($"{message}. Expected {expected}, got {actual}");
+        }
     }
 
     private static string SourcePath(params string[] parts)

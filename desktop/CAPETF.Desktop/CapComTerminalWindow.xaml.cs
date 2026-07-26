@@ -11,6 +11,7 @@ public partial class CapComTerminalWindow : Window
     private readonly CredentialStore _credentialStore = new();
     private readonly SavedSyntheticBasketStore _savedBasketStore = new();
     private readonly CapitalApiClient _api = new();
+    private readonly SyntheticHistoryService _history;
     private readonly List<MarketInstrument> _instruments = [];
     private readonly ObservableCollection<TerminalComponentRow> _components = [];
     private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> _cachedCandlesByEpic =
@@ -26,6 +27,7 @@ public partial class CapComTerminalWindow : Window
     public CapComTerminalWindow()
     {
         InitializeComponent();
+        _history = new SyntheticHistoryService(_api);
         StrategyBox.ItemsSource = SyntheticStrategyCatalog.All;
         StrategyBox.DisplayMemberPath = nameof(SyntheticStrategy.Label);
         StrategyBox.SelectedValuePath = nameof(SyntheticStrategy.Kind);
@@ -130,21 +132,6 @@ public partial class CapComTerminalWindow : Window
             selectionCandidates = SelectStrategyCandidates(strategy, candidates, candles, periodsPerYear, maxSelection: 36);
         }
 
-        if (SyntheticTerminalBuildPolicy.ShouldUseGenericHistoryFallback(
-            strategy,
-            seedText,
-            candles.Count,
-            selectionCandidates.Count))
-        {
-            candles = await LoadApiCandlesAsync(block, candidates.Take(80).ToList(), resolution, minCandles);
-            selectionCandidates = SelectSyntheticCandidates(candidates, candles, maxSelection: 36);
-            if (strategy != SyntheticStrategyKind.SimilarToSelectedSymbol)
-            {
-                selectionCandidates = SelectStrategyCandidates(strategy, candidates, candles, periodsPerYear, maxSelection: 36);
-            }
-            seededCandles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(candles, StringComparer.OrdinalIgnoreCase);
-        }
-
         if (isSeededSimilarBuild)
         {
             var seed = SeededSyntheticSelector.ResolveSeed(seedText, block, _instruments);
@@ -153,7 +140,8 @@ public partial class CapComTerminalWindow : Window
             {
                 var seedLabel = string.IsNullOrWhiteSpace(seed.Symbol) ? seed.Epic : seed.Symbol;
                 StatusText.Text = $"Loading Capital.com history for {seedLabel}...";
-                var loadedRows = await LoadApiCandlesForInstrumentAsync(seed, resolution, minCandles);
+                var seedHistory = await LoadSelectedHistoryAsync([seed], resolution);
+                var loadedRows = seedHistory.CandlesByEpic.TryGetValue(seed.Epic, out var loaded) ? loaded : [];
                 if (loadedRows.Count >= minCandles)
                 {
                     seededCandles[seed.Epic] = loadedRows;
@@ -189,9 +177,19 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
+        var selectedComponents = _basket.Components.Select(component => component.Instrument).ToList();
+        var selectedHistory = await LoadSelectedHistoryAsync(selectedComponents, resolution);
+        _basket = SyntheticHistoryService.BuildSelected(block, selectedComponents, selectedHistory, periodsPerYear, minCandles);
+        if (_basket is null)
+        {
+            await ClearTerminalChartAsync();
+            StatusText.Text = $"The selected legs have no usable shared {resolution} history.";
+            return;
+        }
+
         await RefreshBasketMarketDetailsAsync(_basket);
         await RenderSyntheticChartAsync(_basket);
-        var buildStatus = $"{_basket.Symbol}: {_basket.Components.Count} legs, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
+        var buildStatus = $"{_basket.Symbol}: {_basket.Components.Count} legs, {HistoryRange(selectedHistory)}, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
         StatusText.Text = buildStatus;
         await TryStartStreamingCurrentBasketAsync(buildStatus);
     }
@@ -226,7 +224,6 @@ public partial class CapComTerminalWindow : Window
         var resolution = SelectedResolution();
         var periodsPerYear = PeriodsPerYear(resolution);
         var minCandles = MinimumCandles(resolution);
-        var activeCachedCandles = CachedCandlesForResolution(resolution);
         var selectedInstruments = saved.Components
             .Select(component => _instruments.FirstOrDefault(instrument => string.Equals(instrument.Epic, component.Epic, StringComparison.OrdinalIgnoreCase)))
             .OfType<MarketInstrument>()
@@ -237,14 +234,8 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
-        var candles = BuildCachedCandles(selectedInstruments, activeCachedCandles, minCandles, candidateLimit: selectedInstruments.Count);
-        if (candles.Count < 3)
-        {
-            candles = await LoadApiCandlesAsync(saved.Block, selectedInstruments, resolution, minCandles);
-        }
-
-        var result = SyntheticBasketBuilder.Build(saved.Block, selectedInstruments, candles, maxBaskets: 1, periodsPerYear: periodsPerYear, minimumCandles: minCandles);
-        _basket = result.Baskets.FirstOrDefault();
+        var selectedHistory = await LoadSelectedHistoryAsync(selectedInstruments, resolution);
+        _basket = SyntheticHistoryService.BuildSelected(saved.Block, selectedInstruments, selectedHistory, periodsPerYear, minCandles);
         if (_basket is null)
         {
             await ClearTerminalChartAsync();
@@ -255,7 +246,7 @@ public partial class CapComTerminalWindow : Window
         _basket = RenameBasket(_basket, saved.Symbol, saved.Block);
         await RefreshBasketMarketDetailsAsync(_basket);
         await RenderSyntheticChartAsync(_basket);
-        var loadStatus = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs.";
+        var loadStatus = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs, {HistoryRange(selectedHistory)}.";
         StatusText.Text = loadStatus;
         await TryStartStreamingCurrentBasketAsync(loadStatus);
     }
@@ -284,25 +275,6 @@ public partial class CapComTerminalWindow : Window
             .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
             .Take(maxSelection)
             .ToList();
-    }
-
-    private async Task<IReadOnlyList<OhlcPoint>> LoadApiCandlesForInstrumentAsync(
-        MarketInstrument instrument,
-        string resolution,
-        int minCandles)
-    {
-        try
-        {
-            await EnsureConnectedAsync();
-            var rows = await _api.GetAllAvailableOhlcPricesAsync(instrument.Epic, RequestResolution(resolution));
-            rows = TransformCandles(rows, resolution);
-            return rows.Count >= minCandles ? rows : [];
-        }
-        catch (Exception ex)
-        {
-            instrument.Status = $"History n/a: {ex.Message}";
-            return [];
-        }
     }
 
     private async Task LoadStocksFromApiAsync()
@@ -362,39 +334,22 @@ public partial class CapComTerminalWindow : Window
         return result.Count > 0 ? result : _cachedCandlesByEpic;
     }
 
-    private async Task<IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> LoadApiCandlesAsync(
-        string block,
-        IReadOnlyList<MarketInstrument> candidates,
-        string resolution,
-        int minCandles)
+    private async Task<HistoryLoadResult> LoadSelectedHistoryAsync(
+        IReadOnlyList<MarketInstrument> selectedComponents,
+        string resolution)
     {
         await EnsureConnectedAsync();
-        var requestResolution = RequestResolution(resolution);
-        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>();
-        var checkedCount = 0;
-
-        StatusText.Text = $"Scanning Capital.com history for {candidates.Count} stocks in {block}...";
-        foreach (var item in candidates)
+        var progress = new Progress<HistoryLoadProgress>(update =>
         {
-            checkedCount++;
-            try
-            {
-                var rows = await _api.GetAllAvailableOhlcPricesAsync(item.Epic, requestResolution);
-                rows = TransformCandles(rows, resolution);
-                if (rows.Count >= minCandles)
-                {
-                    candles[item.Epic] = rows;
-                    StatusText.Text = $"History loaded: {candles.Count} usable of {checkedCount} checked.";
-                }
-            }
-            catch
-            {
-                item.Status = "History n/a";
-            }
-        }
-
-        return candles;
+            StatusText.Text = $"Loading full {resolution} history for selected leg {update.CompletedComponents} of {update.TotalComponents}: {update.Epic}.";
+        });
+        return await _history.LoadSelectedAsync(selectedComponents, resolution, progress);
     }
+
+    private static string HistoryRange(HistoryLoadResult history) =>
+        history.SharedStart is not null && history.SharedEnd is not null
+            ? $"{history.SharedCount} shared candles from {history.SharedStart:yyyy-MM-dd} to {history.SharedEnd:yyyy-MM-dd}"
+            : "no shared candles";
 
     private async Task TryStartStreamingCurrentBasketAsync(string baseStatus)
     {
@@ -428,7 +383,7 @@ public partial class CapComTerminalWindow : Window
 
         var epics = SyntheticTerminalWorkspace.StreamingEpics(_basket);
         await _streaming.SubscribeQuotesAsync(_api.Session!, epics);
-        await _streaming.SubscribeOhlcAsync(_api.Session!, epics, RequestResolution(SelectedResolution()));
+        await _streaming.SubscribeOhlcAsync(_api.Session!, epics, SyntheticHistoryService.RequestResolution(SelectedResolution()));
         ConnectionText.Text = $"Streaming {_basket.Symbol}";
         StatusText.Text = $"Streaming {_basket.Symbol}: {epics.Count} component epics.";
     }
@@ -489,10 +444,35 @@ public partial class CapComTerminalWindow : Window
     private async void Resolution_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         await SetTerminalIntervalAsync();
-        if (_basket is not null && _instruments.Count > 0)
+        if (_basket is not null)
         {
-            await BuildSyntheticAsync();
+            await ReloadSelectedBasketHistoryAsync(_basket);
         }
+    }
+
+    private async Task ReloadSelectedBasketHistoryAsync(SyntheticBasket existingBasket)
+    {
+        var resolution = SelectedResolution();
+        var selectedComponents = existingBasket.Components.Select(component => component.Instrument).ToList();
+        var history = await LoadSelectedHistoryAsync(selectedComponents, resolution);
+        var rebuilt = SyntheticHistoryService.BuildSelected(
+            existingBasket.Block,
+            selectedComponents,
+            history,
+            PeriodsPerYear(resolution),
+            MinimumCandles(resolution));
+        if (rebuilt is null)
+        {
+            StatusText.Text = $"The selected legs have no usable shared {resolution} history.";
+            return;
+        }
+
+        _basket = RenameBasket(rebuilt, existingBasket.Symbol, existingBasket.Block);
+        await RefreshBasketMarketDetailsAsync(_basket);
+        await RenderSyntheticChartAsync(_basket);
+        var reloadStatus = $"{_basket.Symbol}: reloaded {resolution} history for the same {_basket.Components.Count} legs, {HistoryRange(history)}.";
+        StatusText.Text = reloadStatus;
+        await TryStartStreamingCurrentBasketAsync(reloadStatus);
     }
 
     private async void Streaming_QuoteReceived(object? sender, QuoteUpdate update)
@@ -607,12 +587,6 @@ public partial class CapComTerminalWindow : Window
         return renamed;
     }
 
-    private static string RequestResolution(string resolution) =>
-        resolution is "2H" or "6H" ? "HOUR" :
-        resolution == "4H" ? "HOUR_4" :
-        resolution == "Daily" ? "DAY" :
-        "WEEK";
-
     private static int MinimumCandles(string resolution) =>
         resolution switch
         {
@@ -631,32 +605,6 @@ public partial class CapComTerminalWindow : Window
             "Daily" => 252,
             _ => 52,
         };
-
-    private static IReadOnlyList<OhlcPoint> TransformCandles(IReadOnlyList<OhlcPoint> source, string resolution) =>
-        resolution switch
-        {
-            "2H" => AggregateCandles(source, 2),
-            "6H" => AggregateCandles(source, 6),
-            _ => source,
-        };
-
-    private static IReadOnlyList<OhlcPoint> AggregateCandles(IReadOnlyList<OhlcPoint> source, int bucketSize)
-    {
-        var ordered = source.OrderBy(point => point.Time).ToList();
-        var result = new List<OhlcPoint>();
-        for (var index = 0; index + bucketSize <= ordered.Count; index += bucketSize)
-        {
-            var bucket = ordered.Skip(index).Take(bucketSize).ToList();
-            result.Add(new OhlcPoint(
-                bucket[^1].Time,
-                bucket[0].Open,
-                bucket.Max(point => point.High),
-                bucket.Min(point => point.Low),
-                bucket[^1].Close));
-        }
-
-        return result;
-    }
 
     private async Task InitializeChartHostAsync()
     {
