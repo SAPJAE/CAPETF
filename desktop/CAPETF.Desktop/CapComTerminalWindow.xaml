@@ -68,6 +68,8 @@
                     <Button Content="Load Universe" Click="LoadStocks_Click"/>
                     <ComboBox x:Name="StrategyBox" MinWidth="170" ToolTip="Choose how the synthetic basket should be selected."/>
                     <Button Content="Build Basket" Click="BuildSynthetic_Click" Background="#1D4ED8" BorderBrush="#60A5FA"/>
+                    <Button Content="Save Basket" Click="SaveBasket_Click"/>
+                    <ComboBox x:Name="SavedBasketsBox" MinWidth="190" SelectionChanged="SavedBaskets_SelectionChanged" ToolTip="Reload a saved synthetic basket."/>
                     <Button Content="Start Live Prices" Click="StreamSynthetic_Click" Background="#216E8A" BorderBrush="#38BDF8"/>
                     <ComboBox x:Name="BlockBox" MinWidth="190" SelectionChanged="BlockBox_SelectionChanged"/>
                     <ComboBox x:Name="ResolutionBox" SelectionChanged="Resolution_SelectionChanged">
