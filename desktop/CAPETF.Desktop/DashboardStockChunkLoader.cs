@@ -14,6 +14,8 @@ public sealed record StockChunkLoadResult(
     DateOnly? SourceAsOf,
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>? OhlcByEpicAndResolution = null);
 
+public sealed record StockDataFileCandidate(string Path, long Length);
+
 public static class DashboardStockChunkLoader
 {
     private const string DefaultDashboardPassword = "jae";
@@ -111,15 +113,28 @@ public static class DashboardStockChunkLoader
                 .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                 .ToList();
             var legacyFile = Path.Combine(directory, "stocks.enc.json");
-            if (File.Exists(legacyFile))
-            {
-                files.Add(legacyFile);
-            }
+            var chosen = SelectBestStockDataFiles(
+                files.Select(path => new StockDataFileCandidate(path, new FileInfo(path).Length)),
+                File.Exists(legacyFile) ? new StockDataFileCandidate(legacyFile, new FileInfo(legacyFile).Length) : null);
 
-            if (files.Count > 0) return files;
+            if (chosen.Count > 0) return chosen.Select(file => file.Path).ToList();
         }
 
         return [];
+    }
+
+    public static IReadOnlyList<StockDataFileCandidate> SelectBestStockDataFiles(
+        IEnumerable<StockDataFileCandidate> chunkFiles,
+        StockDataFileCandidate? legacyFile)
+    {
+        var chunks = chunkFiles
+            .OrderBy(file => file.Path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (legacyFile is null) return chunks;
+        if (chunks.Count == 0) return [legacyFile];
+
+        var chunkBytes = chunks.Sum(file => file.Length);
+        return chunkBytes >= legacyFile.Length ? chunks : [legacyFile];
     }
 
     private static IEnumerable<string> CandidateDataDirectories()
