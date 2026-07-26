@@ -16,6 +16,7 @@ public static class SyntheticBasketBuilderTests
         InverseVolatilityWeightsSumToOneHundred();
         InverseVolatilityWeightsRespectCapsAndMinimums();
         SyntheticCandlesUsePriceStabilizedOhlc();
+        SyntheticIndexStartsAtOneHundredOnFirstSharedCandle();
         SyntheticFormulaUsesEqualNotionalWeights();
         SyntheticFormulaUsesPriceStabilizedMultipliers();
         SyntheticCandlesHandleDuplicateCachedDates();
@@ -180,11 +181,56 @@ public static class SyntheticBasketBuilderTests
             ["C"] = CreateCandles(day, 30m, 32m, 29m, 31m)
         };
         var result = SyntheticBasketBuilder.Build("US / USD / Tech", [a, b, c], candles, maxBaskets: 1);
+        var first = result.Baskets[0].Candles[0];
         var last = result.Baskets[0].Candles[^1];
-        AssertNear(100m, last.Close, "price-stabilized synthetic close should normalize the latest basket value to 100");
+        AssertNear(100m, first.Close, "price-stabilized synthetic close should normalize the first shared basket value to 100");
+        if (last.Close == 100m) throw new Exception("price-stabilized synthetic close must not normalize the latest basket value to 100");
         if (last.High <= last.Close || last.Low >= last.Close)
         {
             throw new Exception("price-stabilized OHLC should preserve component high and low movement around close");
+        }
+    }
+
+    private static void SyntheticIndexStartsAtOneHundredOnFirstSharedCandle()
+    {
+        var day = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var result = SyntheticBasketBuilder.Build(
+            "US / USD / Tech",
+            [CreateStock("A", "A"), CreateStock("B", "B"), CreateStock("C", "C")],
+            new Dictionary<string, IReadOnlyList<OhlcPoint>>
+            {
+                ["A"] =
+                [
+                    FlatCandle(day.AddDays(1), 100m),
+                    FlatCandle(day.AddDays(2), 110m),
+                    FlatCandle(day.AddDays(3), 120m),
+                ],
+                ["B"] =
+                [
+                    FlatCandle(day, 40m),
+                    FlatCandle(day.AddDays(2), 50m),
+                    FlatCandle(day.AddDays(3), 60m),
+                ],
+                ["C"] =
+                [
+                    FlatCandle(day.AddDays(-1), 20m),
+                    FlatCandle(day.AddDays(2), 25m),
+                    FlatCandle(day.AddDays(3), 20m),
+                ],
+            },
+            maxBaskets: 1,
+            periodsPerYear: 252,
+            minimumCandles: 2);
+
+        var basket = result.Baskets.Single();
+        AssertNear(100m, basket.Candles[0].Close, "first shared candle must be the index base");
+        if (basket.Candles[^1].Close == 100m)
+        {
+            throw new Exception("latest candle must not be rebased to 100");
+        }
+        if (basket.Candles.Count != 2)
+        {
+            throw new Exception("only shared timestamps may be rendered");
         }
     }
 
@@ -226,13 +272,15 @@ public static class SyntheticBasketBuilderTests
         var result = SyntheticBasketBuilder.Build("US / USD / Tech", [a, b, c], candles, maxBaskets: 1);
         var basket = result.Baskets.Single();
 
-        AssertNear(100m, basket.Candles[^1].Close, "stabilized formula should set the current synthetic value to 100");
+        AssertNear(100m, basket.Candles[0].Close, "stabilized formula should set the first shared synthetic value to 100");
         foreach (var component in basket.Components)
         {
-            var referenceClose = candles[component.Instrument.Epic][^1].Close;
+            var referenceClose = candles[component.Instrument.Epic][0].Close;
             var expectedMultiplier = component.Weight / referenceClose;
             AssertNear(expectedMultiplier, component.FormulaMultiplier, "formula multiplier should equal target notional divided by component reference price", 0.000001m);
             AssertNear(component.Weight, component.FormulaMultiplier * referenceClose, "each leg should contribute its allocation at the reference close", 0.0001m);
+            AssertNear(referenceClose, component.FormulaReferencePrice ?? 0m, "formula reference price should use the shared baseline price");
+            AssertNear(referenceClose, component.SyntheticBaselinePrice ?? 0m, "synthetic baseline price should use the shared baseline price");
         }
     }
 
@@ -555,6 +603,7 @@ public static class SyntheticBasketBuilderTests
         var basket = result.Baskets.Single();
         var component = basket.Components[0];
         var historicalClose = candles[component.Instrument.Epic][^1].Close;
+        var sharedBaselineClose = candles[component.Instrument.Epic][0].Close;
         var priorBasketClose = basket.Candles[^1].Close;
         var quote = new QuoteUpdate(component.Instrument.Epic, null, null, historicalClose + 5m, day.AddDays(121));
 
@@ -563,9 +612,9 @@ public static class SyntheticBasketBuilderTests
             component.Instrument.Price ?? 0m,
             "basket build must preserve an existing live/display component price");
         AssertNear(
-            historicalClose,
+            sharedBaselineClose,
             component.SyntheticBaselinePrice ?? 0m,
-            "basket build should keep the historical close in a separate synthetic baseline");
+            "basket build should keep the shared historical baseline in a separate synthetic baseline");
 
         if (!SyntheticLiveUpdate.ApplyQuote(basket, quote).CandleChanged)
         {
@@ -573,9 +622,9 @@ public static class SyntheticBasketBuilderTests
         }
 
         AssertNear(
-            priorBasketClose + 5m * component.FormulaMultiplier,
+            priorBasketClose + (historicalClose + 5m - sharedBaselineClose) * component.FormulaMultiplier,
             basket.Candles[^1].Close,
-            "first live quote should advance from the historical component close");
+            "first live quote should advance from the shared component baseline");
     }
 
     private static void StockTypeMatchingIsCaseInsensitive()

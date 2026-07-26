@@ -50,7 +50,14 @@ public static class SyntheticBasketBuilder
                 var clusterSize = PreferredClusterSize(remaining.Count);
                 var cluster = SelectMostSimilarCluster(remaining, clusterSize);
                 var weights = CalculateEqualWeights(cluster.Count);
-                var multipliers = CalculatePriceStabilizedMultipliers(cluster, weights);
+                var sharedBaselinePrices = FindSharedBaselinePrices(cluster);
+                if (sharedBaselinePrices.Count != cluster.Count || sharedBaselinePrices.Any(price => price <= 0))
+                {
+                    foreach (var candidate in cluster) remaining.Remove(candidate);
+                    continue;
+                }
+
+                var multipliers = CalculateDisplayMultipliers(cluster, weights, sharedBaselinePrices);
                 var syntheticCandles = NormalizeSyntheticCandleOpens(BuildCandles(cluster, multipliers)).ToList();
                 var basket = new SyntheticBasket
                 {
@@ -71,8 +78,8 @@ public static class SyntheticBasketBuilder
                         cluster[index].FourYearReturnPct)
                     {
                         FormulaMultiplier = multipliers[index],
-                        FormulaReferencePrice = cluster[index].Candles[^1].Close,
-                        SyntheticBaselinePrice = cluster[index].Candles[^1].Close,
+                        FormulaReferencePrice = sharedBaselinePrices[index],
+                        SyntheticBaselinePrice = sharedBaselinePrices[index],
                     });
                 }
 
@@ -108,16 +115,44 @@ public static class SyntheticBasketBuilder
         return weights;
     }
 
-    private static IReadOnlyList<decimal> CalculatePriceStabilizedMultipliers(
+    private static IReadOnlyList<decimal> CalculateDisplayMultipliers(
         IReadOnlyList<Candidate> cluster,
-        IReadOnlyList<decimal> weights)
+        IReadOnlyList<decimal> weights,
+        IReadOnlyList<decimal> sharedBaselinePrices) =>
+        sharedBaselinePrices.Select((price, index) =>
+            price <= 0 ? 0m : decimal.Round(weights[index] / price, 8)).ToList();
+
+    private static IReadOnlyList<decimal> FindSharedBaselinePrices(IReadOnlyList<Candidate> cluster)
     {
-        return cluster.Select((item, index) =>
+        if (cluster.Any(item => HasSubDailyCadence(item.Candles)))
         {
-            var referencePrice = item.Candles[^1].Close;
-            if (referencePrice <= 0) return 0m;
-            return decimal.Round(weights[index] / referencePrice, 8);
-        }).ToList();
+            return FindSharedBaselinePrices(cluster, candle => candle.Time);
+        }
+
+        if (cluster.Any(item => HasWeeklyCadence(item.Candles)))
+        {
+            return FindSharedBaselinePrices(cluster, candle => WeekStart(candle.Time.Date));
+        }
+
+        return FindSharedBaselinePrices(cluster, candle => candle.Time.Date);
+    }
+
+    private static IReadOnlyList<decimal> FindSharedBaselinePrices<TKey>(
+        IReadOnlyList<Candidate> cluster,
+        Func<OhlcPoint, TKey> keySelector)
+        where TKey : notnull
+    {
+        var candlesByKey = cluster
+            .Select(item => item.Candles
+                .GroupBy(keySelector)
+                .ToDictionary(group => group.Key, group => group.Last()))
+            .ToList();
+        var sharedKeys = IntersectKeys(candlesByKey.Select(rows => rows.Keys))
+            .OrderBy(key => key)
+            .ToList();
+        if (sharedKeys.Count == 0) return [];
+
+        return candlesByKey.Select(rows => rows[sharedKeys[0]].Close).ToList();
     }
 
     private static IReadOnlyList<decimal> ApplyWeightBounds(IReadOnlyList<decimal> source, decimal minimum, decimal maximum)
