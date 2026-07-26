@@ -37,7 +37,7 @@ public partial class CapComTerminalWindow : Window
     private void LoadSavedCredentials()
     {
         var saved = _credentialStore.Load();
-        ConnectionText.Text = saved is null ? "no saved Capital.com keys" : "saved keys loaded";
+        ConnectionText.Text = saved is null ? "no saved Capital.com keys" : $"saved keys loaded for {SavedCredentialLabel(saved)}";
     }
 
     private async void Connect_Click(object sender, RoutedEventArgs e)
@@ -51,14 +51,14 @@ public partial class CapComTerminalWindow : Window
                 return;
             }
 
-            ConnectionText.Text = "connecting...";
+            ConnectionText.Text = $"connecting to {SavedCredentialLabel(saved)}...";
             await _api.LoginAsync(saved);
-            ConnectionText.Text = "connected";
-            StatusText.Text = "Connected to Capital.com.";
+            ConnectionText.Text = $"connected to {SavedCredentialLabel(saved)}";
+            StatusText.Text = $"Connected to {SavedCredentialLabel(saved)}.";
         }
         catch (Exception ex)
         {
-            ConnectionText.Text = "connection failed";
+            ConnectionText.Text = $"Connection failed: {ex.Message}";
             StatusText.Text = ex.Message;
         }
     }
@@ -544,6 +544,9 @@ public partial class CapComTerminalWindow : Window
     }
 
     private static string FormatQuote(decimal? value) => value?.ToString("0.#####") ?? "n/a";
+
+    private static string SavedCredentialLabel(ApiCredentials credentials) =>
+        credentials.UseDemo ? "Capital.com demo" : "Capital.com live";
 
     private async Task ClearTerminalChartAsync()
     {
