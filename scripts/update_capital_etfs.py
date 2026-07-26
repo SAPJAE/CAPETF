@@ -415,7 +415,7 @@ def fetch_limited_prices(client, epic):
     return [deduped[key] for key in sorted(deduped)]
 
 
-def fetch_hourly_prices(client, epic, max_points=72):
+def fetch_hourly_prices(client, epic, max_points=1000):
     path = prices_path(epic, "HOUR", max_points=max_points)
     payload = client.get(path)
     prices = payload.get("prices") or []

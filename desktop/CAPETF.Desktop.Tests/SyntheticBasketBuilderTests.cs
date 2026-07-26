@@ -51,10 +51,13 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
         SyntheticTerminalHtmlRejectsKLineChartRuntime();
         SyntheticTerminalHtmlUsesV3LightweightChartsTerminal();
+        SyntheticTerminalHtmlUsesV5SeriesApiAndChartSideTools();
         SyntheticTerminalHtmlExposesResizeFunction();
         SyntheticTerminalHtmlExposesDecisionChartControls();
         SyntheticTerminalHtmlExposesV2TerminalControls();
         CapComTerminalUsesClearActionLabelsAndSymbolDropdown();
+        CapComTerminalIntradayMinimumsFitCachedHourlyHistory();
+        StockRefreshFetchesDeepHourlyHistory();
         DesktopDefaultSearchDoesNotFilterStocksByEtf();
         DesktopResizesTerminalChartWhenWorkspaceOpens();
         DesktopTerminalWorkspaceExposesChartFirstControls();
@@ -1088,6 +1091,40 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void SyntheticTerminalHtmlUsesV5SeriesApiAndChartSideTools()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
+        var html = File.ReadAllText(path);
+        foreach (var required in new[]
+        {
+            "LightweightCharts.version()",
+            "chart.addSeries(LightweightCharts.CandlestickSeries",
+            "chart.addSeries(LightweightCharts.LineSeries",
+            "attachPrimitive",
+            "class HorizontalLinePrimitive",
+            "class TrendLinePrimitive",
+            "id=\"chart-tool-dock\"",
+            "data-tool=\"crosshair\"",
+            "data-tool=\"trend\"",
+            "data-tool=\"hline\"",
+            "window.setTerminalTool",
+            "window.clearTerminalDrawings",
+        })
+        {
+            if (!html.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal chart HTML must use Lightweight Charts v5-style chart tools: missing {required}");
+            }
+        }
+
+        if (html.Contains("addCandlestickSeries", StringComparison.Ordinal) ||
+            html.Contains("addLineSeries", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal chart should use the v5 addSeries API, not legacy addCandlestickSeries/addLineSeries helpers");
+        }
+    }
+
     private static void SyntheticTerminalHtmlExposesResizeFunction()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
@@ -1369,6 +1406,40 @@ public static class SyntheticBasketBuilderTests
         if (html.Contains(">Ticket<", StringComparison.Ordinal))
         {
             throw new Exception("terminal HTML should use Legs / Formula instead of Ticket");
+        }
+    }
+
+    private static void CapComTerminalIntradayMinimumsFitCachedHourlyHistory()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "\"2H\" => 30",
+            "\"4H\" => 16",
+            "\"6H\" => 10",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal intraday minimums should allow cached hourly data to build: missing {required}");
+            }
+        }
+    }
+
+    private static void StockRefreshFetchesDeepHourlyHistory()
+    {
+        var source = File.ReadAllText(SourcePath("scripts", "update_capital_etfs.py"));
+        foreach (var required in new[]
+        {
+            "def fetch_hourly_prices(client, epic, max_points=1000):",
+            "prices_path(epic, \"HOUR\", max_points=max_points",
+            "\"hourlyPoints\": intraday_points(hourly_rows or [])",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"stock refresh should keep enough hourly history for 2H/4H/6H charts: missing {required}");
+            }
         }
     }
 

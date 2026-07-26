@@ -416,7 +416,13 @@ public partial class MainWindow : Window
         terminalResolution is "HOUR_2" or "HOUR_6" ? "HOUR" : terminalResolution;
 
     private static int TerminalMinimumCandles(string terminalResolution) =>
-        terminalResolution == "WEEK" ? 120 : 120;
+        terminalResolution switch
+        {
+            "HOUR_2" => 30,
+            "HOUR_4" => 16,
+            "HOUR_6" => 10,
+            _ => 120,
+        };
 
     private static int TerminalPeriodsPerYear(string terminalResolution) =>
         terminalResolution switch
