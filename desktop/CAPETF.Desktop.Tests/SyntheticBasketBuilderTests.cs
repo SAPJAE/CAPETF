@@ -57,6 +57,7 @@ public static class SyntheticBasketBuilderTests
         DesktopTerminalWorkspaceExposesChartFirstControls();
         DesktopTerminalWorkspaceExposesV2ProfessionalControls();
         CapComTerminalStartsWithoutDevExpressStockSharpRuntimeCrash();
+        CapComTerminalShowsActionableConnectionFailures();
         StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy();
         CapComTerminalLoadsFullEncryptedStockChunks();
         TerminalWorkspaceModeNameIsAvailable();
@@ -1334,6 +1335,24 @@ public static class SyntheticBasketBuilderTests
             if (!source.Contains(required, StringComparison.Ordinal))
             {
                 throw new Exception($"cap.com Terminal source missing {required}");
+            }
+        }
+    }
+
+    private static void CapComTerminalShowsActionableConnectionFailures()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "SavedCredentialLabel",
+            "Connection failed:",
+            "Capital.com demo",
+            "Capital.com live",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal connection diagnostics missing {required}");
             }
         }
     }
