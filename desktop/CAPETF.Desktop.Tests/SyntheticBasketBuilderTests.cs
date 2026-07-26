@@ -1048,6 +1048,7 @@ public static class SyntheticBasketBuilderTests
             var candles = cached.OhlcByEpicAndResolution
                 .Where(pair => pair.Value.TryGetValue(interval, out var rows) && rows.Count >= minimumCandles)
                 .ToDictionary(pair => pair.Key, pair => pair.Value[interval], StringComparer.OrdinalIgnoreCase);
+            if (candles.Count == 0 || !candles.ContainsKey("SAPD")) continue;
 
             var basket = SeededSyntheticSelector.SelectSeededBasket(
                 "sap",
