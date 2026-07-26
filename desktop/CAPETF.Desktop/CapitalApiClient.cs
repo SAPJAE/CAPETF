@@ -7,20 +7,34 @@ namespace CAPETF.Desktop;
 
 public sealed class CapitalApiClient : IDisposable
 {
-    private readonly HttpClient _http = new();
+    private readonly HttpClient _http;
+    private readonly bool _disposeHttp;
+    private Uri? _baseUri;
     private ApiCredentials? _credentials;
     private CapitalSession? _session;
 
     public CapitalSession? Session => _session;
 
+    public CapitalApiClient()
+    {
+        _http = new HttpClient();
+        _disposeHttp = true;
+    }
+
+    internal CapitalApiClient(HttpMessageHandler handler)
+    {
+        _http = new HttpClient(handler);
+        _disposeHttp = true;
+    }
+
     public async Task<CapitalSession> LoginAsync(ApiCredentials credentials, CancellationToken cancellationToken = default)
     {
         _credentials = credentials;
-        _http.BaseAddress = new Uri(credentials.UseDemo
+        _baseUri = new Uri(credentials.UseDemo
             ? "https://demo-api-capital.backend-capital.com/"
             : "https://api-capital.backend-capital.com/");
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "api/v1/session");
+        using var request = new HttpRequestMessage(HttpMethod.Post, BuildRequestUri("api/v1/session"));
         request.Headers.Add("X-CAP-API-KEY", credentials.ApiKey);
         request.Content = new StringContent(
             JsonSerializer.Serialize(new { identifier = credentials.Identifier, password = credentials.Password, encryptedPassword = false }),
@@ -186,7 +200,7 @@ public sealed class CapitalApiClient : IDisposable
     private async Task<JsonDocument> GetJsonAsync(string uri, CancellationToken cancellationToken)
     {
         EnsureSession();
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildRequestUri(uri));
         request.Headers.Add("CST", _session!.Cst);
         request.Headers.Add("X-SECURITY-TOKEN", _session.SecurityToken);
         request.Headers.Add("X-CAP-API-KEY", _credentials!.ApiKey);
@@ -204,6 +218,12 @@ public sealed class CapitalApiClient : IDisposable
     private void EnsureSession()
     {
         if (_session is null || _credentials is null) throw new InvalidOperationException("Connect to Capital.com first.");
+    }
+
+    private Uri BuildRequestUri(string relativeUri)
+    {
+        if (_baseUri is null) throw new InvalidOperationException("Connect to Capital.com first.");
+        return new Uri(_baseUri, relativeUri);
     }
 
     private static IEnumerable<MarketInstrument> ExtractMarkets(JsonElement root)
@@ -246,5 +266,8 @@ public sealed class CapitalApiClient : IDisposable
         return null;
     }
 
-    public void Dispose() => _http.Dispose();
+    public void Dispose()
+    {
+        if (_disposeHttp) _http.Dispose();
+    }
 }

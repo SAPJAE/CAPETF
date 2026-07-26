@@ -1,5 +1,8 @@
 using CAPETF.Desktop;
 using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Text;
 
 namespace CAPETF.Desktop.Tests;
 
@@ -67,6 +70,7 @@ public static class SyntheticBasketBuilderTests
         DesktopTerminalWorkspaceExposesV2ProfessionalControls();
         CapComTerminalStartsWithoutDevExpressStockSharpRuntimeCrash();
         CapComTerminalShowsActionableConnectionFailures();
+        CapitalApiClientAllowsReconnectAfterRequests();
         StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy();
         CapComTerminalLoadsFullEncryptedStockChunks();
         TerminalWorkspaceModeNameIsAvailable();
@@ -1636,6 +1640,28 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void CapitalApiClientAllowsReconnectAfterRequests()
+    {
+        var handler = new StubCapitalHandler();
+        using var client = new CapitalApiClient(handler);
+        var credentials = new ApiCredentials
+        {
+            UseDemo = true,
+            Identifier = "user@example.com",
+            Password = "password",
+            ApiKey = "key",
+        };
+
+        client.LoginAsync(credentials).GetAwaiter().GetResult();
+        client.SearchMarketsAsync("PLTR").GetAwaiter().GetResult();
+        client.LoginAsync(credentials).GetAwaiter().GetResult();
+
+        if (handler.RequestUris.Count(uri => uri.EndsWith("/api/v1/session", StringComparison.OrdinalIgnoreCase)) != 2)
+        {
+            throw new Exception("Capital API client should allow reconnecting on the same instance after requests");
+        }
+    }
+
     private static void StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy()
     {
         var chosen = DashboardStockChunkLoader.SelectBestStockDataFiles(
@@ -2094,5 +2120,27 @@ public static class SyntheticBasketBuilderTests
 
         if (directory is null) throw new Exception("repository root could not be located");
         return Path.Combine([directory.FullName, .. parts]);
+    }
+
+    private sealed class StubCapitalHandler : HttpMessageHandler
+    {
+        public List<string> RequestUris { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestUris.Add(request.RequestUri?.ToString() ?? "");
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    request.RequestUri?.AbsolutePath.EndsWith("/api/v1/session", StringComparison.OrdinalIgnoreCase) == true
+                        ? "{}"
+                        : "{\"markets\":[]}",
+                    Encoding.UTF8,
+                    "application/json"),
+            };
+            response.Headers.Add("CST", "cst-token");
+            response.Headers.Add("X-SECURITY-TOKEN", "security-token");
+            return Task.FromResult(response);
+        }
     }
 }
