@@ -55,6 +55,7 @@ public static class SyntheticBasketBuilderTests
         SeededSyntheticSelectorDoesNotResolveShortTickersByLooseNameContains();
         SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
         StreamingQuoteClearsMissingAndZeroSides();
+        StreamingQuoteClearsUnavailableSidesWithoutUsablePrice();
         SyntheticTerminalHtmlExposesRequiredFunctions();
         SyntheticTerminalHtmlShowsBidAndAskWithoutLastPrice();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
@@ -2135,6 +2136,35 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception("zero or missing streaming quote sides must make synthetic bid and ask unavailable");
         }
+    }
+
+    private static void StreamingQuoteClearsUnavailableSidesWithoutUsablePrice()
+    {
+        var time = DateTimeOffset.Parse("2026-07-26T12:00:00Z");
+        var basket = new SyntheticBasket { Symbol = "SYN-INVALID-STREAM", BasketPrice = 100m, LastUpdated = time };
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "INVALID-STREAM", Bid = 99m, Offer = 101m, Price = 100m },
+            100m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 1m,
+            SyntheticBaselinePrice = 100m,
+        });
+        basket.Candles.Add(new OhlcPoint(time, 100m, 100m, 100m, 100m));
+        SyntheticQuoteCalculator.Refresh(basket);
+
+        var result = SyntheticLiveUpdate.ApplyQuote(
+            basket,
+            new QuoteUpdate("INVALID-STREAM", 0m, 0m, 0m, time.AddSeconds(1)));
+
+        if (!result.Matched) throw new Exception("a matching invalid-price tick must still refresh quote availability");
+        if (result.CandleChanged) throw new Exception("an invalid derived price must not change the live candle");
+        if (basket.BidPrice is not null || basket.AskPrice is not null)
+        {
+            throw new Exception("an invalid-price tick with zero quote sides must make synthetic bid and ask unavailable");
+        }
+        AssertNear(100m, basket.Candles[^1].Close, "an invalid derived price must retain the existing candle close");
     }
 
     private static void SyntheticOrderSizingUsesCapitalDealRules()

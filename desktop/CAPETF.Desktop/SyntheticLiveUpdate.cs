@@ -19,16 +19,18 @@ public static class SyntheticLiveUpdate
     public static SyntheticQuoteApplyResult ApplyQuote(SyntheticBasket basket, QuoteUpdate update)
     {
         var component = basket.Components.FirstOrDefault(item => item.Instrument.Epic == update.Epic);
-        if (component is null || update.Price is null || update.Price <= 0) return default;
+        if (component is null) return default;
 
-        var componentPreviousPrice = component.LastAppliedPrice ?? component.SyntheticBaselinePrice ?? component.Instrument.Price;
         component.Instrument.Bid = update.Bid is > 0 ? update.Bid : null;
         component.Instrument.Offer = update.Offer is > 0 ? update.Offer : null;
+        basket.LastUpdated = update.Time;
+        SyntheticQuoteCalculator.Refresh(basket);
+        if (update.Price is null || update.Price <= 0) return new SyntheticQuoteApplyResult(true, false);
+
+        var componentPreviousPrice = component.LastAppliedPrice ?? component.SyntheticBaselinePrice ?? component.Instrument.Price;
         component.Instrument.Price = update.Price;
         component.LastAppliedPrice = update.Price;
         component.NotifyInstrumentPriceChanged();
-        basket.LastUpdated = update.Time;
-        SyntheticQuoteCalculator.Refresh(basket);
         if (componentPreviousPrice is null || componentPreviousPrice <= 0 || basket.Candles.Count == 0)
         {
             return new SyntheticQuoteApplyResult(true, false);
