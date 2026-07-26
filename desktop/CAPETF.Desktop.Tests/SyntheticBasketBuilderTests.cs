@@ -1212,6 +1212,8 @@ public static class SyntheticBasketBuilderTests
             "FormulaReferencePrice",
             "flex-direction: column",
             "overflow-wrap: anywhere",
+            "SYNTHETIC_PRICE_FLOOR = -10",
+            "autoscaleInfoProvider",
         })
         {
             if (!html.Contains(required, StringComparison.Ordinal))

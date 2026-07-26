@@ -364,6 +364,7 @@
     let chartMode = 'candles';
     let activeInterval = '1W';
     let maVisibility = { 20: true, 50: true, 200: true };
+    const SYNTHETIC_PRICE_FLOOR = -10;
 
     // Contract markers for automated tests and future upgrades.
     const CandlestickSeries = 'CandlestickSeries';
@@ -438,6 +439,20 @@
       return result;
     }
 
+    function floorAutoscaleRange(baseProvider) {
+      const info = baseProvider();
+      if (!info || !info.priceRange) return info;
+      const minValue = Math.max(info.priceRange.minValue, SYNTHETIC_PRICE_FLOOR);
+      const maxValue = Math.max(info.priceRange.maxValue, minValue + 1);
+      return {
+        ...info,
+        priceRange: {
+          minValue,
+          maxValue
+        }
+      };
+    }
+
     function candlesForMode() {
       if (chartMode === 'heikin') return heikinAshi(rawCandles);
       return rawCandles;
@@ -503,13 +518,14 @@
         wickDownColor: '#fca5a5',
         priceLineVisible: true,
         lastValueVisible: true,
-        priceFormat: { type: 'price', precision: 5, minMove: 0.00001 }
+        priceFormat: { type: 'price', precision: 5, minMove: 0.00001 },
+        autoscaleInfoProvider: floorAutoscaleRange
       });
 
       maSeries = {
-        20: chart.addLineSeries({ color: '#60a5fa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-        50: chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
-        200: chart.addLineSeries({ color: '#a78bfa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
+        20: chart.addLineSeries({ color: '#60a5fa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: floorAutoscaleRange }),
+        50: chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: floorAutoscaleRange }),
+        200: chart.addLineSeries({ color: '#a78bfa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: floorAutoscaleRange })
       };
 
       chart.subscribeCrosshairMove(param => {
