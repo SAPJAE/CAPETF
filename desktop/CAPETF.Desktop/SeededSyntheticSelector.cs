@@ -28,7 +28,10 @@ public static class SeededSyntheticSelector
             .Where(CapitalInstrumentTypes.IsStock)
             .Where(item => !string.Equals(item.Epic, seed.Epic, StringComparison.OrdinalIgnoreCase))
             .Where(item => SameCurrency(seed, item))
-            .Where(item => candles.TryGetValue(item.Epic, out var rows) && rows.Count >= minimumCandles)
+            .Where(item => candles.TryGetValue(item.Epic, out var rows) &&
+                           rows.Count >= minimumCandles &&
+                           AnnualizedVolatilityPct(rows, periodsPerYear) > 0 &&
+                           SharedAlignedPointCount(seedCandles, rows) >= RequiredSharedPointCount(seedCandles, rows, minimumCandles))
             .ToList();
 
         if (IsNikeSeed(seed))
@@ -218,10 +221,109 @@ public static class SeededSyntheticSelector
         IReadOnlyList<OhlcPoint> left,
         IReadOnlyList<OhlcPoint> right)
     {
+        if (UsesIntradayAlignment(left, right))
+        {
+            var leftByTime = left.GroupBy(row => row.Time).ToDictionary(group => group.Key, group => group.Last().Close);
+            var rightByTime = right.GroupBy(row => row.Time).ToDictionary(group => group.Key, group => group.Last().Close);
+            var times = leftByTime.Keys.Intersect(rightByTime.Keys).OrderBy(time => time).ToList();
+            return (times.Select(time => leftByTime[time]).ToList(), times.Select(time => rightByTime[time]).ToList());
+        }
+
+        if (UsesWeeklyAlignment(left, right))
+        {
+            var leftByWeek = left.GroupBy(row => WeekStart(row.Time.Date)).ToDictionary(group => group.Key, group => group.Last().Close);
+            var rightByWeek = right.GroupBy(row => WeekStart(row.Time.Date)).ToDictionary(group => group.Key, group => group.Last().Close);
+            var weeks = leftByWeek.Keys.Intersect(rightByWeek.Keys).OrderBy(week => week).ToList();
+            return (weeks.Select(week => leftByWeek[week]).ToList(), weeks.Select(week => rightByWeek[week]).ToList());
+        }
+
         var leftByDate = left.GroupBy(row => row.Time.Date).ToDictionary(group => group.Key, group => group.Last().Close);
         var rightByDate = right.GroupBy(row => row.Time.Date).ToDictionary(group => group.Key, group => group.Last().Close);
         var dates = leftByDate.Keys.Intersect(rightByDate.Keys).OrderBy(date => date).ToList();
         return (dates.Select(date => leftByDate[date]).ToList(), dates.Select(date => rightByDate[date]).ToList());
+    }
+
+    private static int SharedAlignedPointCount(IReadOnlyList<OhlcPoint> left, IReadOnlyList<OhlcPoint> right)
+    {
+        if (UsesIntradayAlignment(left, right))
+        {
+            var leftTimes = left.Select(row => row.Time).ToHashSet();
+            leftTimes.IntersectWith(right.Select(row => row.Time));
+            return leftTimes.Count;
+        }
+
+        if (UsesWeeklyAlignment(left, right))
+        {
+            var leftWeeks = left.Select(row => WeekStart(row.Time.Date)).ToHashSet();
+            leftWeeks.IntersectWith(right.Select(row => WeekStart(row.Time.Date)));
+            return leftWeeks.Count;
+        }
+
+        var leftDates = left.Select(row => row.Time.Date).ToHashSet();
+        leftDates.IntersectWith(right.Select(row => row.Time.Date));
+        return leftDates.Count;
+    }
+
+    private static int RequiredSharedPointCount(
+        IReadOnlyList<OhlcPoint> left,
+        IReadOnlyList<OhlcPoint> right,
+        int minimumCandles)
+    {
+        var available = Math.Min(minimumCandles, Math.Min(AlignedPointCount(left, right), AlignedPointCount(right, left)));
+        return Math.Max(2, (int)Math.Ceiling(available * 0.8m));
+    }
+
+    private static int AlignedPointCount(IReadOnlyList<OhlcPoint> source, IReadOnlyList<OhlcPoint> comparison)
+    {
+        if (UsesIntradayAlignment(source, comparison))
+        {
+            return source.Select(row => row.Time).Distinct().Count();
+        }
+
+        if (UsesWeeklyAlignment(source, comparison))
+        {
+            return source.Select(row => WeekStart(row.Time.Date)).Distinct().Count();
+        }
+
+        return source.Select(row => row.Time.Date).Distinct().Count();
+    }
+
+    private static bool UsesIntradayAlignment(IReadOnlyList<OhlcPoint> left, IReadOnlyList<OhlcPoint> right) =>
+        HasSubDailyCadence(left) || HasSubDailyCadence(right);
+
+    private static bool UsesWeeklyAlignment(IReadOnlyList<OhlcPoint> left, IReadOnlyList<OhlcPoint> right) =>
+        HasWeeklyCadence(left) || HasWeeklyCadence(right);
+
+    private static bool HasSubDailyCadence(IReadOnlyList<OhlcPoint> candles)
+    {
+        var ordered = candles.OrderBy(row => row.Time).ToList();
+        if (ordered.GroupBy(row => row.Time.Date).Any(group => group.Select(row => row.Time.TimeOfDay).Distinct().Count() > 1)) return true;
+
+        for (var index = 1; index < ordered.Count; index++)
+        {
+            var gap = ordered[index].Time - ordered[index - 1].Time;
+            if (gap > TimeSpan.Zero && gap < TimeSpan.FromHours(20))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasWeeklyCadence(IReadOnlyList<OhlcPoint> candles)
+    {
+        var dates = candles.Select(row => row.Time.Date).Distinct().OrderBy(date => date).ToList();
+        if (dates.Count < 3) return false;
+
+        var averageGapDays = dates.Zip(dates.Skip(1), (previous, current) => (current - previous).TotalDays).Average();
+        return averageGapDays >= 3.5;
+    }
+
+    private static DateTime WeekStart(DateTime date)
+    {
+        var offset = ((int)date.DayOfWeek + 6) % 7;
+        return date.Date.AddDays(-offset);
     }
 
     private static decimal RelativeCloseness(decimal left, decimal right, decimal floor)

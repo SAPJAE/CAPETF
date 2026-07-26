@@ -142,30 +142,71 @@ public static class SyntheticBasketBuilder
 
     private static IEnumerable<OhlcPoint> BuildCandles(IReadOnlyList<Candidate> cluster, IReadOnlyList<decimal> multipliers)
     {
+        if (cluster.Any(item => HasSubDailyCadence(item.Candles)))
+        {
+            foreach (var candle in BuildCandlesByExactTime(cluster, multipliers))
+            {
+                yield return candle;
+            }
+            yield break;
+        }
+
+        if (cluster.Any(item => HasWeeklyCadence(item.Candles)))
+        {
+            foreach (var candle in BuildCandlesByWeek(cluster, multipliers))
+            {
+                yield return candle;
+            }
+            yield break;
+        }
+
+        foreach (var candle in BuildCandlesByDate(cluster, multipliers))
+        {
+            yield return candle;
+        }
+    }
+
+    private static IEnumerable<OhlcPoint> BuildCandlesByExactTime(IReadOnlyList<Candidate> cluster, IReadOnlyList<decimal> multipliers)
+    {
         var candlesByTime = cluster
             .Select(item => item.Candles
                 .GroupBy(candle => candle.Time)
                 .ToDictionary(group => group.Key, group => group.Last()))
             .ToList();
-        var times = candlesByTime
-            .Skip(1)
-            .Aggregate(
-                candlesByTime[0].Keys.ToHashSet(),
-                (shared, rows) =>
-                {
-                    shared.IntersectWith(rows.Keys);
-                    return shared;
-                })
-            .OrderBy(time => time)
-            .ToList();
+        var times = IntersectKeys(candlesByTime.Select(rows => rows.Keys)).OrderBy(time => time).ToList();
 
-        foreach (var timeKey in times)
+        foreach (var time in times)
+        {
+            decimal open = 0, high = 0, low = 0, close = 0;
+            for (var index = 0; index < cluster.Count; index++)
+            {
+                var candle = candlesByTime[index][time];
+                var multiplier = multipliers[index];
+                open += candle.Open * multiplier;
+                high += candle.High * multiplier;
+                low += candle.Low * multiplier;
+                close += candle.Close * multiplier;
+            }
+            yield return new OhlcPoint(time, decimal.Round(open, 6), decimal.Round(high, 6), decimal.Round(low, 6), decimal.Round(close, 6));
+        }
+    }
+
+    private static IEnumerable<OhlcPoint> BuildCandlesByDate(IReadOnlyList<Candidate> cluster, IReadOnlyList<decimal> multipliers)
+    {
+        var candlesByDate = cluster
+            .Select(item => item.Candles
+                .GroupBy(candle => candle.Time.Date)
+                .ToDictionary(group => group.Key, group => group.Last()))
+            .ToList();
+        var dates = IntersectKeys(candlesByDate.Select(rows => rows.Keys)).OrderBy(date => date).ToList();
+
+        foreach (var date in dates)
         {
             decimal open = 0, high = 0, low = 0, close = 0;
             DateTimeOffset time = default;
             for (var index = 0; index < cluster.Count; index++)
             {
-                var candle = candlesByTime[index][timeKey];
+                var candle = candlesByDate[index][date];
                 var multiplier = multipliers[index];
                 open += candle.Open * multiplier;
                 high += candle.High * multiplier;
@@ -175,6 +216,47 @@ public static class SyntheticBasketBuilder
             }
             yield return new OhlcPoint(time, decimal.Round(open, 6), decimal.Round(high, 6), decimal.Round(low, 6), decimal.Round(close, 6));
         }
+    }
+
+    private static IEnumerable<OhlcPoint> BuildCandlesByWeek(IReadOnlyList<Candidate> cluster, IReadOnlyList<decimal> multipliers)
+    {
+        var candlesByWeek = cluster
+            .Select(item => item.Candles
+                .GroupBy(candle => WeekStart(candle.Time.Date))
+                .ToDictionary(group => group.Key, group => group.Last()))
+            .ToList();
+        var weeks = IntersectKeys(candlesByWeek.Select(rows => rows.Keys)).OrderBy(week => week).ToList();
+
+        foreach (var week in weeks)
+        {
+            decimal open = 0, high = 0, low = 0, close = 0;
+            DateTimeOffset time = default;
+            for (var index = 0; index < cluster.Count; index++)
+            {
+                var candle = candlesByWeek[index][week];
+                var multiplier = multipliers[index];
+                open += candle.Open * multiplier;
+                high += candle.High * multiplier;
+                low += candle.Low * multiplier;
+                close += candle.Close * multiplier;
+                time = candle.Time;
+            }
+            yield return new OhlcPoint(time, decimal.Round(open, 6), decimal.Round(high, 6), decimal.Round(low, 6), decimal.Round(close, 6));
+        }
+    }
+
+    private static HashSet<T> IntersectKeys<T>(IEnumerable<IEnumerable<T>> keySets)
+        where T : notnull
+    {
+        using var enumerator = keySets.GetEnumerator();
+        if (!enumerator.MoveNext()) return [];
+
+        var shared = enumerator.Current.ToHashSet();
+        while (enumerator.MoveNext())
+        {
+            shared.IntersectWith(enumerator.Current);
+        }
+        return shared;
     }
 
     private static decimal AnnualizedVolatilityPct(IReadOnlyList<OhlcPoint> candles, int periodsPerYear)
@@ -294,10 +376,64 @@ public static class SyntheticBasketBuilder
         IReadOnlyList<OhlcPoint> left,
         IReadOnlyList<OhlcPoint> right)
     {
+        if (UsesIntradayAlignment(left, right))
+        {
+            var leftByTime = left.GroupBy(row => row.Time).ToDictionary(group => group.Key, group => group.Last().Close);
+            var rightByTime = right.GroupBy(row => row.Time).ToDictionary(group => group.Key, group => group.Last().Close);
+            var times = leftByTime.Keys.Intersect(rightByTime.Keys).OrderBy(time => time).ToList();
+            return (times.Select(time => leftByTime[time]).ToList(), times.Select(time => rightByTime[time]).ToList());
+        }
+
+        if (UsesWeeklyAlignment(left, right))
+        {
+            var leftByWeek = left.GroupBy(row => WeekStart(row.Time.Date)).ToDictionary(group => group.Key, group => group.Last().Close);
+            var rightByWeek = right.GroupBy(row => WeekStart(row.Time.Date)).ToDictionary(group => group.Key, group => group.Last().Close);
+            var weeks = leftByWeek.Keys.Intersect(rightByWeek.Keys).OrderBy(week => week).ToList();
+            return (weeks.Select(week => leftByWeek[week]).ToList(), weeks.Select(week => rightByWeek[week]).ToList());
+        }
+
         var leftByDate = left.GroupBy(row => row.Time.Date).ToDictionary(group => group.Key, group => group.Last().Close);
         var rightByDate = right.GroupBy(row => row.Time.Date).ToDictionary(group => group.Key, group => group.Last().Close);
         var dates = leftByDate.Keys.Intersect(rightByDate.Keys).OrderBy(date => date).ToList();
         return (dates.Select(date => leftByDate[date]).ToList(), dates.Select(date => rightByDate[date]).ToList());
+    }
+
+    private static bool UsesIntradayAlignment(IReadOnlyList<OhlcPoint> left, IReadOnlyList<OhlcPoint> right) =>
+        HasSubDailyCadence(left) || HasSubDailyCadence(right);
+
+    private static bool UsesWeeklyAlignment(IReadOnlyList<OhlcPoint> left, IReadOnlyList<OhlcPoint> right) =>
+        HasWeeklyCadence(left) || HasWeeklyCadence(right);
+
+    private static bool HasSubDailyCadence(IReadOnlyList<OhlcPoint> candles)
+    {
+        var ordered = candles.OrderBy(row => row.Time).ToList();
+        if (ordered.GroupBy(row => row.Time.Date).Any(group => group.Select(row => row.Time.TimeOfDay).Distinct().Count() > 1)) return true;
+
+        for (var index = 1; index < ordered.Count; index++)
+        {
+            var gap = ordered[index].Time - ordered[index - 1].Time;
+            if (gap > TimeSpan.Zero && gap < TimeSpan.FromHours(20))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasWeeklyCadence(IReadOnlyList<OhlcPoint> candles)
+    {
+        var dates = candles.Select(row => row.Time.Date).Distinct().OrderBy(date => date).ToList();
+        if (dates.Count < 3) return false;
+
+        var averageGapDays = dates.Zip(dates.Skip(1), (previous, current) => (current - previous).TotalDays).Average();
+        return averageGapDays >= 3.5;
+    }
+
+    private static DateTime WeekStart(DateTime date)
+    {
+        var offset = ((int)date.DayOfWeek + 6) % 7;
+        return date.Date.AddDays(-offset);
     }
 
     private static decimal ReturnCorrelation(IReadOnlyList<decimal> left, IReadOnlyList<decimal> right)
