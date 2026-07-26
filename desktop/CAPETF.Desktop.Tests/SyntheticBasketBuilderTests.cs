@@ -30,7 +30,7 @@ public static class SyntheticBasketBuilderTests
         VolatilityAnnualizationUsesRequestedPeriodsPerYear();
         TrailingReturnsUseIntervalAwareHorizonsFromFinalCandle();
         LiveQuoteUpdatesBasketPriceAndTimestamp();
-        SyntheticBuildPreservesLivePriceAndSeedsHistoricalBaseline();
+        FirstLiveQuoteUsesLatestHistoricalComponentPrice();
         SyntheticBasketsExcludeNonStockMarkets();
         StockTypeMatchingIsCaseInsensitive();
         SimilarityPrefersCorrelatedPricePathsOverVolatilityOnlyNeighbors();
@@ -589,7 +589,7 @@ public static class SyntheticBasketBuilderTests
         AssertNear((399m / 336m - 1m) * 100m, daily[2], "daily three-month return should use 63 candles before the final candle");
     }
 
-    private static void SyntheticBuildPreservesLivePriceAndSeedsHistoricalBaseline()
+    private static void FirstLiveQuoteUsesLatestHistoricalComponentPrice()
     {
         var day = DateTimeOffset.Parse("2022-01-01T00:00:00Z");
         var instruments = Enumerable.Range(0, 3)
@@ -622,9 +622,9 @@ public static class SyntheticBasketBuilderTests
         }
 
         AssertNear(
-            priorBasketClose + (historicalClose + 5m - sharedBaselineClose) * component.FormulaMultiplier,
+            priorBasketClose + 5m * component.FormulaMultiplier,
             basket.Candles[^1].Close,
-            "first live quote should advance from the shared component baseline");
+            "first live quote should advance from the latest historical component price");
     }
 
     private static void StockTypeMatchingIsCaseInsensitive()

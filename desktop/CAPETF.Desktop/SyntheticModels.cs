@@ -20,6 +20,7 @@ public sealed class SyntheticComponent(
     public decimal FourYearReturnPct { get; } = fourYearReturnPct;
     public decimal FormulaMultiplier { get; set; } = weight / 100m;
     public decimal? FormulaReferencePrice { get; set; }
+    public decimal? LastAppliedPrice { get; set; }
 
     public decimal? SyntheticBaselinePrice
     {

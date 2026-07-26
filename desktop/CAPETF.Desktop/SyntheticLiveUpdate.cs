@@ -21,11 +21,11 @@ public static class SyntheticLiveUpdate
         var component = basket.Components.FirstOrDefault(item => item.Instrument.Epic == update.Epic);
         if (component is null || update.Price is null || update.Price <= 0) return default;
 
-        var componentPreviousPrice = component.SyntheticBaselinePrice ?? component.Instrument.Price;
+        var componentPreviousPrice = component.LastAppliedPrice ?? component.SyntheticBaselinePrice ?? component.Instrument.Price;
         component.Instrument.Bid = update.Bid > 0 ? update.Bid : component.Instrument.Bid;
         component.Instrument.Offer = update.Offer > 0 ? update.Offer : component.Instrument.Offer;
         component.Instrument.Price = update.Price;
-        component.SyntheticBaselinePrice = update.Price;
+        component.LastAppliedPrice = update.Price;
         component.NotifyInstrumentPriceChanged();
         basket.LastUpdated = update.Time;
         SyntheticQuoteCalculator.Refresh(basket);

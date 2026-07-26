@@ -79,6 +79,7 @@ public static class SyntheticBasketBuilder
                     {
                         FormulaMultiplier = multipliers[index],
                         FormulaReferencePrice = sharedBaselinePrices[index],
+                        LastAppliedPrice = cluster[index].Candles[^1].Close,
                         SyntheticBaselinePrice = sharedBaselinePrices[index],
                     });
                 }
