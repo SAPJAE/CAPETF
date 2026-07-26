@@ -32,7 +32,7 @@ public static class SyntheticLiveUpdate
         }
 
         var last = basket.Candles[^1];
-        var delta = (update.Price.Value - componentPreviousPrice.Value) * component.Weight / 100m;
+        var delta = (update.Price.Value - componentPreviousPrice.Value) * component.FormulaMultiplier;
         var updated = last with
         {
             High = Math.Max(last.High, last.Close + delta),

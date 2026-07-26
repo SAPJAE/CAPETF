@@ -12,8 +12,9 @@ public static class SyntheticBasketBuilderTests
         CapitalPricePathSupportsDatedHistoryWindows();
         InverseVolatilityWeightsSumToOneHundred();
         InverseVolatilityWeightsRespectCapsAndMinimums();
-        SyntheticCandlesUseWeightedOhlc();
+        SyntheticCandlesUsePriceStabilizedOhlc();
         SyntheticFormulaUsesEqualNotionalWeights();
+        SyntheticFormulaUsesPriceStabilizedMultipliers();
         SyntheticCandlesHandleDuplicateCachedDates();
         SyntheticBasketsDoNotMixCurrencies();
         SyntheticBasketsKeepBlankCurrenciesTogether();
@@ -141,7 +142,7 @@ public static class SyntheticBasketBuilderTests
         AssertNear(100m, weights.Sum(), "capped weights should sum to 100");
     }
 
-    private static void SyntheticCandlesUseWeightedOhlc()
+    private static void SyntheticCandlesUsePriceStabilizedOhlc()
     {
         var a = CreateStock("A", "A");
         var b = CreateStock("B", "B");
@@ -154,11 +155,12 @@ public static class SyntheticBasketBuilderTests
             ["C"] = CreateCandles(day, 30m, 32m, 29m, 31m)
         };
         var result = SyntheticBasketBuilder.Build("US / USD / Tech", [a, b, c], candles, maxBaskets: 1);
-        var first = result.Baskets[0].Candles[0];
-        AssertNear(20m, first.Open, "weighted open should use component opens");
-        AssertNear(22m, first.High, "weighted high should use component highs");
-        AssertNear(19m, first.Low, "weighted low should use component lows");
-        AssertNear(21m, first.Close, "weighted close should use component closes");
+        var last = result.Baskets[0].Candles[^1];
+        AssertNear(100m, last.Close, "price-stabilized synthetic close should normalize the latest basket value to 100");
+        if (last.High <= last.Close || last.Low >= last.Close)
+        {
+            throw new Exception("price-stabilized OHLC should preserve component high and low movement around close");
+        }
     }
 
     private static void SyntheticFormulaUsesEqualNotionalWeights()
@@ -180,6 +182,32 @@ public static class SyntheticBasketBuilderTests
         foreach (var component in basket.Components)
         {
             AssertNear(100m / 3m, component.Weight, "synthetic price formula should equal-weight every leg", 0.0001m);
+        }
+    }
+
+    private static void SyntheticFormulaUsesPriceStabilizedMultipliers()
+    {
+        var a = CreateStock("PX-A", "Price 56");
+        var b = CreateStock("PX-B", "Price 127");
+        var c = CreateStock("PX-C", "Price 162");
+        var day = DateTimeOffset.Parse("2024-01-01T00:00:00Z");
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>
+        {
+            ["PX-A"] = CreatePricedTrendCandles(day, 56m),
+            ["PX-B"] = CreatePricedTrendCandles(day, 127m),
+            ["PX-C"] = CreatePricedTrendCandles(day, 162m),
+        };
+
+        var result = SyntheticBasketBuilder.Build("US / USD / Tech", [a, b, c], candles, maxBaskets: 1);
+        var basket = result.Baskets.Single();
+
+        AssertNear(100m, basket.Candles[^1].Close, "stabilized formula should set the current synthetic value to 100");
+        foreach (var component in basket.Components)
+        {
+            var referenceClose = candles[component.Instrument.Epic][^1].Close;
+            var expectedMultiplier = component.Weight / referenceClose;
+            AssertNear(expectedMultiplier, component.FormulaMultiplier, "formula multiplier should equal target notional divided by component reference price", 0.000001m);
+            AssertNear(component.Weight, component.FormulaMultiplier * referenceClose, "each leg should contribute its allocation at the reference close", 0.0001m);
         }
     }
 
@@ -405,7 +433,7 @@ public static class SyntheticBasketBuilderTests
         }
 
         AssertNear(
-            priorBasketClose + 5m * component.Weight / 100m,
+            priorBasketClose + 5m * component.FormulaMultiplier,
             basket.Candles[^1].Close,
             "first live quote should advance from the historical component close");
     }
@@ -603,6 +631,7 @@ public static class SyntheticBasketBuilderTests
         if (payload.CurrencyLabel != "USD") throw new Exception("matching known component currency must be displayed");
         if (payload.Candles.Count != 220) throw new Exception("terminal payload must include all synthetic candles");
         if (payload.Components.Count != 2) throw new Exception("terminal payload must include component rows");
+        AssertNear(0.6m, payload.Components[0].FormulaMultiplier, "component row must include executable formula multiplier");
         if (payload.Ma20.Count == 0 || payload.Ma50.Count == 0 || payload.Ma200.Count == 0)
         {
             throw new Exception("terminal payload must include MA 20, MA 50, and MA 200 when enough candles exist");
@@ -1172,7 +1201,18 @@ public static class SyntheticBasketBuilderTests
         }
 
         var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
-        foreach (var required in new[] { "Selection Basis", "Legs / Formula", "Annualized vol", "4Y return", "Role" })
+        foreach (var required in new[]
+        {
+            "Selection Basis",
+            "Legs / Formula",
+            "Annualized vol",
+            "4Y return",
+            "Role",
+            "FormulaMultiplier",
+            "FormulaReferencePrice",
+            "flex-direction: column",
+            "overflow-wrap: anywhere",
+        })
         {
             if (!html.Contains(required, StringComparison.Ordinal))
             {
@@ -1373,6 +1413,19 @@ public static class SyntheticBasketBuilderTests
             {
                 if (index > 0) price *= 1m + returns[(index - 1) % returns.Length];
                 return new OhlcPoint(day.AddDays(index), price, price, price, price);
+            })
+            .ToList();
+    }
+
+    private static IReadOnlyList<OhlcPoint> CreatePricedTrendCandles(DateTimeOffset day, decimal finalClose)
+    {
+        const int count = 120;
+        return Enumerable.Range(0, count)
+            .Select(index =>
+            {
+                var scale = 0.7m + 0.3m * index / (count - 1);
+                var close = finalClose * scale;
+                return new OhlcPoint(day.AddDays(index), close * 0.99m, close * 1.01m, close * 0.98m, close);
             })
             .ToList();
     }

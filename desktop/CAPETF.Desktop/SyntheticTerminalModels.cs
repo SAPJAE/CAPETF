@@ -9,6 +9,8 @@ public sealed record TerminalComponentRow(
     string Epic,
     string Currency,
     decimal Weight,
+    decimal FormulaMultiplier,
+    decimal? FormulaReferencePrice,
     string Role,
     decimal AnnualizedVolatilityPct,
     decimal FourYearReturnPct,
