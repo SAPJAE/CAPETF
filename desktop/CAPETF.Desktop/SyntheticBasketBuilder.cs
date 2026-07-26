@@ -51,7 +51,7 @@ public static class SyntheticBasketBuilder
                 var cluster = SelectMostSimilarCluster(remaining, clusterSize);
                 var weights = CalculateEqualWeights(cluster.Count);
                 var multipliers = CalculatePriceStabilizedMultipliers(cluster, weights);
-                var syntheticCandles = BuildCandles(cluster, multipliers).ToList();
+                var syntheticCandles = NormalizeSyntheticCandleOpens(BuildCandles(cluster, multipliers)).ToList();
                 var basket = new SyntheticBasket
                 {
                     Symbol = $"SYN-{NormalizeSymbol(block)}-{baskets.Count + 1:00}",
@@ -163,6 +163,32 @@ public static class SyntheticBasketBuilder
         foreach (var candle in BuildCandlesByDate(cluster, multipliers))
         {
             yield return candle;
+        }
+    }
+
+    private static IEnumerable<OhlcPoint> NormalizeSyntheticCandleOpens(IEnumerable<OhlcPoint> source)
+    {
+        OhlcPoint? previous = null;
+        foreach (var candle in source)
+        {
+            if (previous is null)
+            {
+                previous = candle;
+                yield return candle;
+                continue;
+            }
+
+            var open = previous.Close;
+            var high = Math.Max(candle.High, Math.Max(open, candle.Close));
+            var low = Math.Min(candle.Low, Math.Min(open, candle.Close));
+            var normalized = candle with
+            {
+                Open = decimal.Round(open, 6),
+                High = decimal.Round(high, 6),
+                Low = decimal.Round(low, 6),
+            };
+            previous = normalized;
+            yield return normalized;
         }
     }
 

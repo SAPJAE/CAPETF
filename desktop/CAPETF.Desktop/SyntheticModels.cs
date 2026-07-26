@@ -120,7 +120,7 @@ public static class SyntheticQuoteCalculator
         foreach (var component in components)
         {
             var price = priceSelector(component);
-            if (price is null) return null;
+            if (price is null || price <= 0) return null;
             total += price.Value * component.FormulaMultiplier;
             count++;
         }

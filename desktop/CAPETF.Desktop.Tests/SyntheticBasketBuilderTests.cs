@@ -19,6 +19,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticFormulaUsesEqualNotionalWeights();
         SyntheticFormulaUsesPriceStabilizedMultipliers();
         SyntheticCandlesHandleDuplicateCachedDates();
+        SyntheticCandlesDoNotCreateArtificialGapsAcrossSparseSharedWeeks();
         SyntheticCandlesUseTimestampIntersectionForIntradayHistory();
         SyntheticCandlesKeepFullSharedTimestampHistory();
         SyntheticBuilderAcceptsConfiguredIntradayMinimum();
@@ -79,6 +80,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticStrategiesExposeBuildOptions();
         SyntheticStrategiesReturnClosestFallbackCandidates();
         SyntheticQuoteUsesFormulaMultipliersForBidAskLast();
+        SyntheticQuoteIgnoresZeroBidAskQuotes();
         SavedSyntheticBasketStorePersistsFormulaDetails();
     }
 
@@ -253,6 +255,46 @@ public static class SyntheticBasketBuilderTests
 
         if (result.Baskets.Count != 1) throw new Exception("duplicate cached dates must not prevent a valid basket");
         if (result.Baskets[0].Candles.Count < 100) throw new Exception("duplicate cached dates must still produce aligned synthetic candles");
+    }
+
+    private static void SyntheticCandlesDoNotCreateArtificialGapsAcrossSparseSharedWeeks()
+    {
+        var a = CreateStock("GAP-A", "Gap A");
+        var b = CreateStock("GAP-B", "Gap B");
+        var c = CreateStock("GAP-C", "Gap C");
+        var week = DateTimeOffset.Parse("2026-01-02T00:00:00Z");
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>
+        {
+            ["GAP-A"] =
+            [
+                new OhlcPoint(week, 100m, 100m, 100m, 100m),
+                new OhlcPoint(week.AddDays(14), 100m, 120m, 100m, 120m),
+                new OhlcPoint(week.AddDays(21), 120m, 122m, 120m, 122m),
+            ],
+            ["GAP-B"] =
+            [
+                new OhlcPoint(week, 200m, 200m, 200m, 200m),
+                new OhlcPoint(week.AddDays(7), 200m, 260m, 200m, 260m),
+                new OhlcPoint(week.AddDays(14), 260m, 262m, 260m, 262m),
+            ],
+            ["GAP-C"] =
+            [
+                new OhlcPoint(week, 300m, 300m, 300m, 300m),
+                new OhlcPoint(week.AddDays(14), 300m, 330m, 300m, 330m),
+                new OhlcPoint(week.AddDays(21), 330m, 333m, 330m, 333m),
+            ],
+        };
+
+        var result = SyntheticBasketBuilder.Build("US / USD / All", [a, b, c], candles, maxBaskets: 1, minimumCandles: 2);
+        var basket = result.Baskets.Single();
+
+        if (basket.Candles.Count != 2) throw new Exception("sparse weekly test should produce two shared synthetic candles");
+        AssertNear(basket.Candles[0].Close, basket.Candles[1].Open, "synthetic candle open should continue from the prior synthetic close across sparse shared weeks");
+        if (basket.Candles[1].High < Math.Max(basket.Candles[1].Open, basket.Candles[1].Close) ||
+            basket.Candles[1].Low > Math.Min(basket.Candles[1].Open, basket.Candles[1].Close))
+        {
+            throw new Exception("gap normalization must keep OHLC high/low enclosing open and close");
+        }
     }
 
     private static void SyntheticCandlesUseTimestampIntersectionForIntradayHistory()
@@ -1883,6 +1925,46 @@ public static class SyntheticBasketBuilderTests
         AssertNear(104m, basket.BidPrice ?? 0m, "live quote should recalculate synthetic bid");
         AssertNear(106m, basket.AskPrice ?? 0m, "live quote should recalculate synthetic ask");
         AssertNear(105m, basket.LastPrice ?? 0m, "live quote should recalculate synthetic last");
+    }
+
+    private static void SyntheticQuoteIgnoresZeroBidAskQuotes()
+    {
+        var basket = new SyntheticBasket { Symbol = "SYN-ZERO" };
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "ZA", Bid = 99m, Offer = 101m, Price = 100m },
+            50m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 0.5m,
+        });
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "ZB", Bid = 198m, Offer = 202m, Price = 200m },
+            50m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 0.25m,
+        });
+
+        SyntheticQuoteCalculator.Refresh(basket);
+        AssertNear(99m, basket.BidPrice ?? 0m, "valid bid should calculate before zero quote");
+
+        SyntheticTerminalLiveUpdate.Apply(basket, new QuoteUpdate("ZA", 0m, 0m, 0m, DateTimeOffset.UtcNow));
+
+        AssertNear(99m, basket.BidPrice ?? 0m, "zero bid/ask quote must not replace a valid synthetic bid");
+        AssertNear(101m, basket.AskPrice ?? 0m, "zero bid/ask quote must not replace a valid synthetic ask");
+
+        var invalid = new SyntheticBasket { Symbol = "SYN-ZERO-INITIAL" };
+        invalid.Components.Add(new SyntheticComponent(new MarketInstrument { Epic = "ZX", Bid = 0m, Offer = 0m, Price = 100m }, 100m, 0m, 0m)
+        {
+            FormulaMultiplier = 1m,
+        });
+        SyntheticQuoteCalculator.Refresh(invalid);
+        if (invalid.BidPrice is not null || invalid.AskPrice is not null)
+        {
+            throw new Exception("zero bid/ask inputs must display as unavailable, not as a tradable synthetic price");
+        }
     }
 
     private static void SavedSyntheticBasketStorePersistsFormulaDetails()
