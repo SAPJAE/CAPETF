@@ -552,7 +552,14 @@ public partial class CapComTerminalWindow : Window
         resolution == "Daily" ? "DAY" :
         "WEEK";
 
-    private static int MinimumCandles(string resolution) => resolution is "2H" or "4H" or "6H" ? 60 : 120;
+    private static int MinimumCandles(string resolution) =>
+        resolution switch
+        {
+            "2H" => 30,
+            "4H" => 16,
+            "6H" => 10,
+            _ => 120,
+        };
 
     private static int PeriodsPerYear(string resolution) =>
         resolution switch

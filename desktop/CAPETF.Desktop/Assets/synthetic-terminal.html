@@ -132,6 +132,24 @@
       min-height: 0;
     }
 
+    #chart-tool-dock {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 4;
+      display: flex;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid rgba(38, 54, 79, .9);
+      background: rgba(9, 17, 31, .88);
+    }
+
+    #chart-tool-dock button {
+      min-width: 34px;
+      height: 26px;
+      padding: 0 7px;
+    }
+
     #empty-state {
       position: absolute;
       inset: 0;
@@ -302,6 +320,13 @@
     <main id="workspace" class="ticket-hidden">
       <section id="chart-panel">
         <div id="chart-root">
+          <div id="chart-tool-dock">
+            <button type="button" class="chart-tool active" data-tool="crosshair" title="Crosshair">X</button>
+            <button type="button" class="chart-tool" data-tool="trend" title="Draw trend line">TL</button>
+            <button type="button" class="chart-tool" data-tool="hline" title="Draw horizontal price line">HL</button>
+            <button type="button" class="chart-tool" data-tool="vline" title="Draw vertical time line">VL</button>
+            <button type="button" id="clear-drawings" title="Clear drawings">Clear</button>
+          </div>
           <div id="empty-state">Build a synthetic symbol to load the interactive chart.</div>
         </div>
         <footer id="footer">
@@ -354,6 +379,7 @@
     const intervalButtons = Array.from(document.querySelectorAll('.interval'));
     const modeButtons = Array.from(document.querySelectorAll('.mode'));
     const maButtons = Array.from(document.querySelectorAll('.ma'));
+    const toolButtons = Array.from(document.querySelectorAll('.chart-tool'));
 
     let chart = null;
     let candleSeries = null;
@@ -367,11 +393,176 @@
     let priceLinesVisible = true;
     let syntheticPriceLines = [];
     let terminalBarSpacing = 8;
+    let activeTool = 'crosshair';
+    let drawingAnchor = null;
+    let drawingPrimitives = [];
     const SYNTHETIC_PRICE_FLOOR = -10;
 
     // Contract markers for automated tests and future upgrades.
     const CandlestickSeries = 'CandlestickSeries';
     const LineSeries = 'LineSeries';
+
+    class HorizontalLinePrimitive {
+      constructor(series, price, color = '#fbbf24') {
+        this.series = series;
+        this.price = price;
+        this.color = color;
+        this.view = new HorizontalLinePaneView(this);
+      }
+
+      updateAllViews() {
+        this.view.update();
+      }
+
+      paneViews() {
+        return [this.view];
+      }
+    }
+
+    class HorizontalLinePaneView {
+      constructor(source) {
+        this.source = source;
+        this.y = null;
+      }
+
+      update() {
+        this.y = this.source.series.priceToCoordinate(this.source.price);
+      }
+
+      renderer() {
+        const y = this.y;
+        const color = this.source.color;
+        return {
+          draw(target) {
+            target.useBitmapCoordinateSpace(scope => {
+              if (y === null) return;
+              const ctx = scope.context;
+              const scaledY = Math.round(y * scope.verticalPixelRatio);
+              ctx.save();
+              ctx.strokeStyle = color;
+              ctx.lineWidth = Math.max(1, Math.floor(scope.verticalPixelRatio));
+              ctx.setLineDash([6 * scope.horizontalPixelRatio, 5 * scope.horizontalPixelRatio]);
+              ctx.beginPath();
+              ctx.moveTo(0, scaledY);
+              ctx.lineTo(scope.bitmapSize.width, scaledY);
+              ctx.stroke();
+              ctx.restore();
+            });
+          }
+        };
+      }
+    }
+
+    class TrendLinePrimitive {
+      constructor(chartApi, series, p1, p2, color = '#38bdf8') {
+        this.chart = chartApi;
+        this.series = series;
+        this.p1 = p1;
+        this.p2 = p2;
+        this.color = color;
+        this.view = new TrendLinePaneView(this);
+      }
+
+      updateAllViews() {
+        this.view.update();
+      }
+
+      paneViews() {
+        return [this.view];
+      }
+    }
+
+    class TrendLinePaneView {
+      constructor(source) {
+        this.source = source;
+        this.p1 = { x: null, y: null };
+        this.p2 = { x: null, y: null };
+      }
+
+      update() {
+        this.p1 = {
+          x: this.source.chart.timeScale().timeToCoordinate(this.source.p1.time),
+          y: this.source.series.priceToCoordinate(this.source.p1.price)
+        };
+        this.p2 = {
+          x: this.source.chart.timeScale().timeToCoordinate(this.source.p2.time),
+          y: this.source.series.priceToCoordinate(this.source.p2.price)
+        };
+      }
+
+      renderer() {
+        const p1 = this.p1;
+        const p2 = this.p2;
+        const color = this.source.color;
+        return {
+          draw(target) {
+            target.useBitmapCoordinateSpace(scope => {
+              if (p1.x === null || p1.y === null || p2.x === null || p2.y === null) return;
+              const ctx = scope.context;
+              ctx.save();
+              ctx.strokeStyle = color;
+              ctx.lineWidth = Math.max(1, Math.floor(2 * scope.verticalPixelRatio));
+              ctx.beginPath();
+              ctx.moveTo(Math.round(p1.x * scope.horizontalPixelRatio), Math.round(p1.y * scope.verticalPixelRatio));
+              ctx.lineTo(Math.round(p2.x * scope.horizontalPixelRatio), Math.round(p2.y * scope.verticalPixelRatio));
+              ctx.stroke();
+              ctx.restore();
+            });
+          }
+        };
+      }
+    }
+
+    class VerticalLinePrimitive {
+      constructor(chartApi, time, color = '#94a3b8') {
+        this.chart = chartApi;
+        this.time = time;
+        this.color = color;
+        this.view = new VerticalLinePaneView(this);
+      }
+
+      updateAllViews() {
+        this.view.update();
+      }
+
+      paneViews() {
+        return [this.view];
+      }
+    }
+
+    class VerticalLinePaneView {
+      constructor(source) {
+        this.source = source;
+        this.x = null;
+      }
+
+      update() {
+        this.x = this.source.chart.timeScale().timeToCoordinate(this.source.time);
+      }
+
+      renderer() {
+        const x = this.x;
+        const color = this.source.color;
+        return {
+          draw(target) {
+            target.useBitmapCoordinateSpace(scope => {
+              if (x === null) return;
+              const ctx = scope.context;
+              const scaledX = Math.round(x * scope.horizontalPixelRatio);
+              ctx.save();
+              ctx.strokeStyle = color;
+              ctx.lineWidth = Math.max(1, Math.floor(scope.horizontalPixelRatio));
+              ctx.setLineDash([3 * scope.verticalPixelRatio, 6 * scope.verticalPixelRatio]);
+              ctx.beginPath();
+              ctx.moveTo(scaledX, 0);
+              ctx.lineTo(scaledX, scope.bitmapSize.height);
+              ctx.stroke();
+              ctx.restore();
+            });
+          }
+        };
+      }
+    }
 
     function getField(source, pascal, camel, fallback) {
       if (!source) return fallback;
@@ -512,7 +703,7 @@
         }
       });
 
-      candleSeries = chart.addCandlestickSeries({
+      candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
         upColor: '#22c55e',
         downColor: '#ef4444',
         borderUpColor: '#22c55e',
@@ -526,17 +717,18 @@
       });
 
       maSeries = {
-        20: chart.addLineSeries({ color: '#60a5fa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: floorAutoscaleRange }),
-        50: chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: floorAutoscaleRange }),
-        200: chart.addLineSeries({ color: '#a78bfa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: floorAutoscaleRange })
+        20: chart.addSeries(LightweightCharts.LineSeries, { color: '#60a5fa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: floorAutoscaleRange }),
+        50: chart.addSeries(LightweightCharts.LineSeries, { color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: floorAutoscaleRange }),
+        200: chart.addSeries(LightweightCharts.LineSeries, { color: '#a78bfa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: floorAutoscaleRange })
       };
 
       chart.subscribeCrosshairMove(param => {
         const data = param && param.seriesData ? param.seriesData.get(candleSeries) : null;
         renderFooter(data || displayCandles[displayCandles.length - 1], param && param.time);
       });
+      chart.subscribeClick(handleChartClick);
 
-      document.getElementById('library-state').textContent = 'Lightweight Charts 4.2.0';
+      document.getElementById('library-state').textContent = `Lightweight Charts ${LightweightCharts.version()}`;
       return chart;
     }
 
@@ -664,6 +856,44 @@
       intervalButtons.forEach(button => button.classList.toggle('active', button.dataset.interval === activeInterval));
       modeButtons.forEach(button => button.classList.toggle('active', button.dataset.mode === chartMode));
       maButtons.forEach(button => button.classList.toggle('active', !!maVisibility[button.dataset.ma]));
+      toolButtons.forEach(button => button.classList.toggle('active', button.dataset.tool === activeTool));
+    }
+
+    function pointerPrice(param) {
+      if (!param || !param.point || !candleSeries) return null;
+      const value = candleSeries.coordinateToPrice(param.point.y);
+      return Number.isFinite(value) ? value : null;
+    }
+
+    function addDrawing(primitive) {
+      if (!candleSeries || !primitive) return;
+      candleSeries.attachPrimitive(primitive);
+      drawingPrimitives.push(primitive);
+      setStatus(`${activeTool} drawing added`);
+    }
+
+    function handleChartClick(param) {
+      if (activeTool === 'crosshair' || !param || !param.time) return;
+      const price = pointerPrice(param);
+      if (!Number.isFinite(price)) return;
+      if (activeTool === 'hline') {
+        addDrawing(new HorizontalLinePrimitive(candleSeries, price));
+        return;
+      }
+      if (activeTool === 'vline') {
+        addDrawing(new VerticalLinePrimitive(chart, param.time));
+        return;
+      }
+      if (activeTool === 'trend') {
+        const point = { time: param.time, price };
+        if (!drawingAnchor) {
+          drawingAnchor = point;
+          setStatus('trend anchor set');
+          return;
+        }
+        addDrawing(new TrendLinePrimitive(chart, candleSeries, drawingAnchor, point));
+        drawingAnchor = null;
+      }
     }
 
     function renderChart(fitContent) {
@@ -766,6 +996,22 @@
       renderPriceLines();
     };
 
+    window.setTerminalTool = function(tool) {
+      activeTool = ['crosshair', 'trend', 'hline', 'vline'].includes(tool) ? tool : 'crosshair';
+      drawingAnchor = null;
+      refreshButtons();
+      setStatus(activeTool === 'crosshair' ? '' : `${activeTool} tool active`);
+    };
+
+    window.clearTerminalDrawings = function() {
+      if (candleSeries && typeof candleSeries.detachPrimitive === 'function') {
+        drawingPrimitives.forEach(primitive => candleSeries.detachPrimitive(primitive));
+      }
+      drawingPrimitives = [];
+      drawingAnchor = null;
+      setStatus('drawings cleared');
+    };
+
     window.toggleTerminalComponents = function() {
       workspace.classList.toggle('ticket-hidden');
       sideRail.classList.toggle('hidden');
@@ -788,6 +1034,8 @@
     intervalButtons.forEach(button => button.addEventListener('click', () => window.setTerminalInterval(button.dataset.interval)));
     modeButtons.forEach(button => button.addEventListener('click', () => window.setTerminalChartMode(button.dataset.mode)));
     maButtons.forEach(button => button.addEventListener('click', () => window.toggleTerminalMa(button.dataset.ma, !maVisibility[button.dataset.ma])));
+    toolButtons.forEach(button => button.addEventListener('click', () => window.setTerminalTool(button.dataset.tool)));
+    document.getElementById('clear-drawings').addEventListener('click', window.clearTerminalDrawings);
     document.getElementById('fit-chart').addEventListener('click', window.fitTerminalChart);
     document.getElementById('components-toggle').addEventListener('click', window.toggleTerminalComponents);
     document.getElementById('buy-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('buy', document.getElementById('quantity').value));
