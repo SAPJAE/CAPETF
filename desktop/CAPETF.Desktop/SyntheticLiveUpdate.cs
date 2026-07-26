@@ -22,10 +22,13 @@ public static class SyntheticLiveUpdate
         if (component is null || update.Price is null) return default;
 
         var componentPreviousPrice = component.SyntheticBaselinePrice ?? component.Instrument.Price;
+        component.Instrument.Bid = update.Bid;
+        component.Instrument.Offer = update.Offer;
         component.Instrument.Price = update.Price;
         component.SyntheticBaselinePrice = update.Price;
         component.NotifyInstrumentPriceChanged();
         basket.LastUpdated = update.Time;
+        SyntheticQuoteCalculator.Refresh(basket);
         if (componentPreviousPrice is null || componentPreviousPrice <= 0 || basket.Candles.Count == 0)
         {
             return new SyntheticQuoteApplyResult(true, false);

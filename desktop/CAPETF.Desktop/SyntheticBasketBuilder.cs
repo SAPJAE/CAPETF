@@ -79,6 +79,7 @@ public static class SyntheticBasketBuilder
                     basket.Candles.Add(candle);
                 }
 
+                SyntheticQuoteCalculator.Refresh(basket);
                 if (basket.Candles.Count >= 2) baskets.Add(basket);
                 foreach (var candidate in cluster) remaining.Remove(candidate);
             }

@@ -24,6 +24,10 @@ public partial class CapComTerminalWindow : Window
     public CapComTerminalWindow()
     {
         InitializeComponent();
+        StrategyBox.ItemsSource = SyntheticStrategyCatalog.All;
+        StrategyBox.DisplayMemberPath = nameof(SyntheticStrategy.Label);
+        StrategyBox.SelectedValuePath = nameof(SyntheticStrategy.Kind);
+        StrategyBox.SelectedIndex = 0;
         ComponentsList.ItemsSource = _components;
         LoadSavedCredentials();
         _ = InitializeChartHostAsync();
@@ -107,6 +111,7 @@ public partial class CapComTerminalWindow : Window
 
         var block = SelectedBlock();
         var resolution = SelectedResolution();
+        var strategy = SelectedStrategy();
         var periodsPerYear = PeriodsPerYear(resolution);
         var minCandles = MinimumCandles(resolution);
         var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments, limit: 500);
@@ -118,15 +123,23 @@ public partial class CapComTerminalWindow : Window
             StringComparer.OrdinalIgnoreCase);
 
         IReadOnlyList<MarketInstrument> selectionCandidates = SelectSyntheticCandidates(candidates, candles, maxSelection: 36);
+        if (strategy != SyntheticStrategyKind.SimilarToSelectedSymbol)
+        {
+            selectionCandidates = SelectStrategyCandidates(strategy, candidates, candles, periodsPerYear, maxSelection: 36);
+        }
 
         if (candles.Count == 0 || selectionCandidates.Count < 3)
         {
             candles = await LoadApiCandlesAsync(block, candidates.Take(80).ToList(), resolution, minCandles);
             selectionCandidates = SelectSyntheticCandidates(candidates, candles, maxSelection: 36);
+            if (strategy != SyntheticStrategyKind.SimilarToSelectedSymbol)
+            {
+                selectionCandidates = SelectStrategyCandidates(strategy, candidates, candles, periodsPerYear, maxSelection: 36);
+            }
             seededCandles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(candles, StringComparer.OrdinalIgnoreCase);
         }
 
-        if (!string.IsNullOrWhiteSpace(seedText))
+        if (strategy == SyntheticStrategyKind.SimilarToSelectedSymbol && !string.IsNullOrWhiteSpace(seedText))
         {
             var seed = SeededSyntheticSelector.ResolveSeed(seedText, block, _instruments);
             if (seed is not null &&
@@ -147,9 +160,11 @@ public partial class CapComTerminalWindow : Window
         }
 
         StatusText.Text = string.IsNullOrWhiteSpace(seedText)
-            ? $"Selecting basket from {selectionCandidates.Count} similar-history candidates..."
-            : $"Selecting seeded basket for {seedText}...";
-        _basket = !string.IsNullOrWhiteSpace(seedText)
+            ? $"Selecting {StrategyLabel(strategy)} basket from {selectionCandidates.Count} candidates..."
+            : strategy == SyntheticStrategyKind.SimilarToSelectedSymbol
+                ? $"Selecting seeded basket for {seedText}..."
+                : $"Selecting {StrategyLabel(strategy)} basket from {selectionCandidates.Count} candidates...";
+        _basket = strategy == SyntheticStrategyKind.SimilarToSelectedSymbol && !string.IsNullOrWhiteSpace(seedText)
             ? await Task.Run(() => SeededSyntheticSelector.SelectSeededBasket(
                 seedText,
                 block,
@@ -166,6 +181,17 @@ public partial class CapComTerminalWindow : Window
 
         await RenderSyntheticChartAsync(_basket);
         StatusText.Text = $"{_basket.Symbol}: {_basket.Components.Count} legs, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
+    }
+
+    private static IReadOnlyList<MarketInstrument> SelectStrategyCandidates(
+        SyntheticStrategyKind strategy,
+        IReadOnlyList<MarketInstrument> candidates,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
+        int periodsPerYear,
+        int maxSelection)
+    {
+        var ranked = SyntheticStrategyRanker.Rank(strategy, candidates, candles, periodsPerYear, maxSelection);
+        return ranked.Count >= 3 ? ranked.Select(rank => rank.Instrument).ToList() : [];
     }
 
     private static IReadOnlyList<MarketInstrument> SelectSyntheticCandidates(
@@ -340,6 +366,7 @@ public partial class CapComTerminalWindow : Window
             var result = SyntheticTerminalLiveUpdate.Apply(_basket, update);
             if (!result.Matched) return;
             if (result.Payload is not null) _ = SendTerminalPayloadAsync(result.Payload, liveUpdate: true);
+            ChartMetaText.Text = $"{result.Payload?.CurrencyLabel ?? ""} | bid {FormatQuote(_basket.BidPrice)} | ask {FormatQuote(_basket.AskPrice)} | last {FormatQuote(_basket.LastPrice)}";
             StatusText.Text = $"{_basket.Symbol}: live {_basket.BasketPrice:0.####}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
         });
     }
@@ -402,6 +429,12 @@ public partial class CapComTerminalWindow : Window
 
     private string SelectedResolution() =>
         (ResolutionBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Weekly";
+
+    private SyntheticStrategyKind SelectedStrategy() =>
+        StrategyBox.SelectedValue is SyntheticStrategyKind kind ? kind : SyntheticStrategyKind.SimilarToSelectedSymbol;
+
+    private static string StrategyLabel(SyntheticStrategyKind kind) =>
+        SyntheticStrategyCatalog.All.FirstOrDefault(strategy => strategy.Kind == kind)?.Label ?? kind.ToString();
 
     private static string RequestResolution(string resolution) =>
         resolution is "2H" or "6H" ? "HOUR" :
@@ -482,7 +515,7 @@ public partial class CapComTerminalWindow : Window
     {
         var payload = SyntheticTerminalChartPayload.Build(basket);
         SymbolText.Text = $"{payload.Symbol}  {payload.Block}";
-        ChartMetaText.Text = $"{payload.CurrencyLabel} | last {basket.BasketPrice:0.####}";
+        ChartMetaText.Text = $"{payload.CurrencyLabel} | bid {FormatQuote(payload.BidPrice)} | ask {FormatQuote(payload.AskPrice)} | last {FormatQuote(payload.LastPrice)}";
         SyntheticFormulaText.Text = string.Join(Environment.NewLine + "+ ", basket.Components.Select(component =>
             $"{component.FormulaMultiplier:0.########} * {component.Instrument.Epic}"));
 
@@ -509,6 +542,8 @@ public partial class CapComTerminalWindow : Window
             await InvokeTerminalScriptAsync($"window.renderTerminal && window.renderTerminal({json});");
         }
     }
+
+    private static string FormatQuote(decimal? value) => value?.ToString("0.#####") ?? "n/a";
 
     private async Task ClearTerminalChartAsync()
     {
@@ -559,6 +594,9 @@ public partial class CapComTerminalWindow : Window
     }
 
     private async void FitChart_Click(object sender, RoutedEventArgs e) => await FitTerminalChartAsync();
+
+    private async void GoToRealtime_Click(object sender, RoutedEventArgs e) =>
+        await InvokeTerminalScriptAsync("window.goToRealtime && window.goToRealtime();");
 
     private async void ToggleTicket_Click(object sender, RoutedEventArgs e) =>
         await InvokeTerminalScriptAsync("window.toggleTerminalComponents && window.toggleTerminalComponents();");

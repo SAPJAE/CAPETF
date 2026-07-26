@@ -46,6 +46,9 @@ public sealed class SyntheticComponent(
 public sealed class SyntheticBasket : INotifyPropertyChanged
 {
     private decimal _basketPrice;
+    private decimal? _bidPrice;
+    private decimal? _askPrice;
+    private decimal? _lastPrice;
     private DateTimeOffset? _lastUpdated;
 
     public string Symbol { get; init; } = "";
@@ -59,6 +62,24 @@ public sealed class SyntheticBasket : INotifyPropertyChanged
     {
         get => _basketPrice;
         set => SetField(ref _basketPrice, value);
+    }
+
+    public decimal? BidPrice
+    {
+        get => _bidPrice;
+        set => SetField(ref _bidPrice, value);
+    }
+
+    public decimal? AskPrice
+    {
+        get => _askPrice;
+        set => SetField(ref _askPrice, value);
+    }
+
+    public decimal? LastPrice
+    {
+        get => _lastPrice;
+        set => SetField(ref _lastPrice, value);
     }
 
     public DateTimeOffset? LastUpdated
@@ -80,3 +101,41 @@ public sealed class SyntheticBasket : INotifyPropertyChanged
 public sealed record SyntheticBuildResult(
     IReadOnlyList<SyntheticBasket> Baskets,
     string Message);
+
+public static class SyntheticQuoteCalculator
+{
+    public static void Refresh(SyntheticBasket basket)
+    {
+        basket.BidPrice = SumStrict(basket.Components, component => component.Instrument.Bid);
+        basket.AskPrice = SumStrict(basket.Components, component => component.Instrument.Offer);
+        basket.LastPrice = SumStrict(basket.Components, ComponentLastPrice);
+    }
+
+    private static decimal? SumStrict(
+        IEnumerable<SyntheticComponent> components,
+        Func<SyntheticComponent, decimal?> priceSelector)
+    {
+        decimal total = 0m;
+        var count = 0;
+        foreach (var component in components)
+        {
+            var price = priceSelector(component);
+            if (price is null) return null;
+            total += price.Value * component.FormulaMultiplier;
+            count++;
+        }
+
+        return count == 0 ? null : decimal.Round(total, 6);
+    }
+
+    private static decimal? ComponentLastPrice(SyntheticComponent component)
+    {
+        if (component.DisplayPrice is not null) return component.DisplayPrice;
+        if (component.Instrument.Bid is not null && component.Instrument.Offer is not null)
+        {
+            return (component.Instrument.Bid.Value + component.Instrument.Offer.Value) / 2m;
+        }
+
+        return null;
+    }
+}

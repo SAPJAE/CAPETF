@@ -567,7 +567,10 @@
       document.getElementById('symbol').textContent = getField(payload, 'Symbol', 'symbol', 'No synthetic');
       document.getElementById('block').textContent = getField(payload, 'Block', 'block', '');
       document.getElementById('currency').textContent = getField(payload, 'CurrencyLabel', 'currencyLabel', '');
-      document.getElementById('last-price').textContent = last ? `Last ${money(last.close)}` : '';
+      const bid = getField(payload, 'BidPrice', 'bidPrice', null);
+      const ask = getField(payload, 'AskPrice', 'askPrice', null);
+      const syntheticLast = getField(payload, 'LastPrice', 'lastPrice', last && last.close);
+      document.getElementById('last-price').textContent = `Bid ${money(bid)}  Ask ${money(ask)}  Last ${money(syntheticLast)}`;
       document.getElementById('vol-match').textContent = components.length ? `VOL MATCH ${components.length} legs` : 'VOL MATCH n/a';
       document.getElementById('period').textContent = `${activeInterval} ${chartMode === 'heikin' ? 'Heikin Ashi' : 'Candles'}`;
       document.getElementById('formula').textContent = buildFormula(components);
@@ -675,6 +678,10 @@
 
     window.fitTerminalChart = function() {
       if (chart) chart.timeScale().fitContent();
+    };
+
+    window.goToRealtime = function() {
+      if (chart) chart.timeScale().scrollToRealTime();
     };
 
     window.setTerminalChartMode = function(mode) {

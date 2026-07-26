@@ -15,23 +15,29 @@ public static class SyntheticTerminalSelector
             .ToList();
         if (blockInstruments.Count < 3) return null;
 
-        var terminalCandles = candles.ToDictionary(
+        var comparisonCandles = candles.ToDictionary(
             pair => pair.Key,
             pair => (IReadOnlyList<OhlcPoint>)LastThreeYears(pair.Value));
         var result = SyntheticBasketBuilder.Build(
             block,
             blockInstruments,
-            terminalCandles,
+            comparisonCandles,
             maxBaskets: 12,
             periodsPerYear: periodsPerYear);
 
-        return result.Baskets
+        var selected = result.Baskets
             .Where(basket => basket.Candles.Count >= 2 && basket.Components.Count is >= 3 and <= 4)
             .OrderByDescending(TerminalSelectionScore)
             .ThenByDescending(basket => basket.SimilarityScore)
             .ThenByDescending(basket => basket.Candles.Count)
             .ThenBy(basket => basket.Symbol, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault();
+        if (selected is null) return null;
+
+        var selectedInstruments = selected.Components.Select(component => component.Instrument).ToList();
+        return SyntheticBasketBuilder.Build(block, selectedInstruments, candles, maxBaskets: 1, periodsPerYear: periodsPerYear)
+            .Baskets
+            .FirstOrDefault() ?? selected;
     }
 
     public static IReadOnlyList<MarketInstrument> HistoryLoadCandidates(
