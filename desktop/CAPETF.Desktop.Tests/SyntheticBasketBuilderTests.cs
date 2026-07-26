@@ -45,6 +45,7 @@ public static class SyntheticBasketBuilderTests
         SeededSyntheticSelectorPrefersExactNikeTickerOverNameContains();
         SeededSyntheticSelectorMatchesCapitalSuffixSymbol();
         SeededSyntheticSelectorBuildsSapFromEncryptedChunks();
+        SeededSyntheticSelectorBuildsSapFromEncryptedChunksForIntradayIntervals();
         SeededSyntheticSelectorDoesNotResolveShortTickersByLooseNameContains();
         SyntheticTerminalLiveUpdateReturnsPayloadImmediately();
         SyntheticTerminalHtmlExposesRequiredFunctions();
@@ -56,6 +57,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlExposesDecisionChartControls();
         SyntheticTerminalHtmlExposesV2TerminalControls();
         CapComTerminalUsesClearActionLabelsAndSymbolDropdown();
+        SeededSyntheticBuildsDoNotUseGenericHistoryFallback();
         CapComTerminalIntradayMinimumsFitCachedHourlyHistory();
         StockRefreshFetchesDeepHourlyHistory();
         DesktopDefaultSearchDoesNotFilterStocksByEtf();
@@ -1034,6 +1036,63 @@ public static class SyntheticBasketBuilderTests
         if (basket is null) throw new Exception("SAP should build from encrypted stock chunks");
         if (basket.Components.All(component => component.Instrument.Epic != "SAPD")) throw new Exception("encrypted SAP basket must include SAPD");
         if (!string.Equals(basket.Block, "Europe / EUR / All", StringComparison.OrdinalIgnoreCase)) throw new Exception("SAP basket should remain in Europe / EUR / All");
+    }
+
+    private static void SeededSyntheticSelectorBuildsSapFromEncryptedChunksForIntradayIntervals()
+    {
+        var cached = DashboardStockChunkLoader.LoadStocks();
+        if (cached.Instruments.Count == 0 || cached.OhlcByEpicAndResolution is null) return;
+
+        foreach (var (interval, minimumCandles, periodsPerYear) in new[] { ("2H", 30, 252 * 4), ("4H", 16, 252 * 2), ("6H", 10, 252) })
+        {
+            var candles = cached.OhlcByEpicAndResolution
+                .Where(pair => pair.Value.TryGetValue(interval, out var rows) && rows.Count >= minimumCandles)
+                .ToDictionary(pair => pair.Key, pair => pair.Value[interval], StringComparer.OrdinalIgnoreCase);
+
+            var basket = SeededSyntheticSelector.SelectSeededBasket(
+                "sap",
+                "Europe / EUR / All",
+                cached.Instruments,
+                candles,
+                periodsPerYear,
+                minimumCandles);
+
+            if (basket is null)
+            {
+                var sapRows = candles.TryGetValue("SAPD", out var rows) ? rows.Count : 0;
+                var eurPeers = cached.Instruments.Count(item =>
+                    item.Epic != "SAPD" &&
+                    string.Equals(item.Currency, "EUR", StringComparison.OrdinalIgnoreCase) &&
+                    candles.ContainsKey(item.Epic));
+                throw new Exception($"SAP should build from encrypted stock chunks for {interval}; SAP rows {sapRows}, EUR peers {eurPeers}, candle symbols {candles.Count}");
+            }
+            if (basket.Components.All(component => component.Instrument.Epic != "SAPD")) throw new Exception($"encrypted SAP {interval} basket must include SAPD");
+        }
+    }
+
+    private static void SeededSyntheticBuildsDoNotUseGenericHistoryFallback()
+    {
+        var shouldFallback = SyntheticTerminalBuildPolicy.ShouldUseGenericHistoryFallback(
+            SyntheticStrategyKind.SimilarToSelectedSymbol,
+            seedText: "sap",
+            usableCachedCandles: 0,
+            genericSelectionCandidateCount: 0);
+
+        if (shouldFallback)
+        {
+            throw new Exception("seeded builds must preserve the full cached universe instead of replacing it with the generic API fallback");
+        }
+
+        shouldFallback = SyntheticTerminalBuildPolicy.ShouldUseGenericHistoryFallback(
+            SyntheticStrategyKind.DipInsideUptrend,
+            seedText: "",
+            usableCachedCandles: 0,
+            genericSelectionCandidateCount: 0);
+
+        if (!shouldFallback)
+        {
+            throw new Exception("non-seeded strategy builds should still use the generic API fallback when cached history is empty");
+        }
     }
 
     private static void SyntheticTerminalHtmlUsesPackagedChartLibrary()

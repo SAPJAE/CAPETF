@@ -121,6 +121,9 @@ public partial class CapComTerminalWindow : Window
         var activeCachedCandles = CachedCandlesForResolution(resolution);
         var candles = BuildCachedCandles(candidates, activeCachedCandles, minCandles, candidateLimit: 500);
         var seedText = SeedText();
+        var isSeededSimilarBuild =
+            strategy == SyntheticStrategyKind.SimilarToSelectedSymbol &&
+            !string.IsNullOrWhiteSpace(seedText);
         var seededCandles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(
             activeCachedCandles.Count > 0 ? activeCachedCandles : candles,
             StringComparer.OrdinalIgnoreCase);
@@ -131,7 +134,11 @@ public partial class CapComTerminalWindow : Window
             selectionCandidates = SelectStrategyCandidates(strategy, candidates, candles, periodsPerYear, maxSelection: 36);
         }
 
-        if (candles.Count == 0 || selectionCandidates.Count < 3)
+        if (SyntheticTerminalBuildPolicy.ShouldUseGenericHistoryFallback(
+            strategy,
+            seedText,
+            candles.Count,
+            selectionCandidates.Count))
         {
             candles = await LoadApiCandlesAsync(block, candidates.Take(80).ToList(), resolution, minCandles);
             selectionCandidates = SelectSyntheticCandidates(candidates, candles, maxSelection: 36);
@@ -142,7 +149,7 @@ public partial class CapComTerminalWindow : Window
             seededCandles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(candles, StringComparer.OrdinalIgnoreCase);
         }
 
-        if (strategy == SyntheticStrategyKind.SimilarToSelectedSymbol && !string.IsNullOrWhiteSpace(seedText))
+        if (isSeededSimilarBuild)
         {
             var seed = SeededSyntheticSelector.ResolveSeed(seedText, block, _instruments);
             if (seed is not null &&
@@ -179,7 +186,10 @@ public partial class CapComTerminalWindow : Window
         if (_basket is null)
         {
             await ClearTerminalChartAsync();
-            StatusText.Text = $"No synthetic basket could be built. {candles.Count} symbols had usable history.";
+            var usableHistoryCount = isSeededSimilarBuild
+                ? seededCandles.Count(pair => pair.Value.Count >= minCandles)
+                : candles.Count;
+            StatusText.Text = $"No synthetic basket could be built. {usableHistoryCount} symbols had usable {resolution} history in {block}.";
             return;
         }
 
