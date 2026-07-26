@@ -86,6 +86,19 @@ public sealed class TerminalOperationState : INotifyPropertyChanged
 
     public void Report(int current) => Report(OperationName, current, Total);
 
+    public void BeginStage(string operationName, int? total = null)
+    {
+        lock (_gate)
+        {
+            if (!_isBusy) return;
+            _operationName = operationName;
+            _current = 0;
+            _total = NormalizeTotal(total);
+        }
+
+        NotifyStateChanged();
+    }
+
     public void Report(string operationName, int current, int? total = null)
     {
         lock (_gate)

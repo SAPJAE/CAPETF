@@ -186,6 +186,8 @@ public partial class CapComTerminalWindow : Window
             : strategy == SyntheticStrategyKind.SimilarToSelectedSymbol
                 ? $"Selecting seeded basket for {seedText}..."
                 : $"Selecting {StrategyLabel(strategy)} basket from {selectionCandidates.Count} candidates...";
+        _operationState.BeginStage("Selecting basket");
+        await Task.Yield();
         _basket = strategy == SyntheticStrategyKind.SimilarToSelectedSymbol && !string.IsNullOrWhiteSpace(seedText)
             ? await Task.Run(() => SeededSyntheticSelector.SelectSeededBasket(
                 seedText,
@@ -207,6 +209,8 @@ public partial class CapComTerminalWindow : Window
 
         var selectedComponents = _basket.Components.Select(component => component.Instrument).ToList();
         var selectedHistory = await LoadSelectedHistoryAsync(selectedComponents, resolution);
+        _operationState.BeginStage("Building selected basket");
+        await Task.Yield();
         _basket = SyntheticHistoryService.BuildSelected(block, selectedComponents, selectedHistory, periodsPerYear, minCandles);
         if (_basket is null)
         {
@@ -216,6 +220,8 @@ public partial class CapComTerminalWindow : Window
         }
 
         await RefreshBasketMarketDetailsAsync(_basket);
+        _operationState.BeginStage("Rendering synthetic chart");
+        await Task.Yield();
         await RenderSyntheticChartAsync(_basket);
         var buildStatus = $"{_basket.Symbol}: {_basket.Components.Count} legs, {HistoryRange(selectedHistory)}, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
         StatusText.Text = buildStatus;
@@ -263,6 +269,8 @@ public partial class CapComTerminalWindow : Window
         }
 
         var selectedHistory = await LoadSelectedHistoryAsync(selectedInstruments, resolution);
+        _operationState.BeginStage("Building selected basket");
+        await Task.Yield();
         _basket = SyntheticHistoryService.BuildSelected(saved.Block, selectedInstruments, selectedHistory, periodsPerYear, minCandles);
         if (_basket is null)
         {
@@ -273,6 +281,8 @@ public partial class CapComTerminalWindow : Window
 
         _basket = RenameBasket(_basket, saved.Symbol, saved.Block);
         await RefreshBasketMarketDetailsAsync(_basket);
+        _operationState.BeginStage("Rendering synthetic chart");
+        await Task.Yield();
         await RenderSyntheticChartAsync(_basket);
         var loadStatus = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs, {HistoryRange(selectedHistory)}.";
         StatusText.Text = loadStatus;
@@ -328,7 +338,7 @@ public partial class CapComTerminalWindow : Window
         var checkedCount = 0;
 
         var total = Math.Min(candidates.Count, candidateLimit);
-        _operationState.Report("Scanning cached history", 0, total);
+        _operationState.BeginStage("Scanning cached history", total);
         StatusText.Text = $"Scanning cached history for {total} stocks...";
         foreach (var item in candidates.Take(candidateLimit))
         {
@@ -365,7 +375,7 @@ public partial class CapComTerminalWindow : Window
         string resolution)
     {
         await EnsureConnectedAsync();
-        _operationState.Report($"Loading full {resolution} history", 0, selectedComponents.Count);
+        _operationState.BeginStage($"Loading full {resolution} history", selectedComponents.Count);
         var progress = new Progress<HistoryLoadProgress>(update =>
         {
             _operationState.Report($"Loading full {resolution} history", update.CompletedComponents, update.TotalComponents);
@@ -398,7 +408,7 @@ public partial class CapComTerminalWindow : Window
 
     private async Task StartStreamingCurrentBasketAsync()
     {
-        _operationState.Report("Starting live stream", 0, 2);
+        _operationState.BeginStage("Starting live stream", 2);
         await EnsureConnectedAsync();
         if (_basket is null) return;
 
@@ -430,7 +440,7 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
-        _operationState.Report("Loading market details", 0, basket.Components.Count);
+        _operationState.BeginStage("Loading market details", basket.Components.Count);
         var completed = 0;
         foreach (var component in basket.Components)
         {
@@ -500,6 +510,8 @@ public partial class CapComTerminalWindow : Window
         var resolution = SelectedResolution();
         var selectedComponents = existingBasket.Components.Select(component => component.Instrument).ToList();
         var history = await LoadSelectedHistoryAsync(selectedComponents, resolution);
+        _operationState.BeginStage("Building selected basket");
+        await Task.Yield();
         var rebuilt = SyntheticHistoryService.BuildSelected(
             existingBasket.Block,
             selectedComponents,
@@ -514,6 +526,8 @@ public partial class CapComTerminalWindow : Window
 
         _basket = RenameBasket(rebuilt, existingBasket.Symbol, existingBasket.Block);
         await RefreshBasketMarketDetailsAsync(_basket);
+        _operationState.BeginStage("Rendering synthetic chart");
+        await Task.Yield();
         await RenderSyntheticChartAsync(_basket);
         var reloadStatus = $"{_basket.Symbol}: reloaded {resolution} history for the same {_basket.Components.Count} legs, {HistoryRange(history)}.";
         StatusText.Text = reloadStatus;
@@ -670,7 +684,7 @@ public partial class CapComTerminalWindow : Window
         await EnsureConnectedAsync();
 
         var enriched = new List<MarketInstrument>(instruments.Count);
-        _operationState.Report("Loading ETF market details", 0, instruments.Count);
+        _operationState.BeginStage("Loading ETF market details", instruments.Count);
         var completed = 0;
         foreach (var instrument in instruments)
         {

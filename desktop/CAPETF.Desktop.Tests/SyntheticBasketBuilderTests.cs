@@ -12,6 +12,8 @@ public static class SyntheticBasketBuilderTests
     public static void RunAll()
     {
         TerminalOperationStateRejectsDuplicatesAndTracksProgress();
+        TerminalOperationStageResetsCompletedTotalsForIndeterminateWork();
+        CapComTerminalOperationGuardCompletesFailsAndRestoresControls();
         NewOperationCancelsAndSupersedesEarlierWork();
         IncompleteOhlcRowsAreExcluded();
         CapitalPricePathSupportsDatedHistoryWindows();
@@ -232,6 +234,44 @@ public static class SyntheticBasketBuilderTests
         state.Fail("Capital.com did not return details");
         AssertFalse(state.IsBusy, "failure should release the operation guard");
         AssertEqual("Capital.com did not return details", state.ErrorMessage, "failure should retain an actionable error message");
+    }
+
+    private static void TerminalOperationStageResetsCompletedTotalsForIndeterminateWork()
+    {
+        var state = new TerminalOperationState();
+
+        AssertTrue(state.TryBegin("Scanning cached history", 500), "a determinate operation should start");
+        state.Report(500);
+        AssertNear(100m, state.Percent, "the completed determinate stage should reach one hundred percent");
+
+        state.BeginStage("Selecting basket");
+
+        AssertEqual("Selecting basket", state.OperationName, "the new stage should replace the operation label");
+        AssertEqual<int?>(null, state.Total, "an indeterminate stage should clear the previous total");
+        AssertEqual(0, state.Current, "an indeterminate stage should reset completed work");
+        AssertTrue(state.IsIndeterminate, "a stage with no total should use indeterminate progress");
+    }
+
+    private static void CapComTerminalOperationGuardCompletesFailsAndRestoresControls()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        var guardStart = source.IndexOf("private async Task<bool> RunOperationAsync", StringComparison.Ordinal);
+        var guardEnd = source.IndexOf("private void SetOperationControlsEnabled", guardStart, StringComparison.Ordinal);
+        if (guardStart < 0 || guardEnd < 0) throw new Exception("terminal operation guard must remain a focused helper");
+        var guard = source[guardStart..guardEnd];
+
+        AssertTrue(guard.Contains("_operationState.Complete();", StringComparison.Ordinal), "the operation guard should complete successful work");
+        AssertTrue(guard.Contains("_operationState.Fail(ex.Message);", StringComparison.Ordinal), "the operation guard should fail unsuccessful work");
+        AssertTrue(guard.Contains("finally", StringComparison.Ordinal), "the operation guard should restore controls in finally");
+        AssertTrue(guard.Contains("SetOperationControlsEnabled(true);", StringComparison.Ordinal), "the operation guard should re-enable controls after success or failure");
+
+        var selectingStage = source.IndexOf("_operationState.BeginStage(\"Selecting basket\")", StringComparison.Ordinal);
+        var yieldBeforeSelection = source.IndexOf("await Task.Yield();", selectingStage, StringComparison.Ordinal);
+        var backgroundSelection = source.IndexOf("await Task.Run", yieldBeforeSelection, StringComparison.Ordinal);
+        if (selectingStage < 0 || yieldBeforeSelection < selectingStage || backgroundSelection < yieldBeforeSelection)
+        {
+            throw new Exception("basket selection must yield after starting its indeterminate progress stage");
+        }
     }
 
     private static void SyntheticHistoryServiceMapsTerminalTimeframesToCapitalResolutions()
