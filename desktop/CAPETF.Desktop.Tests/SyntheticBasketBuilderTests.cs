@@ -90,6 +90,7 @@ public static class SyntheticBasketBuilderTests
         SeededSyntheticSelectorBuildsSapFromEncryptedChunksForIntradayIntervals();
         SeededSyntheticSelectorDoesNotResolveShortTickersByLooseNameContains();
         SyntheticTerminalLiveUpdateReturnsIncrementalTick();
+        IncrementalAndNativeFreshnessUseIndependentUtcNow();
         StreamingQuoteClearsMissingAndZeroSides();
         StreamingQuoteClearsUnavailableSidesWithoutUsablePrice();
         OutOfOrderStreamingQuoteDoesNotMutateComponentState();
@@ -135,6 +136,7 @@ public static class SyntheticBasketBuilderTests
         CapitalStreamingClientReportsRemoteClose();
         CapitalStreamingCleanupIsBoundedAndIdempotent();
         WindowLifetimeCancelsAndRejectsLateCompletion();
+        WindowLifetimeCancellationNeverEntersFailureUi();
         WebViewRuntimeProfileIsExternalAndExplicitlyConfigured();
         DesktopPublishAndThirdPartyPackagingContractsAreComplete();
         StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy();
@@ -332,10 +334,12 @@ public static class SyntheticBasketBuilderTests
         if (guardStart < 0 || guardEnd < 0) throw new Exception("terminal operation guard must remain a focused helper");
         var guard = source[guardStart..guardEnd];
 
-        AssertTrue(guard.Contains("_operationState.Complete();", StringComparison.Ordinal), "the operation guard should complete successful work");
+        AssertTrue(guard.Contains("TerminalOperationExecution.RunAsync", StringComparison.Ordinal), "the operation guard should classify lifetime cancellation before applying UI outcomes");
+        AssertTrue(guard.Contains("_operationState.Complete()", StringComparison.Ordinal), "the operation guard should complete successful work");
         AssertTrue(guard.Contains("_operationState.Fail(ex.Message);", StringComparison.Ordinal), "the operation guard should fail unsuccessful work");
+        AssertTrue(guard.Contains("_windowLifetime.TryApply", StringComparison.Ordinal), "the operation guard should reject completion and failure UI after close begins");
         AssertTrue(guard.Contains("finally", StringComparison.Ordinal), "the operation guard should restore controls in finally");
-        AssertTrue(guard.Contains("SetOperationControlsEnabled(true);", StringComparison.Ordinal), "the operation guard should re-enable controls after success or failure");
+        AssertTrue(guard.Contains("SetOperationControlsEnabled(true)", StringComparison.Ordinal), "the operation guard should re-enable controls after success or failure");
 
         var selectingStage = source.IndexOf("_operationState.BeginStage(\"Selecting basket\")", StringComparison.Ordinal);
         var yieldBeforeSelection = source.IndexOf("await Task.Yield();", selectingStage, StringComparison.Ordinal);
@@ -2075,6 +2079,38 @@ public static class SyntheticBasketBuilderTests
         AssertEqual(1, result.Tick.ComponentQuotes.Count, "terminal tick should carry component quote metadata without full chart history");
         AssertEqual(DateTimeOffset.Parse("2026-07-25T00:01:00Z"), result.Tick.ComponentQuotes[0].QuoteTimestamp,
             "stream quote timestamp must flow into the terminal tick");
+    }
+
+    private static void IncrementalAndNativeFreshnessUseIndependentUtcNow()
+    {
+        var observedAt = DateTimeOffset.Parse("2026-07-27T12:00:00Z");
+        AssertIncrementalFreshness(observedAt.AddMinutes(-6), observedAt, "stale", "stale components");
+        AssertIncrementalFreshness(observedAt.AddSeconds(1), observedAt, "stale", "stale components");
+        AssertIncrementalFreshness(observedAt.AddMinutes(-1), observedAt, "fresh", "quotes fresh");
+    }
+
+    private static void AssertIncrementalFreshness(
+        DateTimeOffset sourceTime,
+        DateTimeOffset observedAt,
+        string expectedPayloadStatus,
+        string expectedNativeStatus)
+    {
+        var basket = new SyntheticBasket { Symbol = "SYN-FRESHNESS", Block = "US / USD / Technology", BasketPrice = 10m };
+        basket.Components.Add(new SyntheticComponent(new MarketInstrument { Epic = "FRESH-A", Price = 10m }, 100m, 0m, 0m)
+        {
+            SyntheticBaselinePrice = 10m,
+        });
+
+        var result = SyntheticTerminalLiveUpdate.Apply(
+            basket,
+            new QuoteUpdate("FRESH-A", 12m, 12.2m, 12m, sourceTime),
+            observedAt);
+
+        if (result.Tick is null) throw new Exception("matching source quote must produce an incremental payload");
+        AssertEqual(expectedPayloadStatus, result.Tick.ComponentQuotes[0].QuoteStatus,
+            "incremental quote freshness must compare source time with independent UTC now");
+        AssertEqual(expectedNativeStatus, SyntheticTerminalChartPayload.BasketQuoteStatus(basket, observedAt),
+            "native quote status must use the same independent freshness clock");
     }
 
     private static void FinalStaticAcceptanceChecks()
@@ -4078,6 +4114,60 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception("window cleanup must not race through async-void OnClosed");
         }
+    }
+
+    private static void WindowLifetimeCancellationNeverEntersFailureUi()
+    {
+        using var lifetime = new CancellationTokenSource();
+        var failureUiUpdates = 0;
+        var completedUiUpdates = 0;
+
+        var completed = TerminalOperationExecution.RunAsync(
+            async _ =>
+            {
+                lifetime.Cancel();
+                await Task.Yield();
+                throw new InvalidOperationException("WebView disposed while the window was closing");
+            },
+            lifetime.Token,
+            () => completedUiUpdates++,
+            _ => failureUiUpdates++).GetAwaiter().GetResult();
+
+        AssertFalse(completed, "a lifetime-cancelled operation must not report success");
+        AssertEqual(0, completedUiUpdates, "a lifetime-cancelled operation must not enter completion UI");
+        AssertEqual(0, failureUiUpdates, "a lifetime-cancelled operation must not enter failure UI");
+
+        using var streamingCancellation = new CancellationTokenSource();
+        var streamingStartInvoked = false;
+        var cancellationPreserved = false;
+        try
+        {
+            TerminalOperationExecution.WrapStreamingStartAsync(
+                () =>
+                {
+                    streamingStartInvoked = true;
+                    streamingCancellation.Cancel();
+                    return Task.FromCanceled(streamingCancellation.Token);
+                },
+                "Basket ready.",
+                streamingCancellation.Token).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+            cancellationPreserved = true;
+        }
+
+        AssertTrue(streamingStartInvoked, "stream startup cancellation must traverse the wrapper");
+        AssertTrue(cancellationPreserved, "stream startup wrapper must preserve OperationCanceledException during close");
+
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        var chartStart = source.IndexOf("private async Task InitializeChartHostAsync", StringComparison.Ordinal);
+        var chartEnd = source.IndexOf("private async Task RenderSyntheticChartAsync", chartStart, StringComparison.Ordinal);
+        var chartInitialization = source[chartStart..chartEnd];
+        AssertTrue(chartInitialization.Contains("TerminalOperationExecution.RunAsync", StringComparison.Ordinal),
+            "chart initialization must use the tested lifetime-cancellation policy");
+        AssertTrue(source.Contains("TerminalOperationExecution.WrapStreamingStartAsync", StringComparison.Ordinal),
+            "stream startup must use the cancellation-preserving wrapper");
     }
 
     private static void WebViewRuntimeProfileIsExternalAndExplicitlyConfigured()

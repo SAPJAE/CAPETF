@@ -62,6 +62,11 @@ public static class SyntheticTerminalChartPayload
         return age >= TimeSpan.Zero && age <= FreshQuoteAge ? "fresh" : "stale";
     }
 
+    internal static string BasketQuoteStatus(SyntheticBasket basket, DateTimeOffset now) =>
+        basket.Components.All(component => QuoteStatus(component.Instrument.LastTickAt, now) == "fresh")
+            ? "quotes fresh"
+            : "stale components";
+
     private static IReadOnlyList<TerminalLinePoint> MovingAverage(IReadOnlyList<OhlcPoint> source, int period)
     {
         var ordered = source.OrderBy(candle => candle.Time).ToList();

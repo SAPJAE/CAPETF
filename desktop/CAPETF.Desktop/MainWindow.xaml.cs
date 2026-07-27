@@ -837,12 +837,14 @@ public partial class MainWindow : Window
         {
             if (CurrentWorkspaceMode() == SyntheticTerminalWorkspace.ModeName && _terminalBasket is not null)
             {
-                var result = SyntheticTerminalLiveUpdate.Apply(_terminalBasket, update);
+                var observedAt = DateTimeOffset.UtcNow;
+                var result = SyntheticTerminalLiveUpdate.Apply(_terminalBasket, update, observedAt);
                 if (result.Matched)
                 {
                     terminalTick = result.Tick;
                     TerminalHeaderText.Text = $"{_terminalBasket.Symbol} | {_terminalBasket.Block}";
-                    TerminalStatusText.Text = $"{_terminalBasket.Symbol}: bid {FormatTerminalQuote(_terminalBasket.BidPrice)}, ask {FormatTerminalQuote(_terminalBasket.AskPrice)}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
+                    var quoteStatus = SyntheticTerminalChartPayload.BasketQuoteStatus(_terminalBasket, observedAt);
+                    TerminalStatusText.Text = $"{_terminalBasket.Symbol}: bid {FormatTerminalQuote(_terminalBasket.BidPrice)}, ask {FormatTerminalQuote(_terminalBasket.AskPrice)}, {quoteStatus}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
                 }
                 return;
             }

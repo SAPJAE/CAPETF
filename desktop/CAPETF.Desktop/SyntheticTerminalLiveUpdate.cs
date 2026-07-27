@@ -4,8 +4,12 @@ public sealed record SyntheticTerminalTickResult(bool Matched, bool CandleChange
 
 public static class SyntheticTerminalLiveUpdate
 {
-    public static SyntheticTerminalTickResult Apply(SyntheticBasket basket, QuoteUpdate quote)
+    public static SyntheticTerminalTickResult Apply(
+        SyntheticBasket basket,
+        QuoteUpdate quote,
+        DateTimeOffset? now = null)
     {
+        var observedAt = now ?? DateTimeOffset.UtcNow;
         var result = SyntheticLiveUpdate.ApplyQuote(basket, quote);
         var candle = result.CandleChanged && basket.Candles.Count > 0
             ? basket.Candles[^1]
@@ -25,7 +29,7 @@ public static class SyntheticTerminalLiveUpdate
                         component.Instrument.Bid,
                         component.Instrument.Offer,
                         component.Instrument.LastTickAt,
-                        SyntheticTerminalChartPayload.QuoteStatus(component.Instrument.LastTickAt, quote.Time))).ToList())
+                        SyntheticTerminalChartPayload.QuoteStatus(component.Instrument.LastTickAt, observedAt))).ToList())
                 : null);
     }
 }

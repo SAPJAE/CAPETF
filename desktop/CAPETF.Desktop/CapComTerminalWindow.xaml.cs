@@ -483,14 +483,10 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
-        try
-        {
-            await StartStreamingCurrentBasketAsync(cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException($"{baseStatus} Live prices unavailable: {ex.Message}", ex);
-        }
+        await TerminalOperationExecution.WrapStreamingStartAsync(
+            () => StartStreamingCurrentBasketAsync(cancellationToken),
+            baseStatus,
+            cancellationToken);
     }
 
     private async Task StartStreamingCurrentBasketAsync(CancellationToken cancellationToken)
@@ -670,12 +666,12 @@ public partial class CapComTerminalWindow : Window
         await Dispatcher.InvokeAsync(() =>
         {
             if (_windowLifetime.IsClosing || _basket is null) return;
-            var result = SyntheticTerminalLiveUpdate.Apply(_basket, update);
+            var observedAt = DateTimeOffset.UtcNow;
+            var result = SyntheticTerminalLiveUpdate.Apply(_basket, update, observedAt);
             if (!result.Matched) return;
             if (result.Tick is not null) _ = SendTerminalTickAsync(result.Tick);
             ChartMetaText.Text = $"{_pendingPayload?.CurrencyLabel ?? ""} | bid {FormatQuote(_basket.BidPrice)} | ask {FormatQuote(_basket.AskPrice)}";
-            var quoteStatus = _basket.Components.Any(component => component.Instrument.LastTickAt is null ||
-                update.Time - component.Instrument.LastTickAt.Value > TimeSpan.FromMinutes(5)) ? "stale components" : "quotes fresh";
+            var quoteStatus = SyntheticTerminalChartPayload.BasketQuoteStatus(_basket, observedAt);
             StatusText.Text = $"{_basket.Symbol}: bid {FormatQuote(_basket.BidPrice)}, ask {FormatQuote(_basket.AskPrice)}, {quoteStatus}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
         });
     }
@@ -697,38 +693,54 @@ public partial class CapComTerminalWindow : Window
         if (cancellationToken.IsCancellationRequested) return false;
         if (!_operationState.TryBegin(operationName, total))
         {
-            StatusText.Text = $"{_operationState.Label} is already running.";
+            _windowLifetime.TryApply(() => StatusText.Text = $"{_operationState.Label} is already running.");
             return false;
         }
 
-        SetOperationControlsEnabled(false);
-        await SetTerminalBusyAsync(true, operationName);
+        var controlsDisabled = false;
         try
         {
-            await action(cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            _operationState.Complete();
-            return true;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            return false;
-        }
-        catch (Exception ex)
-        {
-            _operationState.Fail(ex.Message);
-            ConnectionText.Text = operationName.StartsWith("Connecting", StringComparison.Ordinal)
-                ? $"Connection failed: {ex.Message}"
-                : ConnectionText.Text;
-            StatusText.Text = ex.Message;
-            return false;
+            return await TerminalOperationExecution.RunAsync(
+                async token =>
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (!_windowLifetime.TryApply(() =>
+                        {
+                            SetOperationControlsEnabled(false);
+                            controlsDisabled = true;
+                        }))
+                    {
+                        token.ThrowIfCancellationRequested();
+                        return;
+                    }
+
+                    await SetTerminalBusyAsync(true, operationName);
+                    token.ThrowIfCancellationRequested();
+                    await action(token);
+                },
+                cancellationToken,
+                () => _windowLifetime.TryApply(() => _operationState.Complete()),
+                ex => _windowLifetime.TryApply(() =>
+                {
+                    _operationState.Fail(ex.Message);
+                    ConnectionText.Text = operationName.StartsWith("Connecting", StringComparison.Ordinal)
+                        ? $"Connection failed: {ex.Message}"
+                        : ConnectionText.Text;
+                    StatusText.Text = ex.Message;
+                }));
         }
         finally
         {
-            if (!_windowLifetime.IsClosing)
+            if (controlsDisabled && !_windowLifetime.IsClosing)
             {
-                await SetTerminalBusyAsync(false);
-                SetOperationControlsEnabled(true);
+                try
+                {
+                    await SetTerminalBusyAsync(false);
+                    _windowLifetime.TryApply(() => SetOperationControlsEnabled(true));
+                }
+                catch (Exception) when (cancellationToken.IsCancellationRequested)
+                {
+                }
             }
         }
     }
@@ -960,38 +972,44 @@ public partial class CapComTerminalWindow : Window
 
     private async Task InitializeChartHostAsync(CancellationToken cancellationToken)
     {
-        try
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var terminalPath = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
-            if (!File.Exists(terminalPath))
+        await TerminalOperationExecution.RunAsync(
+            async token =>
             {
-                StatusText.Text = $"Chart file missing: {terminalPath}";
-                return;
-            }
-
-            var environment = await WebViewRuntimeProfile.CreateEnvironmentAsync(cancellationToken);
-            await TerminalWebView.EnsureCoreWebView2Async(environment);
-            cancellationToken.ThrowIfCancellationRequested();
-            TerminalWebView.CoreWebView2.WebMessageReceived += TerminalWebMessageReceived;
-            TerminalWebView.NavigationCompleted += async (_, _) =>
-            {
-                if (_windowLifetime.IsClosing) return;
-                _chartReady = true;
-                await InvokeTerminalScriptAsync("window.resizeTerminal && window.resizeTerminal();");
-                if (_pendingPayload is not null)
+                token.ThrowIfCancellationRequested();
+                var terminalPath = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
+                if (!File.Exists(terminalPath))
                 {
-                    await SendTerminalPayloadAsync(_pendingPayload);
+                    _windowLifetime.TryApply(() => StatusText.Text = $"Chart file missing: {terminalPath}");
+                    return;
                 }
-            };
-            TerminalWebView.Source = new Uri(terminalPath);
-            StatusText.Text = "Interactive chart host loading.";
-        }
-        catch (Exception ex)
-        {
-            _chartReady = false;
-            StatusText.Text = $"Interactive chart host failed: {ex.Message}";
-        }
+
+                var environment = await WebViewRuntimeProfile.CreateEnvironmentAsync(token);
+                await TerminalWebView.EnsureCoreWebView2Async(environment);
+                token.ThrowIfCancellationRequested();
+                if (!_windowLifetime.TryApply(() =>
+                {
+                    TerminalWebView.CoreWebView2.WebMessageReceived += TerminalWebMessageReceived;
+                    TerminalWebView.NavigationCompleted += async (_, _) =>
+                    {
+                        if (!_windowLifetime.TryApply(() => _chartReady = true)) return;
+                        await InvokeTerminalScriptAsync("window.resizeTerminal && window.resizeTerminal();");
+                        if (_windowLifetime.IsClosing) return;
+                        if (_pendingPayload is not null)
+                        {
+                            await SendTerminalPayloadAsync(_pendingPayload);
+                        }
+                    };
+                    TerminalWebView.Source = new Uri(terminalPath);
+                    StatusText.Text = "Interactive chart host loading.";
+                })) return;
+            },
+            cancellationToken,
+            () => { },
+            ex => _windowLifetime.TryApply(() =>
+            {
+                _chartReady = false;
+                StatusText.Text = $"Interactive chart host failed: {ex.Message}";
+            }));
     }
 
     private async Task RenderSyntheticChartAsync(SyntheticBasket basket)
