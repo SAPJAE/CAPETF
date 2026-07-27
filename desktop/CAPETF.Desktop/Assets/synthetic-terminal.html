@@ -53,6 +53,18 @@
       color: #f8fafc;
     }
 
+    button:disabled {
+      cursor: default;
+      opacity: .38;
+    }
+
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible {
+      outline: 2px solid #93c5fd;
+      outline-offset: 1px;
+    }
+
     #terminal {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
@@ -146,33 +158,227 @@
       background: #030712;
     }
 
+    #chart-surface {
+      display: grid;
+      grid-template-columns: 40px minmax(0, 1fr);
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+
     #chart-root {
       position: relative;
       min-width: 0;
       min-height: 0;
+      overflow: hidden;
     }
 
-    #chart-tool-dock {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      z-index: 4;
+    #drawing-tool-rail {
+      z-index: 6;
       display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      min-height: 0;
+      padding: 6px 3px;
+      border-right: 1px solid #26344a;
+      background: #080f1d;
+      overflow-y: auto;
+      scrollbar-width: none;
+    }
+
+    #drawing-tool-rail::-webkit-scrollbar {
+      display: none;
+    }
+
+    .icon-button {
+      display: inline-grid;
+      place-items: center;
+      width: 32px;
+      min-width: 32px;
+      height: 32px;
+      padding: 0;
+      border-color: transparent;
+      border-radius: 4px;
+      background: transparent;
+    }
+
+    .icon-button:hover:not(:disabled) {
+      border-color: #32445f;
+      background: #162236;
+    }
+
+    .icon-button.active,
+    .icon-button[aria-pressed="true"] {
+      border-color: #60a5fa;
+      background: #1e3a5f;
+      color: #dbeafe;
+    }
+
+    .icon-button svg {
+      width: 17px;
+      height: 17px;
+      pointer-events: none;
+    }
+
+    .measure-icon {
+      position: relative;
+    }
+
+    .measure-icon small {
+      position: absolute;
+      right: 3px;
+      bottom: 2px;
+      color: currentColor;
+      font-size: 8px;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    #drawing-history-bar,
+    #drawing-utility-bar,
+    #drawing-style-bar {
+      position: absolute;
+      z-index: 7;
+      display: flex;
+      align-items: center;
       gap: 4px;
       padding: 4px;
-      border: 1px solid rgba(38, 54, 79, .9);
-      background: rgba(9, 17, 31, .88);
+      border: 1px solid #2a3a52;
+      border-radius: 4px;
+      background: rgba(8, 15, 29, .96);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, .24);
     }
 
-    #chart-tool-dock button {
-      min-width: 34px;
-      height: 26px;
-      padding: 0 7px;
+    #drawing-history-bar {
+      top: 8px;
+      left: 8px;
+    }
+
+    #drawing-utility-bar {
+      position: static;
+      flex-direction: column;
+      flex: 0 0 auto;
+      margin-top: auto;
+      padding: 6px 0 0;
+      border: 0;
+      border-top: 1px solid #26344a;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    #drawing-style-bar {
+      top: 8px;
+      left: 88px;
+      min-height: 32px;
+      padding: 4px 6px;
+    }
+
+    #drawing-style-bar.hidden {
+      display: none;
+    }
+
+    #drawing-color {
+      width: 28px;
+      min-width: 28px;
+      height: 24px;
+      padding: 2px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+
+    #drawing-width {
+      width: 48px;
+      height: 24px;
+      border: 1px solid #2a3b57;
+      border-radius: 3px;
+      background: #101a2b;
+      color: var(--ink);
+      font-size: 11px;
+    }
+
+    #line-style-control {
+      display: flex;
+      height: 24px;
+    }
+
+    #line-style-control button {
+      width: 30px;
+      min-width: 30px;
+      height: 24px;
+      padding: 0 5px;
+      border-radius: 0;
+    }
+
+    #line-style-control button:first-child {
+      border-radius: 3px 0 0 3px;
+    }
+
+    #line-style-control button:last-child {
+      border-radius: 0 3px 3px 0;
+    }
+
+    .line-sample {
+      display: block;
+      width: 18px;
+      border-top: 2px solid currentColor;
+    }
+
+    [data-line-style="dashed"] .line-sample {
+      border-top-style: dashed;
+    }
+
+    [data-line-style="dotted"] .line-sample {
+      border-top-style: dotted;
+    }
+
+    #text-annotation-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 10;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      background: rgba(3, 7, 18, .52);
+    }
+
+    #text-annotation-overlay.hidden {
+      display: none;
+    }
+
+    #text-annotation-form {
+      display: grid;
+      grid-template-columns: minmax(180px, 320px) auto auto;
+      gap: 6px;
+      padding: 8px;
+      border: 1px solid #33445f;
+      border-radius: 4px;
+      background: #0b1424;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, .42);
+    }
+
+    #text-annotation-input {
+      width: 100%;
+      padding: 0 8px;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
 
     #empty-state {
       position: absolute;
       inset: 0;
+      z-index: 3;
       display: grid;
       place-items: center;
       color: var(--muted);
@@ -308,8 +514,34 @@
       color: var(--muted);
       font-size: 12px;
     }
+
+    @media (max-width: 700px) {
+      #footer {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+        gap: 6px;
+        padding-inline: 6px;
+        font-size: 10px;
+        overflow: hidden;
+      }
+
+      #footer span,
+      #bottom span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      #bottom {
+        gap: 8px;
+        padding-inline: 6px;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+    }
   </style>
   <script src="lightweight-charts.standalone.production.js"></script>
+  <script src="synthetic-drawings.js"></script>
+  <script src="lucide.min.js"></script>
 </head>
 <body>
   <div id="terminal">
@@ -340,17 +572,56 @@
 
     <main id="workspace" class="ticket-hidden">
       <section id="chart-panel">
-        <div id="chart-root">
-          <div id="chart-tool-dock">
-            <button type="button" class="chart-tool active" data-tool="crosshair" title="Crosshair">X</button>
-            <button type="button" class="chart-tool" data-tool="trend" title="Draw trend line">TL</button>
-            <button type="button" class="chart-tool" data-tool="hline" title="Draw horizontal price line">HL</button>
-            <button type="button" class="chart-tool" data-tool="vline" title="Draw vertical time line">VL</button>
-            <button type="button" class="chart-tool" data-tool="ray" title="Draw ray">RAY</button>
-            <button type="button" class="chart-tool" data-tool="rectangle" title="Draw rectangle">RECT</button>
-            <button type="button" id="clear-drawings" title="Clear drawings">Clear</button>
+        <div id="chart-surface">
+          <nav id="drawing-tool-rail" aria-label="Drawing tools">
+            <button type="button" class="icon-button chart-tool active" data-tool="cursor" title="Cursor / select" aria-label="Cursor / select" aria-pressed="true"><i data-lucide="mouse-pointer-2"></i></button>
+            <button type="button" class="icon-button chart-tool" data-tool="trend" title="Trend line" aria-label="Trend line" aria-pressed="false"><i data-lucide="trending-up"></i></button>
+            <button type="button" class="icon-button chart-tool" data-tool="ray" title="Ray" aria-label="Ray" aria-pressed="false"><i data-lucide="move-right"></i></button>
+            <button type="button" class="icon-button chart-tool" data-tool="hline" title="Horizontal line" aria-label="Horizontal line" aria-pressed="false"><i data-lucide="minus"></i></button>
+            <button type="button" class="icon-button chart-tool" data-tool="vline" title="Vertical line" aria-label="Vertical line" aria-pressed="false"><i data-lucide="separator-vertical"></i></button>
+            <button type="button" class="icon-button chart-tool" data-tool="fib" title="Fibonacci retracement" aria-label="Fibonacci retracement" aria-pressed="false"><i data-lucide="chart-spline"></i></button>
+            <button type="button" class="icon-button chart-tool" data-tool="rectangle" title="Rectangle" aria-label="Rectangle" aria-pressed="false"><i data-lucide="square"></i></button>
+            <button type="button" class="icon-button chart-tool" data-tool="brush" title="Brush" aria-label="Brush" aria-pressed="false"><i data-lucide="pencil"></i></button>
+            <button type="button" class="icon-button chart-tool" data-tool="text" title="Text annotation" aria-label="Text annotation" aria-pressed="false"><i data-lucide="type"></i></button>
+            <button type="button" class="icon-button chart-tool measure-icon" data-tool="measure" title="Price/date percentage measure" aria-label="Price/date percentage measure" aria-pressed="false"><i data-lucide="ruler"></i><small>%</small></button>
+            <div id="drawing-utility-bar" aria-label="Drawing options">
+              <button type="button" class="icon-button" id="magnet-drawings" title="Magnet" aria-label="Magnet" aria-pressed="false"><i data-lucide="magnet"></i></button>
+              <button type="button" class="icon-button" id="lock-drawings" title="Lock all drawings" aria-label="Lock all drawings" aria-pressed="false"><i data-lucide="lock"></i></button>
+              <button type="button" class="icon-button" id="visibility-drawings" title="Hide drawings" aria-label="Hide drawings" aria-pressed="false"><i data-lucide="eye"></i></button>
+              <button type="button" class="icon-button" id="clear-drawings" title="Clear all drawings" aria-label="Clear all drawings"><i data-lucide="trash-2"></i></button>
+            </div>
+          </nav>
+          <div id="chart-root">
+            <div id="drawing-history-bar" aria-label="Drawing history">
+              <button type="button" class="icon-button" id="undo-drawing" title="Undo drawing change" aria-label="Undo drawing change" disabled><i data-lucide="undo-2"></i></button>
+              <button type="button" class="icon-button" id="redo-drawing" title="Redo drawing change" aria-label="Redo drawing change" disabled><i data-lucide="redo-2"></i></button>
+            </div>
+            <div id="drawing-style-bar" class="hidden" aria-label="Selected drawing style">
+              <label class="sr-only" for="drawing-color">Drawing color</label>
+              <input id="drawing-color" type="color" value="#38bdf8" title="Drawing color">
+              <label class="sr-only" for="drawing-width">Line width</label>
+              <select id="drawing-width" title="Line width">
+                <option value="1">1 px</option>
+                <option value="2" selected>2 px</option>
+                <option value="3">3 px</option>
+                <option value="4">4 px</option>
+              </select>
+              <div id="line-style-control" role="group" aria-label="Line style">
+                <button type="button" class="active" data-line-style="solid" title="Solid line" aria-label="Solid line" aria-pressed="true"><span class="line-sample"></span></button>
+                <button type="button" data-line-style="dashed" title="Dashed line" aria-label="Dashed line" aria-pressed="false"><span class="line-sample"></span></button>
+                <button type="button" data-line-style="dotted" title="Dotted line" aria-label="Dotted line" aria-pressed="false"><span class="line-sample"></span></button>
+              </div>
+            </div>
+            <div id="text-annotation-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="text-annotation-title">
+              <form id="text-annotation-form">
+                <label class="sr-only" id="text-annotation-title" for="text-annotation-input">Annotation text</label>
+                <input id="text-annotation-input" type="text" maxlength="500" autocomplete="off" placeholder="Annotation text">
+                <button type="submit" title="Use annotation text" aria-label="Use annotation text"><i data-lucide="check"></i></button>
+                <button type="button" id="cancel-text-annotation" title="Cancel text annotation" aria-label="Cancel text annotation"><i data-lucide="x"></i></button>
+              </form>
+            </div>
+            <div id="empty-state">Build a synthetic symbol to load the interactive chart.</div>
           </div>
-          <div id="empty-state">Build a synthetic symbol to load the interactive chart.</div>
         </div>
         <footer id="footer">
           <span id="ohlc">OHLC n/a</span>
@@ -406,6 +677,18 @@
     const modeButtons = Array.from(document.querySelectorAll('.mode'));
     const maButtons = Array.from(document.querySelectorAll('.ma'));
     const toolButtons = Array.from(document.querySelectorAll('.chart-tool'));
+    const lineStyleButtons = Array.from(document.querySelectorAll('[data-line-style]'));
+    const undoDrawingButton = document.getElementById('undo-drawing');
+    const redoDrawingButton = document.getElementById('redo-drawing');
+    const magnetDrawingsButton = document.getElementById('magnet-drawings');
+    const lockDrawingsButton = document.getElementById('lock-drawings');
+    const visibilityDrawingsButton = document.getElementById('visibility-drawings');
+    const drawingStyleBar = document.getElementById('drawing-style-bar');
+    const drawingColorInput = document.getElementById('drawing-color');
+    const drawingWidthSelect = document.getElementById('drawing-width');
+    const textAnnotationOverlay = document.getElementById('text-annotation-overlay');
+    const textAnnotationForm = document.getElementById('text-annotation-form');
+    const textAnnotationInput = document.getElementById('text-annotation-input');
 
     let chart = null;
     let candleSeries = null;
@@ -419,255 +702,25 @@
     let priceLinesVisible = true;
     let syntheticPriceLines = [];
     let terminalBarSpacing = 8;
-    let activeTool = 'crosshair';
-    let drawingAnchor = null;
-    let drawingPrimitives = [];
-    let drawingPreviewPrimitive = null;
-    let drawingRecords = [];
+    let drawingManager = null;
     let drawingIdentity = '';
+    let selectedDrawing = null;
+    let drawingUiState = {
+      tool: 'cursor', selectedId: null, selectedStyle: null, magnet: false,
+      locked: false, visible: true, canUndo: false, canRedo: false, recordCount: 0
+    };
     let railWidth = 420;
     let railPointerId = null;
     let pendingTerminalTick = null;
     let terminalTickFrame = null;
     const SYNTHETIC_PRICE_FLOOR = -10;
     const RAIL_WIDTH_KEY = 'capcom-terminal-rail-width';
-    const DRAWING_STORAGE_PREFIX = 'capcom-terminal-drawings:';
     const RAIL_MIN_WIDTH = 260;
     const RAIL_MAX_WIDTH = 620;
 
     // Contract markers for automated tests and future upgrades.
     const CandlestickSeries = 'CandlestickSeries';
     const LineSeries = 'LineSeries';
-
-    class HorizontalLinePrimitive {
-      constructor(series, price, color = '#fbbf24') {
-        this.series = series;
-        this.price = price;
-        this.color = color;
-        this.view = new HorizontalLinePaneView(this);
-      }
-
-      updateAllViews() {
-        this.view.update();
-      }
-
-      paneViews() {
-        return [this.view];
-      }
-    }
-
-    class HorizontalLinePaneView {
-      constructor(source) {
-        this.source = source;
-        this.y = null;
-      }
-
-      update() {
-        this.y = this.source.series.priceToCoordinate(this.source.price);
-      }
-
-      renderer() {
-        const y = this.y;
-        const color = this.source.color;
-        return {
-          draw(target) {
-            target.useBitmapCoordinateSpace(scope => {
-              if (y === null) return;
-              const ctx = scope.context;
-              const scaledY = Math.round(y * scope.verticalPixelRatio);
-              ctx.save();
-              ctx.strokeStyle = color;
-              ctx.lineWidth = Math.max(1, Math.floor(scope.verticalPixelRatio));
-              ctx.setLineDash([6 * scope.horizontalPixelRatio, 5 * scope.horizontalPixelRatio]);
-              ctx.beginPath();
-              ctx.moveTo(0, scaledY);
-              ctx.lineTo(scope.bitmapSize.width, scaledY);
-              ctx.stroke();
-              ctx.restore();
-            });
-          }
-        };
-      }
-    }
-
-    class TrendLinePrimitive {
-      constructor(chartApi, series, p1, p2, color = '#38bdf8') {
-        this.chart = chartApi;
-        this.series = series;
-        this.p1 = p1;
-        this.p2 = p2;
-        this.color = color;
-        this.view = new TrendLinePaneView(this);
-      }
-
-      updateAllViews() {
-        this.view.update();
-      }
-
-      paneViews() {
-        return [this.view];
-      }
-    }
-
-    class TrendLinePaneView {
-      constructor(source) {
-        this.source = source;
-        this.p1 = { x: null, y: null };
-        this.p2 = { x: null, y: null };
-      }
-
-      update() {
-        this.p1 = {
-          x: this.source.chart.timeScale().timeToCoordinate(this.source.p1.time),
-          y: this.source.series.priceToCoordinate(this.source.p1.price)
-        };
-        this.p2 = {
-          x: this.source.chart.timeScale().timeToCoordinate(this.source.p2.time),
-          y: this.source.series.priceToCoordinate(this.source.p2.price)
-        };
-      }
-
-      renderer() {
-        const p1 = this.p1;
-        const p2 = this.p2;
-        const color = this.source.color;
-        return {
-          draw(target) {
-            target.useBitmapCoordinateSpace(scope => {
-              if (p1.x === null || p1.y === null || p2.x === null || p2.y === null) return;
-              const ctx = scope.context;
-              ctx.save();
-              ctx.strokeStyle = color;
-              ctx.lineWidth = Math.max(1, Math.floor(2 * scope.verticalPixelRatio));
-              ctx.beginPath();
-              ctx.moveTo(Math.round(p1.x * scope.horizontalPixelRatio), Math.round(p1.y * scope.verticalPixelRatio));
-              ctx.lineTo(Math.round(p2.x * scope.horizontalPixelRatio), Math.round(p2.y * scope.verticalPixelRatio));
-              ctx.stroke();
-              ctx.restore();
-            });
-          }
-        };
-      }
-    }
-
-    class VerticalLinePrimitive {
-      constructor(chartApi, time, color = '#94a3b8') {
-        this.chart = chartApi;
-        this.time = time;
-        this.color = color;
-        this.view = new VerticalLinePaneView(this);
-      }
-
-      updateAllViews() {
-        this.view.update();
-      }
-
-      paneViews() {
-        return [this.view];
-      }
-    }
-
-    class VerticalLinePaneView {
-      constructor(source) {
-        this.source = source;
-        this.x = null;
-      }
-
-      update() {
-        this.x = this.source.chart.timeScale().timeToCoordinate(this.source.time);
-      }
-
-      renderer() {
-        const x = this.x;
-        const color = this.source.color;
-        return {
-          draw(target) {
-            target.useBitmapCoordinateSpace(scope => {
-              if (x === null) return;
-              const ctx = scope.context;
-              const scaledX = Math.round(x * scope.horizontalPixelRatio);
-              ctx.save();
-              ctx.strokeStyle = color;
-              ctx.lineWidth = Math.max(1, Math.floor(scope.horizontalPixelRatio));
-              ctx.setLineDash([3 * scope.verticalPixelRatio, 6 * scope.verticalPixelRatio]);
-              ctx.beginPath();
-              ctx.moveTo(scaledX, 0);
-              ctx.lineTo(scaledX, scope.bitmapSize.height);
-              ctx.stroke();
-              ctx.restore();
-            });
-          }
-        };
-      }
-    }
-
-    class RayPrimitive extends TrendLinePrimitive {
-      constructor(chartApi, series, p1, p2, color = '#f97316') {
-        super(chartApi, series, p1, p2, color);
-        this.view = new RayPaneView(this);
-      }
-    }
-
-    class RayPaneView extends TrendLinePaneView {
-      renderer() {
-        const p1 = this.p1;
-        const p2 = this.p2;
-        const color = this.source.color;
-        return {
-          draw(target) {
-            target.useBitmapCoordinateSpace(scope => {
-              if (p1.x === null || p1.y === null || p2.x === null || p2.y === null || p1.x === p2.x) return;
-              const ctx = scope.context;
-              const endX = p2.x > p1.x ? scope.bitmapSize.width / scope.horizontalPixelRatio : 0;
-              const ratio = (endX - p1.x) / (p2.x - p1.x);
-              const endY = p1.y + (p2.y - p1.y) * ratio;
-              ctx.save();
-              ctx.strokeStyle = color;
-              ctx.lineWidth = Math.max(1, Math.floor(2 * scope.verticalPixelRatio));
-              ctx.beginPath();
-              ctx.moveTo(Math.round(p1.x * scope.horizontalPixelRatio), Math.round(p1.y * scope.verticalPixelRatio));
-              ctx.lineTo(Math.round(endX * scope.horizontalPixelRatio), Math.round(endY * scope.verticalPixelRatio));
-              ctx.stroke();
-              ctx.restore();
-            });
-          }
-        };
-      }
-    }
-
-    class RectanglePrimitive extends TrendLinePrimitive {
-      constructor(chartApi, series, p1, p2, color = '#a78bfa') {
-        super(chartApi, series, p1, p2, color);
-        this.view = new RectanglePaneView(this);
-      }
-    }
-
-    class RectanglePaneView extends TrendLinePaneView {
-      renderer() {
-        const p1 = this.p1;
-        const p2 = this.p2;
-        const color = this.source.color;
-        return {
-          draw(target) {
-            target.useBitmapCoordinateSpace(scope => {
-              if (p1.x === null || p1.y === null || p2.x === null || p2.y === null) return;
-              const ctx = scope.context;
-              const left = Math.min(p1.x, p2.x) * scope.horizontalPixelRatio;
-              const top = Math.min(p1.y, p2.y) * scope.verticalPixelRatio;
-              const width = Math.abs(p2.x - p1.x) * scope.horizontalPixelRatio;
-              const height = Math.abs(p2.y - p1.y) * scope.verticalPixelRatio;
-              ctx.save();
-              ctx.fillStyle = 'rgba(167, 139, 250, .12)';
-              ctx.strokeStyle = color;
-              ctx.lineWidth = Math.max(1, Math.floor(2 * scope.verticalPixelRatio));
-              ctx.fillRect(Math.round(left), Math.round(top), Math.round(width), Math.round(height));
-              ctx.strokeRect(Math.round(left), Math.round(top), Math.round(width), Math.round(height));
-              ctx.restore();
-            });
-          }
-        };
-      }
-    }
 
     function getField(source, pascal, camel, fallback) {
       if (!source) return fallback;
@@ -763,6 +816,10 @@
         setStatus('Lightweight Charts failed to load');
         return null;
       }
+      if (!window.CapComDrawings) {
+        setStatus('Drawing manager failed to load');
+        return null;
+      }
 
       chart = LightweightCharts.createChart(chartRoot, {
         autoSize: true,
@@ -827,11 +884,26 @@
         200: chart.addSeries(LightweightCharts.LineSeries, { color: '#a78bfa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, autoscaleInfoProvider: floorAutoscaleRange })
       };
 
+      drawingManager = CapComDrawings.createManager({
+        chart,
+        series: candleSeries,
+        container: chartRoot,
+        orderedTimes: displayCandles.map(candle => candle.time),
+        pricePrecision: 5,
+        onRecordsChanged(records) {
+          if (drawingIdentity && !CapComDrawings.persistStoredRecords(localStorage, drawingIdentity, records)) {
+            setStatus('Drawings could not be saved locally');
+          }
+        },
+        onStatus: setStatus,
+        onSelectionChanged: applyDrawingSelection,
+        onStateChanged: applyDrawingState
+      });
+
       chart.subscribeCrosshairMove(param => {
         const data = param && param.seriesData ? param.seriesData.get(candleSeries) : null;
         renderFooter(data || displayCandles[displayCandles.length - 1], param && param.time);
       });
-      chart.subscribeClick(handleChartClick);
 
       document.getElementById('library-state').textContent = `Lightweight Charts ${LightweightCharts.version()}`;
       return chart;
@@ -1054,151 +1126,70 @@
       intervalButtons.forEach(button => button.classList.toggle('active', button.dataset.interval === activeInterval));
       modeButtons.forEach(button => button.classList.toggle('active', button.dataset.mode === chartMode));
       maButtons.forEach(button => button.classList.toggle('active', !!maVisibility[button.dataset.ma]));
-      toolButtons.forEach(button => button.classList.toggle('active', button.dataset.tool === activeTool));
+      toolButtons.forEach(button => {
+        const active = button.dataset.tool === drawingUiState.tool;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
     }
 
-    function pointerPrice(param) {
-      if (!param || !param.point || !candleSeries) return null;
-      const value = candleSeries.coordinateToPrice(param.point.y);
-      return Number.isFinite(value) ? value : null;
+    function applyDrawingState(state) {
+      drawingUiState = state || drawingUiState;
+      undoDrawingButton.disabled = !drawingUiState.canUndo;
+      redoDrawingButton.disabled = !drawingUiState.canRedo;
+      magnetDrawingsButton.setAttribute('aria-pressed', String(drawingUiState.magnet));
+      lockDrawingsButton.setAttribute('aria-pressed', String(drawingUiState.locked));
+      lockDrawingsButton.title = drawingUiState.locked ? 'Unlock all drawings' : 'Lock all drawings';
+      lockDrawingsButton.setAttribute('aria-label', lockDrawingsButton.title);
+      visibilityDrawingsButton.setAttribute('aria-pressed', String(!drawingUiState.visible));
+      visibilityDrawingsButton.title = drawingUiState.visible ? 'Hide drawings' : 'Show drawings';
+      visibilityDrawingsButton.setAttribute('aria-label', visibilityDrawingsButton.title);
+      document.getElementById('clear-drawings').disabled = drawingUiState.recordCount === 0;
+      drawingStyleBar.classList.toggle('hidden', !drawingUiState.selectedId);
+      refreshButtons();
     }
 
-    function drawingStorageKey(identity) {
-      return identity ? `${DRAWING_STORAGE_PREFIX}${identity}` : '';
+    function applyDrawingSelection(record) {
+      selectedDrawing = record;
+      if (!record || !record.style) return;
+      drawingColorInput.value = record.style.color;
+      drawingWidthSelect.value = String(record.style.lineWidth);
+      lineStyleButtons.forEach(button => {
+        const active = button.dataset.lineStyle === record.style.lineStyle;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
     }
 
-    function storedTime(time) {
-      if (typeof time === 'number' || typeof time === 'string') return time;
-      if (time && typeof time === 'object' && Number.isFinite(time.year) && Number.isFinite(time.month) && Number.isFinite(time.day)) {
-        return { year: time.year, month: time.month, day: time.day };
-      }
-      return null;
+    function drawingFillColor(color) {
+      const match = /^#([0-9a-f]{6})$/i.exec(color || '');
+      if (!match) return 'rgba(56, 189, 248, 0.12)';
+      const value = Number.parseInt(match[1], 16);
+      return `rgba(${value >> 16}, ${(value >> 8) & 255}, ${value & 255}, 0.12)`;
     }
 
-    function storedPoint(time, price) {
-      const stored = storedTime(time);
-      return stored === null || !Number.isFinite(price) ? null : { time: stored, price };
+    function applySelectedStyle(style) {
+      if (!drawingManager || !selectedDrawing) return false;
+      return drawingManager.setStyle(style);
     }
 
-    function timeValue(time) {
-      if (typeof time === 'number') return time;
-      if (typeof time === 'object' && time) return Date.UTC(time.year, time.month - 1, time.day) / 1000;
-      const parsed = Date.parse(time);
-      return Number.isFinite(parsed) ? parsed / 1000 : NaN;
-    }
-
-    function timeForCurrentCandles(time) {
-      const target = timeValue(time);
-      if (!Number.isFinite(target) || !displayCandles.length) return time;
-      return displayCandles.reduce((closest, candle) =>
-        Math.abs(candle.time - target) < Math.abs(closest.time - target) ? candle : closest).time;
-    }
-
-    function currentDrawingPoint(point) {
-      return { time: timeForCurrentCandles(point.time), price: point.price };
-    }
-
-    function validDrawing(record) {
-      if (!record || !['hline', 'vline', 'trend', 'ray', 'rectangle'].includes(record.type)) return false;
-      if (record.type === 'hline') return Number.isFinite(record.price);
-      if (record.type === 'vline') return storedTime(record.time) !== null;
-      return !!storedPoint(record.p1 && record.p1.time, record.p1 && record.p1.price) &&
-        !!storedPoint(record.p2 && record.p2.time, record.p2 && record.p2.price);
-    }
-
-    function drawingPrimitive(record) {
-      if (!chart || !candleSeries || !validDrawing(record)) return null;
-      if (record.type === 'hline') return new HorizontalLinePrimitive(candleSeries, record.price);
-      if (record.type === 'vline') return new VerticalLinePrimitive(chart, timeForCurrentCandles(record.time));
-      const p1 = currentDrawingPoint(record.p1);
-      const p2 = currentDrawingPoint(record.p2);
-      if (record.type === 'trend') return new TrendLinePrimitive(chart, candleSeries, p1, p2);
-      if (record.type === 'ray') return new RayPrimitive(chart, candleSeries, p1, p2);
-      return new RectanglePrimitive(chart, candleSeries, p1, p2);
-    }
-
-    function attachDrawing(record) {
-      const primitive = drawingPrimitive(record);
-      if (!primitive) return;
-      candleSeries.attachPrimitive(primitive);
-      drawingPrimitives.push(primitive);
-    }
-
-    function detachDrawings() {
-      if (candleSeries && typeof candleSeries.detachPrimitive === 'function') {
-        drawingPrimitives.forEach(primitive => candleSeries.detachPrimitive(primitive));
-      }
-      drawingPrimitives = [];
-    }
-
-    function clearDrawingPreview() {
-      if (drawingPreviewPrimitive && candleSeries && typeof candleSeries.detachPrimitive === 'function') {
-        candleSeries.detachPrimitive(drawingPreviewPrimitive);
-      }
-      drawingPreviewPrimitive = null;
-    }
-
-    function persistDrawings() {
-      const key = drawingStorageKey(drawingIdentity);
-      if (!key) return;
-      try {
-        localStorage.setItem(key, JSON.stringify(drawingRecords));
-      } catch (_) {
-        setStatus('Drawings could not be saved locally');
-      }
-    }
-
-    function loadDrawings(identity) {
-      const key = drawingStorageKey(identity);
-      if (!key) return [];
-      try {
-        const records = JSON.parse(localStorage.getItem(key) || '[]');
-        return Array.isArray(records) ? records.filter(validDrawing) : [];
-      } catch (_) {
-        return [];
-      }
-    }
-
-    function restoreDrawingsForSymbol(identity) {
-      detachDrawings();
-      drawingAnchor = null;
-      clearDrawingPreview();
+    function restoreDrawingsForIdentity(identity) {
+      if (!drawingManager) return;
       drawingIdentity = identity || '';
-      drawingRecords = loadDrawings(drawingIdentity);
-      drawingRecords.forEach(attachDrawing);
+      const records = CapComDrawings.loadStoredRecords(localStorage, drawingIdentity);
+      drawingManager.setRecords(records);
     }
 
-    function addDrawing(record) {
-      if (!validDrawing(record)) return;
-      drawingRecords.push(record);
-      attachDrawing(record);
-      persistDrawings();
-      setStatus(`${activeTool} drawing added`);
+    function closeTextAnnotation() {
+      textAnnotationOverlay.classList.add('hidden');
+      textAnnotationInput.value = '';
+      if (drawingManager) drawingManager.cancel();
     }
 
-    function handleChartClick(param) {
-      if (activeTool === 'crosshair' || !param || !param.time) return;
-      const price = pointerPrice(param);
-      if (!Number.isFinite(price)) return;
-      if (activeTool === 'hline') {
-        addDrawing({ type: 'hline', price });
-        return;
-      }
-      if (activeTool === 'vline') {
-        addDrawing({ type: 'vline', time: storedTime(param.time) });
-        return;
-      }
-      if (['trend', 'ray', 'rectangle'].includes(activeTool)) {
-        const point = storedPoint(param.time, price);
-        if (!point) return;
-        if (!drawingAnchor) {
-          drawingAnchor = point;
-          setStatus(`${activeTool} anchor set`);
-          return;
-        }
-        addDrawing({ type: activeTool, p1: drawingAnchor, p2: point });
-        drawingAnchor = null;
-      }
+    function openTextAnnotation() {
+      textAnnotationOverlay.classList.remove('hidden');
+      textAnnotationInput.value = '';
+      textAnnotationInput.focus();
     }
 
     function renderChart(fitContent) {
@@ -1207,6 +1198,7 @@
 
       displayCandles = candlesForMode();
       candleSeries.setData(displayCandles);
+      drawingManager.updateContext({ orderedTimes: displayCandles.map(candle => candle.time), pricePrecision: 5 });
       for (const period of [20, 50, 200]) {
         maSeries[period].setData(maVisibility[period] ? computeMa(displayCandles, period) : []);
       }
@@ -1227,7 +1219,8 @@
         .sort((a, b) => a.time - b.time);
       renderChart(!liveUpdate);
       if (!liveUpdate) {
-        restoreDrawingsForSymbol(getField(payload, 'DrawingIdentity', 'drawingIdentity', getField(payload, 'Symbol', 'symbol', '')));
+        const identity = getField(payload, 'DrawingIdentity', 'drawingIdentity', getField(payload, 'Symbol', 'symbol', ''));
+        if (identity !== drawingIdentity) restoreDrawingsForIdentity(identity);
       }
       if (liveUpdate) document.getElementById('stream-state').textContent = 'stream tick';
     }
@@ -1268,6 +1261,7 @@
           displayCandles = candlesForMode();
           const displayCandle = displayCandles[displayCandles.length - 1];
           if (displayCandle) candleSeries.update(displayCandle);
+          drawingManager.updateContext({ orderedTimes: displayCandles.map(candle => candle.time), pricePrecision: 5 });
           for (const period of [20, 50, 200]) {
             const points = computeMa(displayCandles, period);
             if (maVisibility[period] && points.length) maSeries[period].update(points[points.length - 1]);
@@ -1359,19 +1353,23 @@
     };
 
     window.setTerminalTool = function(tool) {
-      activeTool = ['crosshair', 'trend', 'hline', 'vline', 'ray', 'rectangle'].includes(tool) ? tool : 'crosshair';
-      drawingAnchor = null;
-      refreshButtons();
-      setStatus(activeTool === 'crosshair' ? '' : `${activeTool} tool active`);
+      if (!drawingManager) return false;
+      const normalized = ['cursor', 'trend', 'ray', 'hline', 'vline', 'fib', 'rectangle', 'brush', 'text', 'measure'].includes(tool)
+        ? tool
+        : 'cursor';
+      if (normalized === 'text') {
+        drawingManager.cancel();
+        openTextAnnotation();
+        return true;
+      }
+      return drawingManager.setTool(normalized);
     };
 
     window.clearTerminalDrawings = function() {
-      detachDrawings();
-      clearDrawingPreview();
-      drawingRecords = [];
-      drawingAnchor = null;
-      persistDrawings();
-      setStatus('drawings cleared');
+      if (!drawingManager) return false;
+      if (drawingManager.getRecords().length === 0) return false;
+      if (!window.confirm('Clear all drawings?')) return false;
+      return drawingManager.clear();
     };
 
     window.toggleTerminalComponents = function() {
@@ -1415,6 +1413,32 @@
     maButtons.forEach(button => button.addEventListener('click', () => window.toggleTerminalMa(button.dataset.ma, !maVisibility[button.dataset.ma])));
     toolButtons.forEach(button => button.addEventListener('click', () => window.setTerminalTool(button.dataset.tool)));
     document.getElementById('clear-drawings').addEventListener('click', window.clearTerminalDrawings);
+    undoDrawingButton.addEventListener('click', () => drawingManager && drawingManager.undo());
+    redoDrawingButton.addEventListener('click', () => drawingManager && drawingManager.redo());
+    magnetDrawingsButton.addEventListener('click', () => drawingManager && drawingManager.setMagnet(!drawingUiState.magnet));
+    lockDrawingsButton.addEventListener('click', () => drawingManager && drawingManager.setLocked(!drawingUiState.locked));
+    visibilityDrawingsButton.addEventListener('click', () => drawingManager && drawingManager.setVisible(!drawingUiState.visible));
+    drawingColorInput.addEventListener('input', () => applySelectedStyle({
+      color: drawingColorInput.value,
+      fillColor: drawingFillColor(drawingColorInput.value)
+    }));
+    drawingWidthSelect.addEventListener('change', () => applySelectedStyle({ lineWidth: Number(drawingWidthSelect.value) }));
+    lineStyleButtons.forEach(button => button.addEventListener('click', () => applySelectedStyle({ lineStyle: button.dataset.lineStyle })));
+    textAnnotationForm.addEventListener('submit', event => {
+      event.preventDefault();
+      const text = CapComDrawings.normalizeAnnotationText(textAnnotationInput.value);
+      if (!text || !drawingManager) return;
+      textAnnotationOverlay.classList.add('hidden');
+      textAnnotationInput.value = '';
+      drawingManager.setTool('text', text);
+    });
+    document.getElementById('cancel-text-annotation').addEventListener('click', closeTextAnnotation);
+    textAnnotationOverlay.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeTextAnnotation();
+      }
+    });
     document.getElementById('fit-chart').addEventListener('click', window.fitTerminalChart);
     document.getElementById('components-toggle').addEventListener('click', window.toggleTerminalComponents);
     document.getElementById('buy-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('buy', document.getElementById('quantity').value));
@@ -1435,6 +1459,9 @@
 
     restoreRailWidth();
     ensureChart();
+    if (window.lucide && typeof window.lucide.createIcons === 'function') {
+      window.lucide.createIcons({ attrs: { 'aria-hidden': 'true', 'stroke-width': 1.8 } });
+    }
   </script>
 </body>
 </html>

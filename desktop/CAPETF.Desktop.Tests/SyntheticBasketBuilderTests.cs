@@ -93,6 +93,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlShowsBidAndAskWithoutLastPrice();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
         SyntheticTerminalHtmlRejectsKLineChartRuntime();
+        SyntheticDrawingWorkspaceRuntimeCoordinatesManagerStateAndPersistence();
         SyntheticTerminalHtmlUsesV3LightweightChartsTerminal();
         SyntheticTerminalHtmlUsesV5SeriesApiAndChartSideTools();
         SyntheticDrawingsAssetPublishesWithProjectContentEntry();
@@ -2330,11 +2331,9 @@ public static class SyntheticBasketBuilderTests
             "LightweightCharts.version()",
             "chart.addSeries(LightweightCharts.CandlestickSeries",
             "chart.addSeries(LightweightCharts.LineSeries",
-            "attachPrimitive",
-            "class HorizontalLinePrimitive",
-            "class TrendLinePrimitive",
-            "id=\"chart-tool-dock\"",
-            "data-tool=\"crosshair\"",
+            "CapComDrawings.createManager",
+            "id=\"drawing-tool-rail\"",
+            "data-tool=\"cursor\"",
             "data-tool=\"trend\"",
             "data-tool=\"hline\"",
             "window.setTerminalTool",
@@ -2419,15 +2418,26 @@ public static class SyntheticBasketBuilderTests
     {
         var sourcePath = SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-drawings.js");
         var outputPath = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-drawings.js");
+        var lucideSourcePath = SourcePath("desktop", "CAPETF.Desktop", "Assets", "lucide.min.js");
+        var lucideLicensePath = SourcePath("desktop", "CAPETF.Desktop", "Assets", "lucide.LICENSE.txt");
+        var lucideOutputPath = Path.Combine(AppContext.BaseDirectory, "Assets", "lucide.min.js");
         var projectPath = SourcePath("desktop", "CAPETF.Desktop", "CAPETF.Desktop.csproj");
         var project = File.ReadAllText(projectPath);
         var missing = new List<string>();
 
         if (!File.Exists(sourcePath)) missing.Add("source asset desktop/CAPETF.Desktop/Assets/synthetic-drawings.js");
         if (!File.Exists(outputPath)) missing.Add("copied output asset Assets/synthetic-drawings.js");
+        if (!File.Exists(lucideSourcePath)) missing.Add("source asset desktop/CAPETF.Desktop/Assets/lucide.min.js");
+        if (!File.Exists(lucideLicensePath)) missing.Add("Lucide license notice desktop/CAPETF.Desktop/Assets/lucide.LICENSE.txt");
+        if (!File.Exists(lucideOutputPath)) missing.Add("copied output asset Assets/lucide.min.js");
         if (!project.Contains("<Content Include=\"Assets\\synthetic-drawings.js\">", StringComparison.Ordinal))
         {
             missing.Add("CAPETF.Desktop.csproj synthetic-drawings.js content entry");
+        }
+        if (!project.Contains("<Content Include=\"Assets\\lucide.min.js\">", StringComparison.Ordinal) ||
+            !project.Contains("<Content Include=\"Assets\\lucide.LICENSE.txt\">", StringComparison.Ordinal))
+        {
+            missing.Add("CAPETF.Desktop.csproj Lucide bundle/license content entries");
         }
 
         if (missing.Count > 0)
@@ -2856,6 +2866,162 @@ public static class SyntheticBasketBuilderTests
             """;
 
         RunNodeDrawingContract(modulePath, script, "drawing interactions/review regressions");
+    }
+
+    private static void SyntheticDrawingWorkspaceRuntimeCoordinatesManagerStateAndPersistence()
+    {
+        var modulePath = SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-drawings.js");
+        const string script = """
+            const assert = require('node:assert/strict');
+            global.window = globalThis;
+            global.addEventListener = () => {};
+            global.removeEventListener = () => {};
+            require(process.argv[1]);
+
+            const api = window.CapComDrawings;
+            for (const name of ['formatMeasurement', 'drawingStorageKey', 'loadStoredRecords',
+              'persistStoredRecords', 'confirmClear', 'normalizeAnnotationText']) {
+              assert.equal(typeof api[name], 'function', `missing workspace helper ${name}`);
+            }
+
+            const common = {
+              style: { color: '#22c55e', fillColor: 'rgba(34, 197, 94, .12)', lineWidth: 2, lineStyle: 'solid' },
+              visible: true,
+              locked: false,
+            };
+            const trend = {
+              ...common,
+              id: 'persisted-trend',
+              type: 'trend',
+              p1: { time: 100, price: 100 },
+              p2: { time: 300, price: 110 },
+            };
+            const measure = { ...trend, id: 'measure-context', type: 'measure' };
+            const values = new Map();
+            const storage = {
+              getItem(key) { return values.get(key) ?? null; },
+              setItem(key, value) { values.set(key, value); },
+            };
+            values.set('capcom-terminal-drawings:basket-a', JSON.stringify([trend, { type: 'bad' }]));
+            assert.equal(api.drawingStorageKey('basket-a'), 'capcom-terminal-drawings:basket-a');
+            assert.deepEqual(api.loadStoredRecords(storage, 'basket-a'), [trend], 'identity load must sanitize records');
+            assert.deepEqual(api.loadStoredRecords(storage, 'missing'), []);
+            values.set('capcom-terminal-drawings:broken', '{');
+            assert.deepEqual(api.loadStoredRecords(storage, 'broken'), [], 'malformed storage must be ignored');
+            assert.equal(api.persistStoredRecords(storage, 'basket-b', [trend, { type: 'bad' }]), true);
+            assert.deepEqual(JSON.parse(values.get('capcom-terminal-drawings:basket-b')), [trend]);
+
+            const handlers = new Map();
+            const container = {
+              addEventListener(name, handler) { handlers.set(name, handler); },
+              removeEventListener(name) { handlers.delete(name); },
+              getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 400 }; },
+              setPointerCapture() {},
+              releasePointerCapture() {},
+            };
+            const timeScale = {
+              timeToCoordinate(time) { return Number(time); },
+              coordinateToTime(x) { return x; },
+            };
+            const chart = { timeScale() { return timeScale; } };
+            let attached = null;
+            const series = {
+              priceToCoordinate(price) { return Number(price); },
+              coordinateToPrice(y) { return y; },
+              attachPrimitive(primitive) { attached = primitive; },
+              detachPrimitive() {},
+            };
+            const states = [];
+            const changedRecords = [];
+            const manager = api.createManager({
+              chart,
+              series,
+              container,
+              orderedTimes: [100, 300],
+              onStateChanged(state) { states.push(state); },
+              onRecordsChanged(records) { changedRecords.push(records); },
+            });
+            for (const method of ['getState', 'updateContext', 'cancel']) {
+              assert.equal(typeof manager[method], 'function', `missing workspace manager method ${method}`);
+            }
+            assert.deepEqual(manager.getState(), {
+              tool: 'cursor', selectedId: null, selectedStyle: null, magnet: false,
+              locked: false, visible: true, canUndo: false, canRedo: false, recordCount: 0,
+            });
+
+            manager.setRecords([measure, { type: 'bad' }]);
+            assert.equal(manager.getState().recordCount, 1);
+            assert.equal(manager.getRecords()[0].bars, 2);
+            manager.updateContext({ orderedTimes: [100, 200, 300] });
+            assert.equal(manager.getRecords()[0].bars, 3, 'candle context refresh must update measurements');
+            assert.ok(changedRecords.length >= 2, 'context refresh must publish JSON-safe records');
+            const fills = [];
+            const context = {
+              save() {}, restore() {}, setLineDash() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
+              strokeRect() {}, fillText() {}, arc() {}, fill() {},
+              fillRect(x, y, width, height) { fills.push({ x, y, width, height }); },
+              measureText() { return { width: 760 }; },
+            };
+            assert.doesNotThrow(() => attached.paneViews()[0].renderer().draw({
+              useBitmapCoordinateSpace(draw) {
+                draw({ context, horizontalPixelRatio: 1, verticalPixelRatio: 1, bitmapSize: { width: 800, height: 400 } });
+              },
+            }), 'measurement label renderer must use manager precision state');
+            const labelFill = fills[fills.length - 1];
+            assert.ok(labelFill.x >= 0 && labelFill.x + labelFill.width <= 800,
+              'measurement label must remain inside the viewport');
+            manager.setMagnet(true);
+            assert.equal(manager.getState().magnet, true);
+            manager.setLocked(true);
+            assert.equal(manager.getState().canUndo, true);
+            assert.equal(manager.undo(), true);
+            assert.equal(manager.getState().canRedo, true, 'undo/redo disabled state must be observable');
+            assert.ok(states.length > 0, 'manager changes must notify state observers');
+
+            let confirms = 0;
+            assert.equal(api.confirmClear(manager, () => { confirms += 1; return false; }), false);
+            assert.equal(manager.getRecords().length, 1, 'declined clear must retain drawings');
+            assert.equal(api.confirmClear(manager, () => { confirms += 1; return true; }), true);
+            assert.equal(confirms, 2);
+            assert.equal(manager.getRecords().length, 0);
+            assert.equal(api.confirmClear(manager, () => { throw new Error('must not confirm empty records'); }), false);
+
+            assert.equal(api.normalizeAnnotationText('   '), null);
+            assert.equal(api.normalizeAnnotationText('x'.repeat(700)).length, 500);
+            manager.setTool('text', api.normalizeAnnotationText('A note'));
+            handlers.get('click')({ clientX: 100, clientY: 100 });
+            assert.equal(manager.getRecords()[0].text, 'A note');
+            manager.setTool('text', api.normalizeAnnotationText('cancelled'));
+            manager.cancel();
+            assert.equal(manager.getState().tool, 'cursor');
+            assert.equal(manager.getRecords().length, 1, 'cancelled text placement must create no drawing');
+
+            assert.deepEqual(api.formatMeasurement({
+              startPrice: 100,
+              endPrice: 110,
+              priceDelta: 10,
+              percentDelta: 10,
+              bars: 3,
+              elapsedMs: 7200000,
+            }, 5), {
+              label: '100.00000 -> 110.00000  +10.00000 (+10.00%)  3 bars  2h',
+              tone: 'positive',
+            });
+            assert.deepEqual(api.formatMeasurement({
+              startPrice: 0,
+              endPrice: 0,
+              priceDelta: 0,
+              percentDelta: null,
+              bars: 1,
+              elapsedMs: 0,
+            }, 5), {
+              label: '0.00000 -> 0.00000  +0.00000 (n/a)  1 bar  0s',
+              tone: 'neutral',
+            });
+            manager.dispose();
+            """;
+
+        RunNodeDrawingContract(modulePath, script, "drawing workspace manager integration");
     }
 
     private static void RunNodeDrawingContract(string modulePath, string script, string contractName)
@@ -3437,6 +3603,7 @@ public static class SyntheticBasketBuilderTests
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
         if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
         var html = File.ReadAllText(path);
+        var drawings = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-drawings.js"));
 
         foreach (var required in new[]
         {
@@ -3447,12 +3614,51 @@ public static class SyntheticBasketBuilderTests
             "capcom-terminal-rail-width",
             "localStorage",
             "grid-template-columns: minmax(0, 1fr) 6px var(--rail-width)",
+            "id=\"drawing-tool-rail\"",
+            "data-tool=\"cursor\"",
+            "data-tool=\"trend\"",
             "data-tool=\"ray\"",
+            "data-tool=\"hline\"",
+            "data-tool=\"vline\"",
+            "data-tool=\"fib\"",
             "data-tool=\"rectangle\"",
-            "class RayPrimitive",
-            "class RectanglePrimitive",
-            "capcom-terminal-drawings:",
-            "restoreDrawingsForSymbol",
+            "data-tool=\"brush\"",
+            "data-tool=\"text\"",
+            "data-tool=\"measure\"",
+            "title=\"Cursor / select\"",
+            "title=\"Fibonacci retracement\"",
+            "title=\"Price/date percentage measure\"",
+            "id=\"undo-drawing\"",
+            "id=\"redo-drawing\"",
+            "id=\"magnet-drawings\"",
+            "id=\"lock-drawings\"",
+            "id=\"visibility-drawings\"",
+            "id=\"clear-drawings\"",
+            "aria-pressed=\"false\"",
+            "id=\"drawing-style-bar\"",
+            "id=\"drawing-color\"",
+            "id=\"drawing-width\"",
+            "data-line-style=\"solid\"",
+            "data-line-style=\"dashed\"",
+            "data-line-style=\"dotted\"",
+            "id=\"text-annotation-overlay\"",
+            "maxlength=\"500\"",
+            "window.confirm('Clear all drawings?')",
+            "CapComDrawings.createManager",
+            "drawingManager.setRecords",
+            "drawingManager.getRecords",
+            "drawingManager.setTool",
+            "drawingManager.undo",
+            "drawingManager.redo",
+            "drawingManager.setMagnet",
+            "drawingManager.setLocked",
+            "drawingManager.setVisible",
+            "drawingManager.setStyle",
+            "drawingManager.updateContext",
+            "onRecordsChanged",
+            "onSelectionChanged",
+            "onStateChanged",
+            "synthetic-drawings.js",
             "Shared ${sharedCandleRange()}",
             "Bid ${money(bid)}  Ask ${money(ask)}",
         })
@@ -3463,17 +3669,45 @@ public static class SyntheticBasketBuilderTests
             }
         }
 
+        if (!drawings.Contains("capcom-terminal-drawings:", StringComparison.Ordinal))
+        {
+            throw new Exception("drawing manager must retain the stable per-basket persistence key prefix");
+        }
+
         foreach (var forbidden in new[]
         {
             "id=\"last-price\"",
             "title: 'Last'",
             "Last ${",
+            ">X</button>",
+            ">TL</button>",
+            ">HL</button>",
+            ">VL</button>",
+            ">RAY</button>",
+            ">RECT</button>",
+            "class HorizontalLinePrimitive",
+            "class VerticalLinePrimitive",
+            "class TrendLinePrimitive",
+            "class RayPrimitive",
+            "class RectanglePrimitive",
+            "function drawingPrimitive",
+            "function attachDrawing",
+            "function handleChartClick",
+            "chart.subscribeClick(handleChartClick)",
         })
         {
             if (html.Contains(forbidden, StringComparison.Ordinal))
             {
                 throw new Exception($"terminal chart HTML must not expose last-price metadata or price lines: {forbidden}");
             }
+        }
+
+        var chartScript = html.IndexOf("lightweight-charts.standalone.production.js", StringComparison.Ordinal);
+        var drawingScript = html.IndexOf("synthetic-drawings.js", StringComparison.Ordinal);
+        var initialization = html.IndexOf("const chartRoot", StringComparison.Ordinal);
+        if (chartScript < 0 || drawingScript <= chartScript || initialization <= drawingScript)
+        {
+            throw new Exception("terminal must load the local drawing manager after Lightweight Charts and before initialization");
         }
     }
 
@@ -3509,17 +3743,17 @@ public static class SyntheticBasketBuilderTests
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
         if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
         var html = File.ReadAllText(path);
-        var restoreStart = html.IndexOf("function restoreDrawingsForSymbol", StringComparison.Ordinal);
-        var restoreEnd = html.IndexOf("function addDrawing", restoreStart, StringComparison.Ordinal);
-        if (restoreStart < 0 || restoreEnd < restoreStart) throw new Exception("terminal chart HTML must retain a focused drawing restore helper");
+        var restoreStart = html.IndexOf("function restoreDrawingsForIdentity", StringComparison.Ordinal);
+        var restoreEnd = html.IndexOf("function renderChart", restoreStart, StringComparison.Ordinal);
+        if (restoreStart < 0 || restoreEnd < restoreStart) throw new Exception("terminal chart HTML must retain a focused manager restore helper");
         var restore = html[restoreStart..restoreEnd];
-        var anchorReset = restore.IndexOf("drawingAnchor = null;", StringComparison.Ordinal);
-        var previewReset = restore.IndexOf("clearDrawingPreview();", StringComparison.Ordinal);
-        var recordLoad = restore.IndexOf("drawingRecords = loadDrawings", StringComparison.Ordinal);
+        var identitySet = restore.IndexOf("drawingIdentity = identity || '';", StringComparison.Ordinal);
+        var sanitizeLoad = restore.IndexOf("CapComDrawings.loadStoredRecords", StringComparison.Ordinal);
+        var recordSet = restore.IndexOf("drawingManager.setRecords", StringComparison.Ordinal);
 
-        if (anchorReset < 0 || previewReset < 0 || recordLoad < 0 || anchorReset > recordLoad || previewReset > recordLoad)
+        if (identitySet < 0 || sanitizeLoad < identitySet || recordSet < sanitizeLoad)
         {
-            throw new Exception("drawing restore must reset anchors and preview state before loading another symbol's records");
+            throw new Exception("drawing identity restore must set identity, sanitize stored records, then update the manager");
         }
     }
 

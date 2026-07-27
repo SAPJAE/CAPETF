@@ -8,6 +8,7 @@
   const HISTORY_LIMIT = 100;
   const MAX_TEXT_LENGTH = 500;
   const HIT_DISTANCE = 8;
+  const STORAGE_PREFIX = 'capcom-terminal-drawings:';
   const DEFAULT_STYLE = Object.freeze({
     color: '#38bdf8',
     fillColor: 'rgba(56, 189, 248, 0.12)',
@@ -180,6 +181,80 @@
     };
   }
 
+  function conciseAmount(value) {
+    return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, '');
+  }
+
+  function formatElapsed(milliseconds) {
+    const absolute = Math.abs(Number(milliseconds));
+    if (!Number.isFinite(absolute)) return 'n/a';
+    if (absolute >= 86400000) return `${conciseAmount(absolute / 86400000)}d`;
+    if (absolute >= 3600000) return `${conciseAmount(absolute / 3600000)}h`;
+    if (absolute >= 60000) return `${conciseAmount(absolute / 60000)}m`;
+    return `${Math.round(absolute / 1000)}s`;
+  }
+
+  function formatMeasurement(measurement, precision) {
+    if (!isObject(measurement)) return { label: 'Measurement unavailable', tone: 'neutral' };
+    const digits = Number.isInteger(precision) ? Math.max(0, Math.min(10, precision)) : 5;
+    const start = Number(measurement.startPrice);
+    const end = Number(measurement.endPrice);
+    const delta = Number(measurement.priceDelta);
+    const percent = measurement.percentDelta === null ? null : Number(measurement.percentDelta);
+    const bars = Math.max(0, Math.trunc(Number(measurement.bars) || 0));
+    if (![start, end, delta].every(Number.isFinite)) {
+      return { label: 'Measurement unavailable', tone: 'neutral' };
+    }
+    const signedDelta = `${delta >= 0 ? '+' : ''}${delta.toFixed(digits)}`;
+    const percentLabel = Number.isFinite(percent)
+      ? `${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%`
+      : 'n/a';
+    const tone = !Number.isFinite(percent) || delta === 0 ? 'neutral' : delta > 0 ? 'positive' : 'negative';
+    return {
+      label: `${start.toFixed(digits)} -> ${end.toFixed(digits)}  ${signedDelta} (${percentLabel})  ${bars} ${bars === 1 ? 'bar' : 'bars'}  ${formatElapsed(measurement.elapsedMs)}`,
+      tone
+    };
+  }
+
+  function drawingStorageKey(identity) {
+    const stableIdentity = typeof identity === 'string' ? identity.trim() : '';
+    return stableIdentity ? `${STORAGE_PREFIX}${stableIdentity}` : '';
+  }
+
+  function loadStoredRecords(storage, identity) {
+    const key = drawingStorageKey(identity);
+    if (!key || !storage || typeof storage.getItem !== 'function') return [];
+    try {
+      return sanitizeRecords(JSON.parse(storage.getItem(key) || '[]'));
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function persistStoredRecords(storage, identity, records) {
+    const key = drawingStorageKey(identity);
+    if (!key || !storage || typeof storage.setItem !== 'function') return false;
+    try {
+      storage.setItem(key, JSON.stringify(sanitizeRecords(records)));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function confirmClear(manager, confirmAction) {
+    if (!manager || typeof manager.getRecords !== 'function' || typeof manager.clear !== 'function') return false;
+    if (manager.getRecords().length === 0) return false;
+    if (typeof confirmAction !== 'function' || confirmAction() !== true) return false;
+    return manager.clear();
+  }
+
+  function normalizeAnnotationText(value) {
+    if (typeof value !== 'string') return null;
+    const text = value.trim().slice(0, MAX_TEXT_LENGTH);
+    return text || null;
+  }
+
   function uniqueId() {
     if (global.crypto && typeof global.crypto.randomUUID === 'function') return global.crypto.randomUUID();
     nextId += 1;
@@ -190,22 +265,6 @@
     if (style.lineStyle === 'dashed') return [7 * ratio, 5 * ratio];
     if (style.lineStyle === 'dotted') return [2 * ratio, 4 * ratio];
     return [];
-  }
-
-  function formatNumber(value) {
-    if (!Number.isFinite(value)) return 'n/a';
-    const magnitude = Math.abs(value);
-    if (magnitude >= 1000) return value.toFixed(2);
-    if (magnitude >= 10) return value.toFixed(3);
-    return value.toFixed(4);
-  }
-
-  function formatElapsed(milliseconds) {
-    const absolute = Math.abs(milliseconds);
-    if (absolute >= 86400000) return `${(absolute / 86400000).toFixed(1)}d`;
-    if (absolute >= 3600000) return `${(absolute / 3600000).toFixed(1)}h`;
-    if (absolute >= 60000) return `${(absolute / 60000).toFixed(1)}m`;
-    return `${Math.round(absolute / 1000)}s`;
   }
 
   function distanceToSegment(point, start, end) {
@@ -351,12 +410,21 @@
           const top = Math.min(first.y, second.y);
           const boxWidth = Math.abs(second.x - first.x);
           const boxHeight = Math.abs(second.y - first.y);
+          const measurementTone = record.type === 'measure'
+            ? formatMeasurement(record, state.pricePrecision).tone
+            : null;
           context.fillStyle = record.type === 'measure'
-            ? (record.priceDelta >= 0 ? 'rgba(34, 197, 94, 0.13)' : 'rgba(239, 68, 68, 0.13)')
+            ? measurementTone === 'positive'
+              ? 'rgba(34, 197, 94, 0.13)'
+              : measurementTone === 'negative'
+                ? 'rgba(239, 68, 68, 0.13)'
+                : 'rgba(148, 163, 184, 0.12)'
             : style.fillColor;
           context.fillRect(x(left), y(top), Math.round(boxWidth * horizontalRatio), Math.round(boxHeight * verticalRatio));
           context.strokeRect(x(left), y(top), Math.round(boxWidth * horizontalRatio), Math.round(boxHeight * verticalRatio));
-          if (record.type === 'measure') this.drawMeasurementLabel(context, record, left, top, horizontalRatio, verticalRatio);
+          if (record.type === 'measure') {
+            this.drawMeasurementLabel(context, record, left, top, width, height, horizontalRatio, verticalRatio);
+          }
         } else if (record.type === 'fib') {
           for (const level of [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]) {
             const levelY = first.y + (second.y - first.y) * level;
@@ -385,21 +453,36 @@
       context.restore();
     }
 
-    drawMeasurementLabel(context, record, left, top, horizontalRatio, verticalRatio) {
-      const percent = record.percentDelta === null ? 'n/a' : `${record.percentDelta >= 0 ? '+' : ''}${record.percentDelta.toFixed(2)}%`;
-      const delta = `${record.priceDelta >= 0 ? '+' : ''}${formatNumber(record.priceDelta)}`;
-      const label = `${formatNumber(record.startPrice)} -> ${formatNumber(record.endPrice)}  ${delta} (${percent})  ${record.bars} bars  ${formatElapsed(record.elapsedMs)}`;
+    drawMeasurementLabel(context, record, left, top, width, height, horizontalRatio, verticalRatio) {
+      const measurement = formatMeasurement(record, this.state.pricePrecision);
+      const parts = measurement.label.split('  ');
+      const lines = parts.length === 4
+        ? [`${parts[0]}  ${parts[1]}`, `${parts[2]}  ${parts[3]}`]
+        : [measurement.label];
       context.setLineDash([]);
-      context.font = `${Math.round(11 * verticalRatio)}px sans-serif`;
       const padding = 5 * horizontalRatio;
-      const textWidth = context.measureText(label).width;
-      const labelX = Math.round(left * horizontalRatio);
-      const labelY = Math.max(Math.round(14 * verticalRatio), Math.round(top * verticalRatio));
+      const maxWidth = width * horizontalRatio;
+      const maxHeight = height * verticalRatio;
+      let fontSize = 11 * verticalRatio;
+      context.font = `${Math.round(fontSize)}px sans-serif`;
+      let textWidths = lines.map(line => context.measureText(line).width);
+      const availableTextWidth = Math.max(1, maxWidth - padding * 2);
+      const widest = Math.max(...textWidths);
+      if (widest > availableTextWidth) {
+        fontSize = Math.max(7 * verticalRatio, fontSize * availableTextWidth / widest);
+        context.font = `${Math.round(fontSize)}px sans-serif`;
+        textWidths = lines.map(line => context.measureText(line).width);
+      }
+      const labelWidth = Math.min(maxWidth, Math.max(...textWidths) + padding * 2);
+      const lineHeight = Math.ceil(fontSize + 3 * verticalRatio);
+      const labelHeight = Math.min(maxHeight, lineHeight * lines.length + 6 * verticalRatio);
+      const labelX = Math.max(0, Math.min(Math.round(left * horizontalRatio), maxWidth - labelWidth));
+      const labelY = Math.max(0, Math.min(Math.round(top * verticalRatio) - labelHeight, maxHeight - labelHeight));
       context.fillStyle = 'rgba(15, 23, 42, 0.92)';
-      context.fillRect(labelX, labelY - Math.round(14 * verticalRatio), textWidth + padding * 2, Math.round(18 * verticalRatio));
-      context.fillStyle = record.priceDelta >= 0 ? '#86efac' : '#fca5a5';
-      context.textBaseline = 'alphabetic';
-      context.fillText(label, labelX + padding, labelY);
+      context.fillRect(labelX, labelY, labelWidth, labelHeight);
+      context.fillStyle = measurement.tone === 'positive' ? '#86efac' : measurement.tone === 'negative' ? '#fca5a5' : '#cbd5e1';
+      context.textBaseline = 'top';
+      lines.forEach((line, index) => context.fillText(line, labelX + padding, labelY + 3 * verticalRatio + index * lineHeight));
     }
   }
 
@@ -454,13 +537,15 @@
     const callbacks = {
       records: options.onRecordsChanged || options.onRecordsChange || (() => {}),
       status: options.onStatus || (() => {}),
-      selection: options.onSelectionChanged || options.onSelectionChange || (() => {})
+      selection: options.onSelectionChanged || options.onSelectionChange || (() => {}),
+      state: options.onStateChanged || options.onStateChange || (() => {})
     };
     const state = {
       chart: options.chart,
       series: options.series,
       container: options.container,
       orderedTimes: Array.isArray(options.orderedTimes) ? options.orderedTimes.slice() : [],
+      pricePrecision: Number.isInteger(options.pricePrecision) ? Math.max(0, Math.min(10, options.pricePrecision)) : 5,
       records: [],
       undoStack: [],
       redoStack: [],
@@ -496,8 +581,28 @@
       safeCallback(callbacks.status, message);
     }
 
+    function stateSnapshot() {
+      const selected = state.records.find(record => record.id === state.selectedId);
+      return {
+        tool: state.tool,
+        selectedId: state.selectedId,
+        selectedStyle: selected ? cloneJson(selected.style) : null,
+        magnet: state.magnet,
+        locked: state.locked,
+        visible: state.visible,
+        canUndo: state.undoStack.length > 0,
+        canRedo: state.redoStack.length > 0,
+        recordCount: state.records.length
+      };
+    }
+
+    function notifyState() {
+      safeCallback(callbacks.state, stateSnapshot());
+    }
+
     function notifyRecords() {
       safeCallback(callbacks.records, outputRecords());
+      notifyState();
       primitive.invalidate();
     }
 
@@ -505,6 +610,7 @@
       state.selectedId = id && state.records.some(record => record.id === id) ? id : null;
       const selected = state.records.find(record => record.id === state.selectedId);
       safeCallback(callbacks.selection, selected ? cloneJson(selected) : null);
+      notifyState();
       primitive.invalidate();
     }
 
@@ -838,6 +944,7 @@
       state.tool = 'cursor';
       state.suppressClick = false;
       status('Drawing cancelled');
+      notifyState();
       primitive.invalidate();
     }
 
@@ -883,6 +990,7 @@
         state.tool = normalized;
         state.text = typeof text === 'string' ? text.slice(0, MAX_TEXT_LENGTH) : '';
         status(normalized === 'cursor' ? 'Cursor selected' : `${normalized} tool selected`);
+        notifyState();
         primitive.invalidate();
         return true;
       },
@@ -897,6 +1005,26 @@
 
       getRecords() {
         return outputRecords();
+      },
+
+      getState() {
+        return stateSnapshot();
+      },
+
+      updateContext(context) {
+        const next = isObject(context) ? context : {};
+        if (Array.isArray(next.orderedTimes)) state.orderedTimes = next.orderedTimes.slice();
+        if (Number.isInteger(next.pricePrecision)) {
+          state.pricePrecision = Math.max(0, Math.min(10, next.pricePrecision));
+        }
+        state.records = enrichMeasurements(state.records);
+        notifyRecords();
+        return outputRecords();
+      },
+
+      cancel() {
+        cancel();
+        return true;
       },
 
       undo() {
@@ -948,6 +1076,7 @@
         const changed = mutate(() => {
           state.records = state.records.map(record => ({ ...record, locked: value }));
         });
+        if (!changed) notifyState();
         status(value ? 'Drawings locked' : 'Drawings unlocked');
         return changed;
       },
@@ -958,6 +1087,7 @@
         const changed = mutate(() => {
           state.records = state.records.map(record => ({ ...record, visible: value }));
         });
+        if (!changed) notifyState();
         status(value ? 'Drawings visible' : 'Drawings hidden');
         return changed;
       },
@@ -965,6 +1095,7 @@
       setMagnet(enabled) {
         state.magnet = enabled === true;
         status(state.magnet ? 'Magnet enabled' : 'Magnet disabled');
+        notifyState();
         return state.magnet;
       },
 
@@ -975,9 +1106,11 @@
           primitive.invalidate();
           return false;
         }
-        return mutate(() => {
+        const changed = mutate(() => {
           selected.style = state.style;
         });
+        if (changed) select(selected.id);
+        return changed;
       },
 
       dispose() {
@@ -1003,13 +1136,20 @@
       throw error;
     }
 
+    notifyState();
     return manager;
   }
 
   window.CapComDrawings = Object.freeze({
     calculateMeasurement,
+    formatMeasurement,
     validateRecord,
     sanitizeRecords,
+    drawingStorageKey,
+    loadStoredRecords,
+    persistStoredRecords,
+    confirmClear,
+    normalizeAnnotationText,
     createManager
   });
 })(window);
