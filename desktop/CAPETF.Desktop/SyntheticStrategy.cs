@@ -91,22 +91,27 @@ public static class SyntheticStrategyRanker
 
         return strategy switch
         {
-            SyntheticStrategyKind.BelowMa200 => BelowMa200(instrument, candles, close),
+            SyntheticStrategyKind.BelowMa200 => BelowMa200(instrument, candles, close, periodsPerYear),
             SyntheticStrategyKind.BelowTwoYearLow => BelowTwoYearLow(instrument, candles, close, periodsPerYear),
             SyntheticStrategyKind.NearTwoYearLow => NearTwoYearLow(instrument, candles, close, periodsPerYear),
             SyntheticStrategyKind.AboveAllTimeHigh => AboveAllTimeHigh(instrument, candles, close),
             SyntheticStrategyKind.BreakoutCandidate => BreakoutCandidate(instrument, candles, close, periodsPerYear),
             SyntheticStrategyKind.DipInsideUptrend => DipInsideUptrend(instrument, candles, close),
             SyntheticStrategyKind.HighMomentum => HighMomentum(instrument, candles, close, periodsPerYear),
-            SyntheticStrategyKind.MeanReversion => MeanReversion(instrument, candles, close),
+            SyntheticStrategyKind.MeanReversion => MeanReversion(instrument, candles, close, periodsPerYear),
             _ => null,
         };
     }
 
-    private static SyntheticStrategyRank? BelowMa200(MarketInstrument instrument, IReadOnlyList<OhlcPoint> candles, decimal close)
+    private static SyntheticStrategyRank? BelowMa200(
+        MarketInstrument instrument,
+        IReadOnlyList<OhlcPoint> candles,
+        decimal close,
+        int periodsPerYear)
     {
-        if (candles.Count < 200) return null;
-        var ma200 = AverageClose(candles.TakeLast(200));
+        var ma200Period = TradingDayPeriod(200, periodsPerYear);
+        if (candles.Count < ma200Period) return null;
+        var ma200 = AverageClose(candles.TakeLast(ma200Period));
         var distance = (ma200 - close) / ma200 * 100m;
         var score = distance >= 0 ? 100m + distance : Math.Max(1m, 100m + distance * 5m);
         var reason = distance >= 0 ? $"{distance:0.##}% below MA200" : $"{Math.Abs(distance):0.##}% above MA200, closest fallback";
@@ -210,11 +215,17 @@ public static class SyntheticStrategyRanker
         return new SyntheticStrategyRank(instrument, decimal.Round(Math.Max(1m, 100m + returnPct), 4), $"{returnPct:0.##}% one-year momentum");
     }
 
-    private static SyntheticStrategyRank? MeanReversion(MarketInstrument instrument, IReadOnlyList<OhlcPoint> candles, decimal close)
+    private static SyntheticStrategyRank? MeanReversion(
+        MarketInstrument instrument,
+        IReadOnlyList<OhlcPoint> candles,
+        decimal close,
+        int periodsPerYear)
     {
-        if (candles.Count < 200) return null;
-        var ma200 = AverageClose(candles.TakeLast(200));
-        var ma50 = AverageClose(candles.TakeLast(50));
+        var ma200Period = TradingDayPeriod(200, periodsPerYear);
+        var ma50Period = TradingDayPeriod(50, periodsPerYear);
+        if (candles.Count < ma200Period) return null;
+        var ma200 = AverageClose(candles.TakeLast(ma200Period));
+        var ma50 = AverageClose(candles.TakeLast(ma50Period));
         var discount = (ma200 - close) / ma200 * 100m;
         var stability = ma50 >= ma200 * 0.85m ? 25m : Math.Max(0m, 25m - (ma200 * 0.85m - ma50) / ma200 * 100m);
         var score = discount >= 0 ? 75m + discount + stability : Math.Max(1m, 75m + discount * 4m + stability);
@@ -224,6 +235,9 @@ public static class SyntheticStrategyRanker
 
     private static IReadOnlyList<OhlcPoint> Lookback(IReadOnlyList<OhlcPoint> candles, int desired) =>
         candles.TakeLast(Math.Min(candles.Count, Math.Max(2, desired))).ToList();
+
+    private static int TradingDayPeriod(int tradingDays, int periodsPerYear) =>
+        Math.Max(2, (int)Math.Round(tradingDays * periodsPerYear / 252d, MidpointRounding.AwayFromZero));
 
     private static decimal AverageClose(IEnumerable<OhlcPoint> candles) => candles.Average(row => row.Close);
 

@@ -177,14 +177,13 @@ public partial class CapComTerminalWindow : Window
         if (strategy != SyntheticStrategyKind.SimilarToSelectedSymbol)
         {
             var longTermCandles = resolution == "Weekly" ? candles : CachedCandlesForResolution("Weekly");
-            selectionCandidates = SelectStrategyCandidates(
+            selectionCandidates = SyntheticStrategyCandidatePool.Select(
                 strategy,
                 candidates,
                 candles,
                 periodsPerYear,
                 longTermCandles,
-                fallbackPeriodsPerYear: 52,
-                maxSelection: 36);
+                fallbackPeriodsPerYear: 52);
         }
 
         if (isSeededSimilarBuild)
@@ -348,26 +347,6 @@ public partial class CapComTerminalWindow : Window
         var loadStatus = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs, {HistoryRange(selectedHistory)}.";
         StatusText.Text = loadStatus;
         await TryStartStreamingCurrentBasketAsync(loadStatus, cancellationToken);
-    }
-
-    private static IReadOnlyList<MarketInstrument> SelectStrategyCandidates(
-        SyntheticStrategyKind strategy,
-        IReadOnlyList<MarketInstrument> candidates,
-        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
-        int periodsPerYear,
-        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> fallbackCandles,
-        int fallbackPeriodsPerYear,
-        int maxSelection)
-    {
-        var ranked = SyntheticStrategyRanker.RankWithFallback(
-            strategy,
-            candidates,
-            candles,
-            periodsPerYear,
-            fallbackCandles,
-            fallbackPeriodsPerYear,
-            maxSelection);
-        return ranked.Count >= 3 ? ranked.Select(rank => rank.Instrument).ToList() : [];
     }
 
     private static IReadOnlyList<MarketInstrument> SelectSyntheticCandidates(

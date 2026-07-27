@@ -148,6 +148,8 @@ public static class SyntheticBasketBuilderTests
         SyntheticStrategiesRankExpectedSetups();
         SyntheticStrategiesExposeBuildOptions();
         SyntheticStrategiesReturnClosestFallbackCandidates();
+        StrategyCandidatePoolKeepsOnlyTopSignalRanksForClustering();
+        WeeklyStrategiesScaleMaPeriodsFromTradingDays();
         DipInsideUptrendBuildsFromBundledUsDailyUniverse();
         SyntheticQuoteUsesFormulaMultipliersForBidAsk();
         SyntheticQuoteTreatsMissingOrZeroSidesAsUnavailable();
@@ -3694,8 +3696,7 @@ public static class SyntheticBasketBuilderTests
             "RebuildSeedOptions",
             "SeedText",
             "SelectedStrategy",
-            "SelectStrategyCandidates",
-            "SyntheticStrategyRanker.Rank",
+            "SyntheticStrategyCandidatePool.Select",
             "GoToRealtime_Click",
             "window.goToRealtime",
             "ZoomIn_Click",
@@ -4781,7 +4782,7 @@ public static class SyntheticBasketBuilderTests
         };
 
         AssertStrategyTop(SyntheticStrategyKind.DipInsideUptrend, "DIP", instruments, candles);
-        AssertStrategyTop(SyntheticStrategyKind.BelowMa200, "BELOW200", instruments, candles);
+        AssertStrategyTop(SyntheticStrategyKind.BelowMa200, "BELOW200", instruments, candles, periodsPerYear: 252);
         AssertStrategyTop(SyntheticStrategyKind.BelowTwoYearLow, "LOW2Y", instruments, candles);
         AssertStrategyTop(SyntheticStrategyKind.AboveAllTimeHigh, "ATH", instruments, candles);
         AssertStrategyTop(SyntheticStrategyKind.BreakoutCandidate, "BREAK", instruments, candles);
@@ -4839,6 +4840,65 @@ public static class SyntheticBasketBuilderTests
         if (belowMa[0].Instrument.Epic != "NEAR-MA") throw new Exception("below-MA fallback should prefer the closest candidate");
         if (belowLow.Count < 3) throw new Exception("below-2Y-low strategy should return closest fallback candidates when strict matches are scarce");
         if (belowLow[0].Instrument.Epic != "NEAR-LOW") throw new Exception("below-2Y-low fallback should prefer the closest candidate");
+    }
+
+    private static void StrategyCandidatePoolKeepsOnlyTopSignalRanksForClustering()
+    {
+        var day = DateTimeOffset.Parse("2023-01-02T00:00:00Z");
+        var instruments = Enumerable.Range(0, 14)
+            .Select(index => CreateSeedStock($"CA-{index:00}", $"Canada {index:00}"))
+            .ToList();
+        var candles = instruments.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => CreateLongReturnCandles(
+                day,
+                [0.001m + instruments.IndexOf(instrument) * 0.0001m, -0.0005m, 0.0008m],
+                160));
+
+        var candidates = SyntheticStrategyCandidatePool.Select(
+            SyntheticStrategyKind.HighMomentum,
+            instruments,
+            candles,
+            primaryPeriodsPerYear: 52,
+            candles,
+            fallbackPeriodsPerYear: 52);
+        var expected = SyntheticStrategyRanker.Rank(
+            SyntheticStrategyKind.HighMomentum,
+            instruments,
+            candles,
+            periodsPerYear: 52,
+            maximum: SyntheticStrategyCandidatePool.MaximumCandidates);
+
+        AssertEqual(8, candidates.Count, "a small market must not send its full universe into strategy clustering");
+        AssertEqual(
+            string.Join(',', expected.Select(rank => rank.Instrument.Epic)),
+            string.Join(',', candidates.Select(instrument => instrument.Epic)),
+            "strategy clustering candidates must preserve signal-rank priority");
+    }
+
+    private static void WeeklyStrategiesScaleMaPeriodsFromTradingDays()
+    {
+        var day = DateTimeOffset.Parse("2023-01-02T00:00:00Z");
+        var instruments = Enumerable.Range(0, 3)
+            .Select(index => CreateSeedStock($"WEEKLY-MA-{index}", $"Weekly MA {index}"))
+            .ToList();
+        var candles = instruments.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => (IReadOnlyList<OhlcPoint>)Enumerable.Range(0, 156)
+                .Select(index =>
+                {
+                    var close = index < 136 ? 120m + instruments.IndexOf(instrument) : 85m - (index - 136) * 0.2m;
+                    return FlatCandle(day.AddDays(index * 7), close);
+                })
+                .ToList());
+
+        var belowMa = SyntheticStrategyRanker.Rank(
+            SyntheticStrategyKind.BelowMa200, instruments, candles, periodsPerYear: 52, maximum: 3);
+        var meanReversion = SyntheticStrategyRanker.Rank(
+            SyntheticStrategyKind.MeanReversion, instruments, candles, periodsPerYear: 52, maximum: 3);
+
+        AssertEqual(3, belowMa.Count, "weekly MA200 strategy must use the 200-trading-day equivalent period");
+        AssertEqual(3, meanReversion.Count, "weekly mean reversion must scale MA50 and MA200 to weekly periods");
     }
 
     private static void SyntheticQuoteUsesFormulaMultipliersForBidAsk()
@@ -5197,9 +5257,10 @@ public static class SyntheticBasketBuilderTests
         SyntheticStrategyKind strategy,
         string expectedEpic,
         IReadOnlyList<MarketInstrument> instruments,
-        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles)
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
+        int periodsPerYear = 52)
     {
-        var top = SyntheticStrategyRanker.Rank(strategy, instruments, candles, periodsPerYear: 52, maximum: 5).FirstOrDefault();
+        var top = SyntheticStrategyRanker.Rank(strategy, instruments, candles, periodsPerYear, maximum: 5).FirstOrDefault();
         if (top?.Instrument.Epic != expectedEpic)
         {
             throw new Exception($"{strategy} should rank {expectedEpic} first, got {top?.Instrument.Epic ?? "none"}");
@@ -5481,7 +5542,7 @@ public static class SyntheticBasketBuilderTests
     {
         var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
         var start = source.IndexOf("private async Task LoadSavedBasketAsync", StringComparison.Ordinal);
-        var end = source.IndexOf("private static IReadOnlyList<MarketInstrument> SelectStrategyCandidates", start, StringComparison.Ordinal);
+        var end = source.IndexOf("private static IReadOnlyList<MarketInstrument> SelectSyntheticCandidates", start, StringComparison.Ordinal);
         if (start < 0 || end <= start) throw new Exception("saved basket load method must remain available");
         var loadBlock = source[start..end];
 
