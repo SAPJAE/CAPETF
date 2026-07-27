@@ -2332,6 +2332,8 @@ public static class SyntheticBasketBuilderTests
             "chart.addSeries(LightweightCharts.LineSeries",
             "CapComDrawings.createManager",
             "id=\"drawing-tool-rail\"",
+            "min-height: 32px",
+            "flex: 0 0 32px",
             "data-tool=\"cursor\"",
             "data-tool=\"trend\"",
             "data-tool=\"hline\"",
@@ -2620,7 +2622,7 @@ public static class SyntheticBasketBuilderTests
               let primitive = null;
               let requestUpdates = 0;
               let detachCount = 0;
-              const timeScale = {
+              const timeScale = options.timeScale || {
                 timeToCoordinate(time) { return typeof time === 'number' ? time : null; },
                 coordinateToTime(x) { return x >= 0 && x <= 800 ? x : null; },
               };
@@ -2860,6 +2862,30 @@ public static class SyntheticBasketBuilderTests
                 ['lineTo', 200, 1200],
               ]);
             }));
+
+            test('renders restored anchors at the nearest candle after a timeframe change', () => {
+              const exactCoordinates = new Map([[100, 100], [200, 200], [300, 300]]);
+              const environment = makeEnvironment({
+                timeScale: {
+                  timeToCoordinate(time) { return exactCoordinates.get(time) ?? null; },
+                  coordinateToTime(x) { return x >= 0 && x <= 800 ? x : null; },
+                },
+              });
+              try {
+                environment.manager.setRecords([{
+                  ...trend,
+                  id: 'cross-timeframe-trend',
+                  p1: { time: 110, price: 100 },
+                  p2: { time: 290, price: 110 },
+                }]);
+                assert.deepEqual(render(environment, 1, 1).map(stroke => stroke.path), [[
+                  ['moveTo', 100, 100],
+                  ['lineTo', 300, 110],
+                ]], 'restored drawing must remain visible when its original candle times are absent');
+              } finally {
+                environment.manager.dispose();
+              }
+            });
 
             test('uses horizontal pixel ratio for vertical stroke width', () => withEnvironment(environment => {
               environment.manager.setRecords([{
@@ -3779,6 +3805,9 @@ public static class SyntheticBasketBuilderTests
         foreach (var required in new[]
         {
             "id=\"component-splitter\"",
+            "container-type: inline-size",
+            "@container (max-width: 700px)",
+            "grid-column: 1 / -1",
             "pointerdown",
             "pointermove",
             "pointerup",

@@ -388,9 +388,31 @@
     return Math.hypot(point.x - (start.x + amount * dx), point.y - (start.y + amount * dy));
   }
 
+  function timeCoordinate(state, time) {
+    const timeScale = state.chart.timeScale();
+    const direct = timeScale.timeToCoordinate(time);
+    if (direct !== null && Number.isFinite(direct)) return direct;
+    const target = normalizeTimestamp(time);
+    if (target === null || !Array.isArray(state.orderedTimes)) return null;
+    let nearestCoordinate = null;
+    let nearestDistance = Infinity;
+    for (const candidate of state.orderedTimes) {
+      const normalized = normalizeTimestamp(candidate);
+      if (normalized === null) continue;
+      const coordinate = timeScale.timeToCoordinate(candidate);
+      if (coordinate === null || !Number.isFinite(coordinate)) continue;
+      const distance = Math.abs(normalized - target);
+      if (distance < nearestDistance) {
+        nearestCoordinate = coordinate;
+        nearestDistance = distance;
+      }
+    }
+    return nearestCoordinate;
+  }
+
   function pointCoordinates(state, point) {
     if (!point) return null;
-    const x = state.chart.timeScale().timeToCoordinate(point.time);
+    const x = timeCoordinate(state, point.time);
     const y = state.series.priceToCoordinate(point.price);
     return x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y) ? null : { x, y };
   }
@@ -401,7 +423,7 @@
       return y === null ? [] : [{ name: 'price', x: width / 2, y }];
     }
     if (record.type === 'vline') {
-      const x = state.chart.timeScale().timeToCoordinate(record.time);
+      const x = timeCoordinate(state, record.time);
       return x === null ? [] : [{ name: 'time', x, y: height / 2 }];
     }
     if (record.type === 'brush') {
@@ -890,7 +912,7 @@
         const price = y === null ? null : state.series.coordinateToPrice(y + delta.y);
         if (Number.isFinite(price)) result.price = price;
       } else if (result.type === 'vline') {
-        const x = state.chart.timeScale().timeToCoordinate(original.time);
+        const x = timeCoordinate(state, original.time);
         const time = x === null ? null : state.chart.timeScale().coordinateToTime(x + delta.x);
         const cleanTime = sanitizeTime(time);
         if (cleanTime !== null) result.time = cleanTime;
