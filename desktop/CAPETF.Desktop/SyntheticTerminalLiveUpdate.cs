@@ -7,10 +7,11 @@ public static class SyntheticTerminalLiveUpdate
     public static SyntheticTerminalTickResult Apply(
         SyntheticBasket basket,
         QuoteUpdate quote,
-        DateTimeOffset? now = null)
+        DateTimeOffset? now = null,
+        string? timeframe = null)
     {
         var observedAt = now ?? DateTimeOffset.UtcNow;
-        var result = SyntheticLiveUpdate.ApplyQuote(basket, quote);
+        var result = SyntheticLiveUpdate.ApplyQuote(basket, quote, timeframe);
         var candle = result.CandleChanged && basket.Candles.Count > 0
             ? basket.Candles[^1]
             : null;

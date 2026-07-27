@@ -684,7 +684,11 @@ public partial class CapComTerminalWindow : Window
         {
             if (_windowLifetime.IsClosing || _basket is null) return;
             var observedAt = DateTimeOffset.UtcNow;
-            var result = SyntheticTerminalLiveUpdate.Apply(_basket, update, observedAt);
+            var result = SyntheticTerminalLiveUpdate.Apply(
+                _basket,
+                update,
+                observedAt,
+                SelectedResolution());
             if (!result.Matched) return;
             if (result.Tick is not null) _ = SendTerminalTickAsync(result.Tick);
             ChartMetaText.Text = $"{_pendingPayload?.CurrencyLabel ?? ""} | bid {FormatQuote(_basket.BidPrice)} | ask {FormatQuote(_basket.AskPrice)}";

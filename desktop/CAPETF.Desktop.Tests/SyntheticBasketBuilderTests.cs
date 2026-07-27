@@ -90,6 +90,7 @@ public static class SyntheticBasketBuilderTests
         SeededSyntheticSelectorBuildsSapFromEncryptedChunksForIntradayIntervals();
         SeededSyntheticSelectorDoesNotResolveShortTickersByLooseNameContains();
         SyntheticTerminalLiveUpdateReturnsIncrementalTick();
+        LiveWeeklyQuoteStartsCurrentCandleInsteadOfRepaintingPriorWeek();
         IncrementalAndNativeFreshnessUseIndependentUtcNow();
         StreamingQuoteClearsMissingAndZeroSides();
         StreamingQuoteClearsUnavailableSidesWithoutUsablePrice();
@@ -2081,6 +2082,35 @@ public static class SyntheticBasketBuilderTests
         AssertEqual(1, result.Tick.ComponentQuotes.Count, "terminal tick should carry component quote metadata without full chart history");
         AssertEqual(DateTimeOffset.Parse("2026-07-25T00:01:00Z"), result.Tick.ComponentQuotes[0].QuoteTimestamp,
             "stream quote timestamp must flow into the terminal tick");
+    }
+
+    private static void LiveWeeklyQuoteStartsCurrentCandleInsteadOfRepaintingPriorWeek()
+    {
+        var priorWeek = DateTimeOffset.Parse("2026-07-20T04:00:00Z");
+        var currentWeekQuote = DateTimeOffset.Parse("2026-07-27T12:15:00Z");
+        var basket = new SyntheticBasket { Symbol = "SYN-WEEKLY", Block = "Europe / EUR / All", BasketPrice = 100m };
+        basket.Components.Add(new SyntheticComponent(new MarketInstrument { Epic = "SAPD", Price = 100m }, 100m, 0m, 0m)
+        {
+            SyntheticBaselinePrice = 100m,
+            LastAppliedPrice = 100m,
+        });
+        basket.Candles.Add(new OhlcPoint(priorWeek, 98m, 104m, 96m, 100m));
+
+        var result = SyntheticTerminalLiveUpdate.Apply(
+            basket,
+            new QuoteUpdate("SAPD", 109m, 111m, 110m, currentWeekQuote),
+            timeframe: "Weekly");
+
+        AssertEqual(2, basket.Candles.Count, "a quote in a new week must append the current weekly candle");
+        AssertEqual(priorWeek, basket.Candles[0].Time, "live rollover must preserve the prior historical candle");
+        AssertEqual(DateTimeOffset.Parse("2026-07-27T00:00:00Z"), basket.Candles[1].Time,
+            "the current weekly candle must use the Monday UTC bucket");
+        AssertNear(100m, basket.Candles[1].Open, "the new weekly candle must open at the prior synthetic close");
+        AssertNear(110m, basket.Candles[1].Close, "the first quote must fill the new weekly candle");
+        if (!result.CandleChanged || result.Tick?.Candle is null)
+        {
+            throw new Exception("weekly rollover must publish the appended candle to the chart");
+        }
     }
 
     private static void IncrementalAndNativeFreshnessUseIndependentUtcNow()

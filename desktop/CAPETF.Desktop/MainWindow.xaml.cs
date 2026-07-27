@@ -838,7 +838,11 @@ public partial class MainWindow : Window
             if (CurrentWorkspaceMode() == SyntheticTerminalWorkspace.ModeName && _terminalBasket is not null)
             {
                 var observedAt = DateTimeOffset.UtcNow;
-                var result = SyntheticTerminalLiveUpdate.Apply(_terminalBasket, update, observedAt);
+                var result = SyntheticTerminalLiveUpdate.Apply(
+                    _terminalBasket,
+                    update,
+                    observedAt,
+                    SelectedResolution());
                 if (result.Matched)
                 {
                     terminalTick = result.Tick;
