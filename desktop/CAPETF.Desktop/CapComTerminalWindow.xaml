@@ -85,6 +85,7 @@
                     <Button x:Name="BuildBasketButton" Content="Build Basket" Click="BuildSynthetic_Click" Background="#1D4ED8" BorderBrush="#60A5FA"/>
                     <Button Content="Save Basket" Click="SaveBasket_Click"/>
                     <ComboBox x:Name="SavedBasketsBox" MinWidth="190" SelectionChanged="SavedBaskets_SelectionChanged" ToolTip="Reload a saved synthetic basket."/>
+                    <Button x:Name="DeleteBasketButton" Content="Delete" Click="DeleteBasket_Click" ToolTip="Delete the selected saved basket." IsEnabled="False" Padding="7,5"/>
                     <ComboBox x:Name="ResolutionBox" SelectionChanged="Resolution_SelectionChanged">
                         <ComboBoxItem Content="Weekly" IsSelected="True"/>
                         <ComboBoxItem Content="Daily"/>

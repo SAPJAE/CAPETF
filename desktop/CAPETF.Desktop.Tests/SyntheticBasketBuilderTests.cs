@@ -137,6 +137,8 @@ public static class SyntheticBasketBuilderTests
         ExecutablePreviewRoundsUpToCapitalDealMinimumAndIncrement();
         ExecutableOrderPreviewUsesCurrentSideQuotesAndReportsImbalance();
         SavedSyntheticBasketStorePersistsFormulaDetails();
+        SavedSyntheticBasketStoreDeletesSelectedBasket();
+        SavedBasketDeletionUiContractIsPresent();
         FinalStaticAcceptanceChecks();
     }
 
@@ -3778,6 +3780,84 @@ public static class SyntheticBasketBuilderTests
         if (!EqualityComparer<T>.Default.Equals(expected, actual))
         {
             throw new Exception($"{message}. Expected {expected}, got {actual}");
+        }
+    }
+
+    private static void SavedSyntheticBasketStoreDeletesSelectedBasket()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"capetf-saved-delete-{Guid.NewGuid():N}");
+        try
+        {
+            var store = new SavedSyntheticBasketStore(folder);
+            var deleted = new SavedSyntheticBasket(
+                "basket-to-delete",
+                "Delete me",
+                "SYN-DELETE-01",
+                "US / USD / All",
+                SyntheticStrategyKind.SimilarToSelectedSymbol,
+                DateTimeOffset.Parse("2026-07-27T10:00:00Z"),
+                DateTimeOffset.Parse("2026-07-27T10:00:00Z"),
+                []);
+            var retained = new SavedSyntheticBasket(
+                "basket-to-keep",
+                "Keep me",
+                "SYN-KEEP-01",
+                "US / USD / All",
+                SyntheticStrategyKind.SimilarToSelectedSymbol,
+                DateTimeOffset.Parse("2026-07-27T10:00:00Z"),
+                DateTimeOffset.Parse("2026-07-27T10:00:00Z"),
+                []);
+
+            store.Save(deleted);
+            store.Save(retained);
+
+            if (!store.Delete("BASKET-TO-DELETE")) throw new Exception("deleting a saved basket by ID should return true");
+            var remaining = store.LoadAll();
+            if (remaining.Count != 1 || remaining[0].Id != retained.Id)
+            {
+                throw new Exception("deleting one saved basket should leave only the other basket");
+            }
+
+            if (store.Delete("unknown-basket")) throw new Exception("deleting an unknown saved basket should return false");
+        }
+        finally
+        {
+            if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    private static void SavedBasketDeletionUiContractIsPresent()
+    {
+        var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml"));
+        foreach (var required in new[]
+        {
+            "x:Name=\"DeleteBasketButton\"",
+            "Content=\"Delete\"",
+            "ToolTip=\"Delete the selected saved basket.\"",
+            "Click=\"DeleteBasket_Click\"",
+            "IsEnabled=\"False\"",
+        })
+        {
+            if (!xaml.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"saved basket deletion XAML missing {required}");
+            }
+        }
+
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "DeleteBasket_Click",
+            "MessageBox.Show($\"Delete saved basket {saved.Name}?\"",
+            "_savedBasketStore.Delete(saved.Id)",
+            "RefreshSavedBaskets()",
+            "DeleteBasketButton.IsEnabled = SavedBasketsBox.SelectedItem is SavedSyntheticBasket",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"saved basket deletion source missing {required}");
+            }
         }
     }
 

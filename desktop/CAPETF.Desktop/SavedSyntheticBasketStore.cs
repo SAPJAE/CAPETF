@@ -86,4 +86,16 @@ public sealed class SavedSyntheticBasketStore
             .ToList();
         File.WriteAllText(_filePath, JsonSerializer.Serialize(ordered, JsonOptions));
     }
+
+    public bool Delete(string id)
+    {
+        var existing = LoadAll().ToList();
+        var remaining = existing
+            .Where(item => !string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (remaining.Count == existing.Count) return false;
+
+        File.WriteAllText(_filePath, JsonSerializer.Serialize(remaining, JsonOptions));
+        return true;
+    }
 }

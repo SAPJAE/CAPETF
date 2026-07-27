@@ -255,8 +255,32 @@ public partial class CapComTerminalWindow : Window
 
     private async void SavedBaskets_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        UpdateDeleteBasketButtonState();
         if (_loadingSavedBaskets || SavedBasketsBox.SelectedItem is not SavedSyntheticBasket saved) return;
         await RunOperationAsync($"Loading saved basket {saved.Name}", () => LoadSavedBasketAsync(saved));
+    }
+
+    private void DeleteBasket_Click(object sender, RoutedEventArgs e)
+    {
+        if (SavedBasketsBox.SelectedItem is not SavedSyntheticBasket saved)
+        {
+            UpdateDeleteBasketButtonState();
+            StatusText.Text = "Select a saved basket to delete.";
+            return;
+        }
+
+        var result = MessageBox.Show($"Delete saved basket {saved.Name}?", "Delete Saved Basket", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (result != MessageBoxResult.Yes) return;
+
+        if (!_savedBasketStore.Delete(saved.Id))
+        {
+            StatusText.Text = $"Could not delete saved basket {saved.Name}.";
+            RefreshSavedBaskets();
+            return;
+        }
+
+        RefreshSavedBaskets();
+        StatusText.Text = $"Deleted saved basket {saved.Name}.";
     }
 
     private async Task LoadSavedBasketAsync(SavedSyntheticBasket saved)
@@ -659,6 +683,8 @@ public partial class CapComTerminalWindow : Window
         BlockBox.IsEnabled = enabled;
         StrategyBox.IsEnabled = enabled;
         SavedBasketsBox.IsEnabled = enabled;
+        if (enabled) UpdateDeleteBasketButtonState();
+        else DeleteBasketButton.IsEnabled = false;
         ResolutionBox.IsEnabled = enabled;
     }
 
@@ -692,7 +718,13 @@ public partial class CapComTerminalWindow : Window
         finally
         {
             _loadingSavedBaskets = false;
+            UpdateDeleteBasketButtonState();
         }
+    }
+
+    private void UpdateDeleteBasketButtonState()
+    {
+        DeleteBasketButton.IsEnabled = SavedBasketsBox.SelectedItem is SavedSyntheticBasket;
     }
 
     private void RebuildSeedOptions()
