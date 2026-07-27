@@ -1,4 +1,5 @@
 using CAPETF.Desktop;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -94,6 +95,8 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlRejectsKLineChartRuntime();
         SyntheticTerminalHtmlUsesV3LightweightChartsTerminal();
         SyntheticTerminalHtmlUsesV5SeriesApiAndChartSideTools();
+        SyntheticDrawingsAssetPublishesAndExposesV5PrimitiveContract();
+        SyntheticDrawingsRuntimeValidatesRecordsMeasurementAndHistory();
         SyntheticTerminalHtmlExposesResizableRailAndPersistentDrawingTools();
         SyntheticTerminalHtmlDisablesNativeLastCloseDecorations();
         SyntheticTerminalHtmlResetsTransientDrawingStateBeforeRestore();
@@ -2408,6 +2411,207 @@ public static class SyntheticBasketBuilderTests
             {
                 throw new Exception($"terminal V3 HTML missing expected control {required}");
             }
+        }
+    }
+
+    private static void SyntheticDrawingsAssetPublishesAndExposesV5PrimitiveContract()
+    {
+        var sourcePath = SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-drawings.js");
+        var outputPath = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-drawings.js");
+        var projectPath = SourcePath("desktop", "CAPETF.Desktop", "CAPETF.Desktop.csproj");
+        var project = File.ReadAllText(projectPath);
+        var missing = new List<string>();
+
+        if (!File.Exists(sourcePath)) missing.Add("source asset desktop/CAPETF.Desktop/Assets/synthetic-drawings.js");
+        if (!File.Exists(outputPath)) missing.Add("copied output asset Assets/synthetic-drawings.js");
+        if (!project.Contains("<Content Include=\"Assets\\synthetic-drawings.js\">", StringComparison.Ordinal))
+        {
+            missing.Add("CAPETF.Desktop.csproj synthetic-drawings.js content entry");
+        }
+
+        if (missing.Count > 0)
+        {
+            throw new Exception($"drawing manager packaging contract missing: {string.Join(", ", missing)}");
+        }
+
+        var source = File.ReadAllText(sourcePath);
+        foreach (var required in new[]
+        {
+            "window.CapComDrawings",
+            "calculateMeasurement",
+            "validateRecord",
+            "sanitizeRecords",
+            "createManager",
+            "paneViews()",
+            "updateAllViews()",
+            "attached(",
+            "detached()",
+            "useBitmapCoordinateSpace",
+            "horizontalPixelRatio",
+            "verticalPixelRatio",
+            "attachPrimitive",
+            "detachPrimitive",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"drawing manager must expose the v5 primitive contract: missing {required}");
+            }
+        }
+
+        foreach (var method in new[]
+        {
+            "setTool", "setRecords", "getRecords", "undo", "redo", "deleteSelected", "clear",
+            "setLocked", "setVisible", "setMagnet", "setStyle", "dispose",
+        })
+        {
+            if (!source.Contains($"{method}(", StringComparison.Ordinal))
+            {
+                throw new Exception($"drawing manager public API missing {method}");
+            }
+        }
+    }
+
+    private static void SyntheticDrawingsRuntimeValidatesRecordsMeasurementAndHistory()
+    {
+        var modulePath = SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-drawings.js");
+        const string script = """
+            const assert = require('node:assert/strict');
+            global.window = globalThis;
+            require(process.argv[1]);
+
+            const api = window.CapComDrawings;
+            assert.ok(api);
+            for (const name of ['calculateMeasurement', 'validateRecord', 'sanitizeRecords', 'createManager']) {
+              assert.equal(typeof api[name], 'function', `missing API ${name}`);
+            }
+
+            const p1 = { time: 100, price: 100 };
+            const p2 = { time: 300, price: 110 };
+            const common = { style: { color: '#22c55e', lineWidth: 2, lineStyle: 'solid' }, visible: true, locked: false };
+            const records = [
+              { ...common, id: 'trend-1', type: 'trend', p1, p2 },
+              { ...common, id: 'ray-1', type: 'ray', p1, p2 },
+              { ...common, id: 'hline-1', type: 'hline', price: 105 },
+              { ...common, id: 'vline-1', type: 'vline', time: 200 },
+              { ...common, id: 'fib-1', type: 'fib', p1, p2 },
+              { ...common, id: 'rectangle-1', type: 'rectangle', p1, p2 },
+              { ...common, id: 'brush-1', type: 'brush', points: [p1, p2] },
+              { ...common, id: 'text-1', type: 'text', point: p1, text: 'A bounded note' },
+              { ...common, id: 'measure-1', type: 'measure', p1, p2 },
+            ];
+
+            assert.deepEqual(records.map(record => record.type),
+              ['trend', 'ray', 'hline', 'vline', 'fib', 'rectangle', 'brush', 'text', 'measure']);
+            assert.ok(records.every(record => api.validateRecord(record)), 'all nine record types must validate');
+
+            const sanitized = api.sanitizeRecords([...records, null, { id: 'bad', type: 'unknown' }]);
+            assert.equal(sanitized.length, 9);
+            assert.notEqual(sanitized[0], records[0], 'sanitization must return JSON-safe clones');
+            assert.doesNotThrow(() => JSON.stringify(sanitized));
+            const longText = api.sanitizeRecords([{ ...records[7], text: 'x'.repeat(2000) }]);
+            assert.equal(longText.length, 1);
+            assert.ok(longText[0].text.length <= 500, 'text annotations must be bounded');
+
+            const cyclic = { id: 'cycle', type: 'hline', price: 100 };
+            cyclic.self = cyclic;
+            for (const malformed of [undefined, null, 42, cyclic, { id: 'nan', type: 'hline', price: NaN }]) {
+              assert.doesNotThrow(() => api.validateRecord(malformed));
+              assert.equal(api.validateRecord(malformed), false);
+            }
+            assert.doesNotThrow(() => api.sanitizeRecords([cyclic, null]));
+            assert.deepEqual(api.sanitizeRecords([cyclic, null]), []);
+
+            const measurement = api.calculateMeasurement(p1, p2, [50, 100, 200, 300, 400]);
+            assert.deepEqual(measurement, {
+              startPrice: 100,
+              endPrice: 110,
+              priceDelta: 10,
+              percentDelta: 10,
+              bars: 3,
+              elapsedMs: 200000,
+            });
+            const reverse = api.calculateMeasurement(p2, p1, [50, 100, 200, 300, 400]);
+            assert.equal(reverse.bars, 3, 'bar count must be inclusive regardless of anchor direction');
+            assert.equal(reverse.elapsedMs, -200000, 'elapsed time must preserve anchor direction');
+            assert.equal(api.calculateMeasurement({ time: 100, price: 0 }, p2, [100, 300]).percentDelta, null);
+
+            const handlers = new Map();
+            const container = {
+              addEventListener(name, handler) { handlers.set(name, handler); },
+              removeEventListener(name) { handlers.delete(name); },
+              getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 400 }; },
+              setPointerCapture() {},
+              releasePointerCapture() {},
+            };
+            const timeScale = {
+              timeToCoordinate(time) { return Number(time); },
+              coordinateToTime(x) { return x; },
+            };
+            let attached = null;
+            const chart = { timeScale() { return timeScale; } };
+            const series = {
+              priceToCoordinate(price) { return Number(price); },
+              coordinateToPrice(y) { return y; },
+              attachPrimitive(primitive) { attached = primitive; },
+              detachPrimitive(primitive) { if (attached === primitive) attached = null; },
+            };
+            const manager = api.createManager({ chart, series, container, orderedTimes: [100, 200, 300] });
+            for (const method of ['setTool', 'setRecords', 'getRecords', 'undo', 'redo', 'deleteSelected', 'clear',
+              'setLocked', 'setVisible', 'setMagnet', 'setStyle', 'dispose']) {
+              assert.equal(typeof manager[method], 'function', `missing manager method ${method}`);
+            }
+            assert.ok(attached, 'manager must attach an internal series primitive');
+            manager.setRecords([records[0]]);
+            manager.setVisible(false);
+            assert.equal(manager.undo(), true);
+            let strokeCount = 0;
+            const context = {
+              save() {}, restore() {}, setLineDash() {}, beginPath() {}, moveTo() {}, lineTo() {},
+              stroke() { strokeCount += 1; }, fillRect() {}, strokeRect() {}, fillText() {}, arc() {}, fill() {},
+              measureText() { return { width: 0 }; },
+            };
+            attached.paneViews()[0].renderer().draw({
+              useBitmapCoordinateSpace(draw) {
+                draw({ context, horizontalPixelRatio: 1, verticalPixelRatio: 1, bitmapSize: { width: 800, height: 400 } });
+              },
+            });
+            assert.ok(strokeCount > 0, 'undoing global hide must make restored drawings render again');
+
+            manager.setRecords([records[0]]);
+            for (let index = 0; index < 120; index += 1) manager.setLocked(index % 2 === 0);
+            let undoCount = 0;
+            while (manager.undo()) undoCount += 1;
+            assert.equal(undoCount, 100, 'undo history must be bounded at 100 states while retaining at least 50');
+            let redoCount = 0;
+            while (manager.redo()) redoCount += 1;
+            assert.equal(redoCount, 100, 'every retained undo snapshot must be redoable');
+            manager.dispose();
+            assert.equal(attached, null, 'dispose must detach the internal primitive');
+            """;
+
+        var startInfo = new ProcessStartInfo("node")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("-e");
+        startInfo.ArgumentList.Add(script);
+        startInfo.ArgumentList.Add(modulePath);
+
+        using var process = Process.Start(startInfo) ?? throw new Exception("could not start Node.js drawing contract test");
+        var standardOutput = process.StandardOutput.ReadToEnd();
+        var standardError = process.StandardError.ReadToEnd();
+        if (!process.WaitForExit(30_000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new Exception("Node.js drawing contract test timed out");
+        }
+        if (process.ExitCode != 0)
+        {
+            throw new Exception($"Node.js drawing contract test failed ({process.ExitCode}): {standardError}{standardOutput}");
         }
     }
 
