@@ -11,6 +11,7 @@ public partial class CapComTerminalWindow : Window
 {
     private readonly CredentialStore _credentialStore = new();
     private readonly SavedSyntheticBasketStore _savedBasketStore = new();
+    private readonly SavedBasketDeletionCoordinator _savedBasketDeletion;
     private readonly CapitalApiClient _api = new();
     private readonly SyntheticHistoryService _history;
     private readonly TerminalOperationState _operationState = new();
@@ -36,6 +37,7 @@ public partial class CapComTerminalWindow : Window
     public CapComTerminalWindow()
     {
         InitializeComponent();
+        _savedBasketDeletion = new SavedBasketDeletionCoordinator(_savedBasketStore);
         OperationProgressPanel.DataContext = _operationState;
         _history = new SyntheticHistoryService(_api);
         StrategyBox.ItemsSource = SyntheticStrategyCatalog.All;
@@ -272,14 +274,15 @@ public partial class CapComTerminalWindow : Window
         var result = MessageBox.Show($"Delete saved basket {saved.Name}?", "Delete Saved Basket", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (result != MessageBoxResult.Yes) return;
 
-        if (!_savedBasketStore.Delete(saved.Id))
+        var deletion = _savedBasketDeletion.DeleteConfirmed(saved, _basket, _pendingPayload);
+        if (!deletion.Deleted)
         {
             StatusText.Text = $"Could not delete saved basket {saved.Name}.";
-            RefreshSavedBaskets();
+            RefreshSavedBaskets(deletion.SavedBaskets);
             return;
         }
 
-        RefreshSavedBaskets();
+        RefreshSavedBaskets(deletion.SavedBaskets);
         StatusText.Text = $"Deleted saved basket {saved.Name}.";
     }
 
@@ -701,12 +704,14 @@ public partial class CapComTerminalWindow : Window
         RebuildSeedOptions();
     }
 
-    private void RefreshSavedBaskets(string? selectedName = null)
+    private void RefreshSavedBaskets(string? selectedName = null) =>
+        RefreshSavedBaskets(_savedBasketStore.LoadAll(), selectedName);
+
+    private void RefreshSavedBaskets(IReadOnlyList<SavedSyntheticBasket> saved, string? selectedName = null)
     {
         _loadingSavedBaskets = true;
         try
         {
-            var saved = _savedBasketStore.LoadAll();
             SavedBasketsBox.ItemsSource = saved;
             SavedBasketsBox.DisplayMemberPath = nameof(SavedSyntheticBasket.Name);
             SavedBasketsBox.SelectedValuePath = nameof(SavedSyntheticBasket.Id);
@@ -724,7 +729,7 @@ public partial class CapComTerminalWindow : Window
 
     private void UpdateDeleteBasketButtonState()
     {
-        DeleteBasketButton.IsEnabled = SavedBasketsBox.SelectedItem is SavedSyntheticBasket;
+        DeleteBasketButton.IsEnabled = _savedBasketDeletion.IsDeleteEnabled(SavedBasketsBox.SelectedItem as SavedSyntheticBasket);
     }
 
     private void RebuildSeedOptions()

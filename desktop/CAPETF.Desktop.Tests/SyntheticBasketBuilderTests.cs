@@ -138,6 +138,7 @@ public static class SyntheticBasketBuilderTests
         ExecutableOrderPreviewUsesCurrentSideQuotesAndReportsImbalance();
         SavedSyntheticBasketStorePersistsFormulaDetails();
         SavedSyntheticBasketStoreDeletesSelectedBasket();
+        SavedBasketDeletionCoordinatorTracksSelectionAndPreservesDisplayedModels();
         SavedBasketDeletionUiContractIsPresent();
         FinalStaticAcceptanceChecks();
     }
@@ -3826,6 +3827,53 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void SavedBasketDeletionCoordinatorTracksSelectionAndPreservesDisplayedModels()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"capetf-saved-delete-coordinator-{Guid.NewGuid():N}");
+        try
+        {
+            var store = new SavedSyntheticBasketStore(folder);
+            var deleted = new SavedSyntheticBasket(
+                "basket-to-delete",
+                "Delete me",
+                "SYN-DELETE-01",
+                "US / USD / All",
+                SyntheticStrategyKind.SimilarToSelectedSymbol,
+                DateTimeOffset.Parse("2026-07-27T10:00:00Z"),
+                DateTimeOffset.Parse("2026-07-27T10:00:00Z"),
+                []);
+            var retained = new SavedSyntheticBasket(
+                "basket-to-keep",
+                "Keep me",
+                "SYN-KEEP-01",
+                "US / USD / All",
+                SyntheticStrategyKind.SimilarToSelectedSymbol,
+                DateTimeOffset.Parse("2026-07-27T10:00:00Z"),
+                DateTimeOffset.Parse("2026-07-27T10:00:00Z"),
+                []);
+            store.Save(deleted);
+            store.Save(retained);
+
+            var coordinator = new SavedBasketDeletionCoordinator(store);
+            AssertFalse(coordinator.IsDeleteEnabled(null), "deletion must remain disabled without a saved-basket selection");
+            AssertTrue(coordinator.IsDeleteEnabled(deleted), "deletion must become enabled when a saved basket is selected");
+
+            var currentBasket = new SyntheticBasket { Symbol = "SYN-CURRENT-01", Block = "US / USD / All" };
+            var chartPayload = SyntheticTerminalChartPayload.Build(currentBasket);
+            var result = coordinator.DeleteConfirmed(deleted, currentBasket, chartPayload);
+
+            AssertTrue(result.Deleted, "confirmed deletion must remove the selected saved basket");
+            AssertEqual(1, result.SavedBaskets.Count, "confirmed deletion must refresh saved state");
+            AssertEqual(retained.Id, result.SavedBaskets[0].Id, "refreshed saved state must retain the other basket");
+            if (!ReferenceEquals(currentBasket, result.CurrentBasket)) throw new Exception("confirmed deletion must preserve the active basket model");
+            if (!ReferenceEquals(chartPayload, result.ChartPayload)) throw new Exception("confirmed deletion must preserve the displayed chart model");
+        }
+        finally
+        {
+            if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+        }
+    }
+
     private static void SavedBasketDeletionUiContractIsPresent()
     {
         var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml"));
@@ -3849,9 +3897,9 @@ public static class SyntheticBasketBuilderTests
         {
             "DeleteBasket_Click",
             "MessageBox.Show($\"Delete saved basket {saved.Name}?\"",
-            "_savedBasketStore.Delete(saved.Id)",
-            "RefreshSavedBaskets()",
-            "DeleteBasketButton.IsEnabled = SavedBasketsBox.SelectedItem is SavedSyntheticBasket",
+            "_savedBasketDeletion.DeleteConfirmed(saved, _basket, _pendingPayload)",
+            "RefreshSavedBaskets(deletion.SavedBaskets)",
+            "_savedBasketDeletion.IsDeleteEnabled(SavedBasketsBox.SelectedItem as SavedSyntheticBasket)",
         })
         {
             if (!source.Contains(required, StringComparison.Ordinal))
