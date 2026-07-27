@@ -25,6 +25,7 @@ public static class SyntheticBasketBuilderTests
         CapitalHistoryPagingRetainsSuccessfulRowsAtTerminalBoundary();
         CapitalHistoryPagingDoesNotSwallowAuthFailure();
         SyntheticHistoryServiceMapsTerminalTimeframesToCapitalResolutions();
+        SyntheticHistoryServiceClassifiesCancellationAuthServerAndUnavailableFailures();
         SyntheticHistoryServiceAggregatesHourlyCandlesLocally();
         SyntheticHistoryServiceAggregatesTradingSessionsAndRejectsGaps();
         CachedIntradayLoadersAggregateOnlyConsecutiveHourlyRuns();
@@ -53,6 +54,7 @@ public static class SyntheticBasketBuilderTests
         TrailingReturnsUseIntervalAwareHorizonsFromFinalCandle();
         LiveQuoteUpdatesBasketPriceAndTimestamp();
         FirstLiveQuoteUsesLatestHistoricalComponentPrice();
+        FirstLiveQuoteUsesFinalSharedCloseWithAsymmetricHistoryTails();
         SyntheticBasketsUseCallerSuppliedCandidates();
         StockTypeMatchingIsCaseInsensitive();
         EtfUniverseRecognitionAndIsolation();
@@ -61,6 +63,7 @@ public static class SyntheticBasketBuilderTests
         EtfMetadataMergeReappliesCurrentApiEligibility();
         EtfMetadataMergeUsesDeterministicFallbacks();
         EtfMetadataMergeDerivesRegionFromCapitalCountry();
+        EtfMetadataMergeTreatsOtherRegionAsPlaceholder();
         EncryptedEtfCatalogIncludesLoadedEtfEpics();
         EtfMetadataEnrichmentRequiresConnectedEtfLoad();
         FailedEtfCatalogUsesEtfSpecificApiFallbackOnce();
@@ -89,6 +92,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalLiveUpdateReturnsIncrementalTick();
         StreamingQuoteClearsMissingAndZeroSides();
         StreamingQuoteClearsUnavailableSidesWithoutUsablePrice();
+        OutOfOrderStreamingQuoteDoesNotMutateComponentState();
         SyntheticTerminalHtmlExposesRequiredFunctions();
         SyntheticTerminalHtmlShowsBidAndAskWithoutLastPrice();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
@@ -102,6 +106,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlExposesResizableRailAndPersistentDrawingTools();
         SyntheticTerminalHtmlDisablesNativeLastCloseDecorations();
         SyntheticTerminalHtmlCoalescesIncrementalTicksAndUsesStableDrawingIdentity();
+        SyntheticTerminalRuntimeCoalescesTicksAndRejectsStaleBasketFrames();
         CapComTerminalUsesTask6PayloadBridge();
         SyntheticTerminalHtmlExposesResizeFunction();
         SyntheticTerminalHtmlExposesDecisionChartControls();
@@ -124,8 +129,14 @@ public static class SyntheticBasketBuilderTests
         CapComTerminalShowsActionableConnectionFailures();
         CapitalApiClientAllowsReconnectAfterRequests();
         CapitalApiClientParsesMarketDetailsSnapshotAndDealingRules();
+        MarketSnapshotRejectsOlderSourceTimeAndClearsMissingSides();
+        CapitalStreamingTimestampParserRequiresSourceTime();
         CapitalStreamingClientRejectsClosedSocketsAndWindowRecreates();
         CapitalStreamingClientReportsRemoteClose();
+        CapitalStreamingCleanupIsBoundedAndIdempotent();
+        WindowLifetimeCancelsAndRejectsLateCompletion();
+        WebViewRuntimeProfileIsExternalAndExplicitlyConfigured();
+        DesktopPublishAndThirdPartyPackagingContractsAreComplete();
         StockChunkLoaderPrefersLegacyWhenChunksAreSmallerThanLegacy();
         CapComTerminalLoadsFullEncryptedStockChunks();
         TerminalWorkspaceModeNameIsAvailable();
@@ -141,6 +152,8 @@ public static class SyntheticBasketBuilderTests
         ExecutablePreviewRoundsUpToCapitalDealMinimumAndIncrement();
         ExecutableOrderPreviewUsesCurrentSideQuotesAndReportsImbalance();
         SavedSyntheticBasketStorePersistsFormulaDetails();
+        SavedBasketRestorePreservesExactFormulaAndRejectsMissingEpics();
+        SavedBasketLoadUsesFaithfulFormulaRestorer();
         SavedSyntheticBasketStoreDeletesSelectedBasket();
         SavedBasketDeletionCoordinatorTracksSelectionAndPreservesDisplayedModels();
         SavedBasketDeletionUiContractIsPresent();
@@ -342,6 +355,61 @@ public static class SyntheticBasketBuilderTests
         AssertEqual("WEEK", SyntheticHistoryService.RequestResolution("Weekly"), "weekly source");
     }
 
+    private static void SyntheticHistoryServiceClassifiesCancellationAuthServerAndUnavailableFailures()
+    {
+        var component = new MarketInstrument { Epic = "HISTORY-FAILURE", Name = "History Failure" };
+
+        using (var canceledClient = new CapitalApiClient(new HistoryFailureHandler(HttpStatusCode.OK, "{\"prices\":[]}")))
+        {
+            canceledClient.LoginAsync(TestCredentials()).GetAwaiter().GetResult();
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+            try
+            {
+                new SyntheticHistoryService(canceledClient)
+                    .LoadSelectedAsync([component], "Weekly", cancellationToken: cancellation.Token)
+                    .GetAwaiter()
+                    .GetResult();
+                throw new Exception("history cancellation must propagate to the operation owner");
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        AssertHistoryFailureEscapes(HttpStatusCode.Unauthorized, "{\"errorCode\":\"error.security.client-token-invalid\"}", "expired authentication");
+        AssertHistoryFailureEscapes(HttpStatusCode.InternalServerError, "{\"errorCode\":\"error.server.internal\"}", "Capital.com server failure");
+
+        using var unavailableClient = new CapitalApiClient(new HistoryFailureHandler(
+            HttpStatusCode.NotFound,
+            "{\"errorCode\":\"error.prices.not-found\"}"));
+        unavailableClient.LoginAsync(TestCredentials()).GetAwaiter().GetResult();
+        var unavailableComponent = new MarketInstrument { Epic = "HISTORY-NOT-FOUND", Name = "Unavailable History" };
+        var unavailable = new SyntheticHistoryService(unavailableClient)
+            .LoadSelectedAsync([unavailableComponent], "Weekly")
+            .GetAwaiter()
+            .GetResult();
+        AssertEqual(0, unavailable.CandlesByEpic.Count, "an explicitly unavailable instrument may be omitted from loaded history");
+        AssertTrue(unavailableComponent.Status.StartsWith("History n/a", StringComparison.Ordinal), "an unavailable instrument must be classified per leg");
+    }
+
+    private static void AssertHistoryFailureEscapes(HttpStatusCode status, string body, string label)
+    {
+        using var client = new CapitalApiClient(new HistoryFailureHandler(status, body));
+        client.LoginAsync(TestCredentials()).GetAwaiter().GetResult();
+        try
+        {
+            new SyntheticHistoryService(client)
+                .LoadSelectedAsync([new MarketInstrument { Epic = "HISTORY-FAILURE" }], "Weekly")
+                .GetAwaiter()
+                .GetResult();
+            throw new Exception($"{label} must escape the per-instrument history fallback");
+        }
+        catch (CapitalApiException ex) when (ex.StatusCode == status)
+        {
+        }
+    }
+
     private static void CapitalHistoryPagingWindowsMatchCapitalResolutions()
     {
         var historicalWindow = typeof(CapitalApiClient).GetMethod(
@@ -357,15 +425,18 @@ public static class SyntheticBasketBuilderTests
 
     private static void CapitalHistoryPagingRetainsSuccessfulRowsAtTerminalBoundary()
     {
-        var handler = new HistoryPagingHandler(HttpStatusCode.BadRequest, "{\"errorCode\":\"error.invalid.from\"}");
-        using var client = new CapitalApiClient(handler);
-        client.LoginAsync(TestCredentials()).GetAwaiter().GetResult();
+        foreach (var errorCode in new[] { "error.invalid.from", "error.invalid.daterange" })
+        {
+            var handler = new HistoryPagingHandler(HttpStatusCode.BadRequest, $"{{\"errorCode\":\"{errorCode}\"}}");
+            using var client = new CapitalApiClient(handler);
+            client.LoginAsync(TestCredentials()).GetAwaiter().GetResult();
 
-        var rows = client.GetAllAvailableOhlcPricesAsync("TEST", "DAY").GetAwaiter().GetResult();
+            var rows = client.GetAllAvailableOhlcPricesAsync("TEST", "DAY").GetAwaiter().GetResult();
 
-        AssertEqual(2, rows.Count, "terminal history boundary must retain all successful pages");
-        AssertEqual(DateTimeOffset.Parse("2026-06-01T00:00:00Z"), rows[0].Time, "older successful history page");
-        AssertEqual(DateTimeOffset.Parse("2026-07-01T00:00:00Z"), rows[1].Time, "newer successful history page");
+            AssertEqual(2, rows.Count, $"{errorCode} terminal history boundary must retain all successful pages");
+            AssertEqual(DateTimeOffset.Parse("2026-06-01T00:00:00Z"), rows[0].Time, $"{errorCode} older successful history page");
+            AssertEqual(DateTimeOffset.Parse("2026-07-01T00:00:00Z"), rows[1].Time, $"{errorCode} newer successful history page");
+        }
     }
 
     private static void CapitalHistoryPagingDoesNotSwallowAuthFailure()
@@ -1278,6 +1349,60 @@ public static class SyntheticBasketBuilderTests
             "first live quote should advance from the latest historical component price");
     }
 
+    private static void FirstLiveQuoteUsesFinalSharedCloseWithAsymmetricHistoryTails()
+    {
+        var day = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var instruments = new[]
+        {
+            CreateStock("ASYM-A", "Asymmetric A"),
+            CreateStock("ASYM-B", "Asymmetric B"),
+            CreateStock("ASYM-C", "Asymmetric C"),
+        };
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>
+        {
+            ["ASYM-A"] =
+            [
+                FlatCandle(day, 100m),
+                FlatCandle(day.AddDays(1), 110m),
+                FlatCandle(day.AddDays(2), 120m),
+            ],
+            ["ASYM-B"] =
+            [
+                FlatCandle(day, 50m),
+                FlatCandle(day.AddDays(1), 55m),
+                FlatCandle(day.AddDays(3), 66m),
+            ],
+            ["ASYM-C"] =
+            [
+                FlatCandle(day, 25m),
+                FlatCandle(day.AddDays(1), 30m),
+                FlatCandle(day.AddDays(4), 39m),
+            ],
+        };
+
+        var basket = SyntheticBasketBuilder.Build(
+            "US / USD / Tech",
+            instruments,
+            candles,
+            maxBaskets: 1,
+            periodsPerYear: 252,
+            minimumCandles: 2).Baskets.Single();
+        var component = basket.Components.Single(item => item.Instrument.Epic == "ASYM-A");
+        var chartClose = basket.Candles[^1].Close;
+        var finalSharedComponentClose = candles["ASYM-A"][1].Close;
+        const decimal firstLivePrice = 130m;
+
+        var result = SyntheticLiveUpdate.ApplyQuote(
+            basket,
+            new QuoteUpdate("ASYM-A", 129m, 131m, firstLivePrice, day.AddDays(5)));
+
+        AssertTrue(result.CandleChanged, "the first asymmetric-tail live quote must update the chart candle");
+        AssertNear(
+            chartClose + (firstLivePrice - finalSharedComponentClose) * component.FormulaMultiplier,
+            basket.Candles[^1].Close,
+            "the first live quote must include movement from the final shared chart candle, not the leg's private tail");
+    }
+
     private static void StockTypeMatchingIsCaseInsensitive()
     {
         var day = DateTimeOffset.Parse("2022-01-01T00:00:00Z");
@@ -1506,6 +1631,16 @@ public static class SyntheticBasketBuilderTests
         AssertEqual("US / USD / All", merged.Group, "ETF metadata merge should derive a deterministic region from Capital country when region is absent");
     }
 
+    private static void EtfMetadataMergeTreatsOtherRegionAsPlaceholder()
+    {
+        var merged = EtfMetadataMerger.Merge(
+            new MarketInstrument { Epic = "ETF-CFD", Type = "ETF", Country = "United States", Region = "Other", Currency = "USD", Sector = "All" },
+            new MarketInstrument { Epic = "ETF-CFD", Type = "SHARES" });
+
+        AssertEqual("US", merged.Region, "cached Other must not suppress the independent US country fallback");
+        AssertEqual("US / USD / All", merged.Group, "the independent region placeholder fallback must flow into ETF grouping");
+    }
+
     private static void MainWindowTerminalFiltersStocksBeforeGenericSelection()
     {
         var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml.cs"));
@@ -1539,7 +1674,7 @@ public static class SyntheticBasketBuilderTests
         }
 
         var enrichStart = source.IndexOf("private async Task<IReadOnlyList<MarketInstrument>> EnrichEtfMetadataAsync", StringComparison.Ordinal);
-        var ensureConnection = source.IndexOf("await EnsureConnectedAsync();", enrichStart, StringComparison.Ordinal);
+        var ensureConnection = source.IndexOf("await EnsureConnectedAsync(cancellationToken);", enrichStart, StringComparison.Ordinal);
         var enrichmentLoop = source.IndexOf("var enriched = new List<MarketInstrument>", enrichStart, StringComparison.Ordinal);
         if (enrichStart < 0 || ensureConnection < enrichStart || enrichmentLoop < ensureConnection)
         {
@@ -1785,6 +1920,7 @@ public static class SyntheticBasketBuilderTests
         AssertEqual("stale", payload.Components[0].QuoteStatus, "old component quote must be explicitly stale");
         AssertEqual("fresh", payload.Components[1].QuoteStatus, "recent component quote must be explicitly fresh");
         AssertEqual(now.AddMinutes(-1), payload.Components[1].QuoteTimestamp, "component quote timestamp must remain machine-readable");
+        AssertEqual("stale", SyntheticTerminalChartPayload.QuoteStatus(now.AddSeconds(1), now), "future component timestamps must not be considered fresh");
         using var json = JsonDocument.Parse(JsonSerializer.Serialize(payload));
         if (json.RootElement.GetProperty("Components")[0].TryGetProperty("LastTickText", out _))
         {
@@ -2994,6 +3130,42 @@ public static class SyntheticBasketBuilderTests
               }
             });
 
+            test('dense off-grid brushes use a cached nearest-time index', () => {
+              const orderedTimes = Array.from({ length: 30000 }, (_, index) => index * 10).reverse();
+              const environment = makeEnvironment({
+                timeScale: {
+                  timeToCoordinate(time) { return Number(time) % 10 === 0 ? Number(time) : null; },
+                  coordinateToTime(x) { return x; },
+                },
+                managerOptions: { orderedTimes },
+              });
+              try {
+                const points = Array.from({ length: 5000 }, (_, index) => ({
+                  time: index * 10 + (index % 2 === 0 ? 4 : 6),
+                  price: 100 + index / 100,
+                }));
+                environment.manager.setRecords([{ ...common, id: 'dense-brush', type: 'brush', points }]);
+                const renderedX = [];
+                const context = {
+                  save() {}, restore() {}, setLineDash() {}, beginPath() {}, moveTo(x) { renderedX.push(x); },
+                  lineTo(x) { renderedX.push(x); }, stroke() {}, fillRect() {}, strokeRect() {}, fillText() {},
+                  arc() {}, fill() {}, measureText() { return { width: 0 }; },
+                };
+                const started = process.hrtime.bigint();
+                environment.primitive.paneViews()[0].renderer().draw({
+                  useBitmapCoordinateSpace(draw) {
+                    draw({ context, horizontalPixelRatio: 1, verticalPixelRatio: 1, bitmapSize: { width: 800, height: 400 } });
+                  },
+                });
+                const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+                assert.equal(renderedX[0], 0, 'a lower-side off-grid point must snap to the preceding normalized candle');
+                assert.equal(renderedX[1], 20, 'an upper-side off-grid point must snap to the following normalized candle');
+                assert.ok(elapsedMs < 400, `dense brush nearest-time rendering took ${elapsedMs.toFixed(1)}ms`);
+              } finally {
+                environment.manager.dispose();
+              }
+            });
+
             test('text dialog traps Tab and restores focus for every close path', () => {
               const ownerDocument = { activeElement: null };
               const trigger = fakeElement('BUTTON', ownerDocument);
@@ -3473,7 +3645,7 @@ public static class SyntheticBasketBuilderTests
             "SavedBaskets_SelectionChanged",
             "SavedSyntheticBasketStore",
             "LoadSavedBasketAsync",
-            "await LoadStocksAsync();",
+            "await LoadStocksAsync(cancellationToken);",
             "StartStreamingCurrentBasketAsync",
             "BlockBox_SelectionChanged",
             "SearchBox.ItemsSource",
@@ -3713,6 +3885,7 @@ public static class SyntheticBasketBuilderTests
               },
               "snapshot": {
                 "marketStatus": "TRADEABLE",
+                "updateTimeUTC": "2026-07-27T13:45:12.345",
                 "bid": 158.12,
                 "offer": 158.18
               }
@@ -3733,6 +3906,69 @@ public static class SyntheticBasketBuilderTests
         AssertEqual("United States", details.Country, "market details should parse country");
         AssertEqual("US", details.Region, "market details should parse region");
         AssertEqual("Technology", details.Sector, "market details should parse sector");
+        AssertEqual(DateTimeOffset.Parse("2026-07-27T13:45:12.345Z"), details.LastTickAt, "market details must retain the Capital.com source snapshot timestamp");
+    }
+
+    private static void MarketSnapshotRejectsOlderSourceTimeAndClearsMissingSides()
+    {
+        var apply = typeof(CapComTerminalWindow).GetMethod(
+            "ApplyMarketDetails",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+            ?? throw new Exception("market details updater must remain available for snapshot ordering tests");
+        var currentTime = DateTimeOffset.Parse("2026-07-27T14:00:00Z");
+        var target = new MarketInstrument
+        {
+            Epic = "ORDERED-SNAPSHOT",
+            Bid = 100m,
+            Offer = 102m,
+            Price = 101m,
+            LastTickAt = currentTime,
+        };
+
+        apply.Invoke(null, [target, new MarketInstrument
+        {
+            Epic = target.Epic,
+            Bid = 90m,
+            Offer = 92m,
+            Price = 91m,
+            LastTickAt = currentTime.AddMinutes(-1),
+        }]);
+
+        AssertNear(100m, target.Bid ?? 0m, "an older market snapshot must not replace a newer bid");
+        AssertNear(102m, target.Offer ?? 0m, "an older market snapshot must not replace a newer offer");
+        AssertEqual(currentTime, target.LastTickAt, "an older market snapshot must not rewind quote source time");
+
+        apply.Invoke(null, [target, new MarketInstrument
+        {
+            Epic = target.Epic,
+            Bid = 103m,
+            Offer = null,
+            Price = 103m,
+            LastTickAt = currentTime.AddMinutes(1),
+        }]);
+
+        AssertNear(103m, target.Bid ?? 0m, "a newer market snapshot must update its available bid");
+        if (target.Offer is not null) throw new Exception("a newer market snapshot with no offer must clear the stale offer side");
+        AssertEqual(currentTime.AddMinutes(1), target.LastTickAt, "a newer market snapshot must advance source time");
+    }
+
+    private static void CapitalStreamingTimestampParserRequiresSourceTime()
+    {
+        var readTimestamp = typeof(CapitalStreamingClient).GetMethod(
+            "ReadTimestamp",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+            ?? throw new Exception("stream timestamp parser must remain available");
+        using var sourceDocument = JsonDocument.Parse("{\"timestamp\":1785169512345}");
+        using var missingDocument = JsonDocument.Parse("{}");
+
+        AssertEqual(
+            DateTimeOffset.FromUnixTimeMilliseconds(1785169512345),
+            readTimestamp.Invoke(null, [sourceDocument.RootElement]),
+            "stream quotes must use the Capital.com source timestamp");
+        if (readTimestamp.Invoke(null, [missingDocument.RootElement]) is not null)
+        {
+            throw new Exception("a stream quote without a source timestamp must not be stamped with local receipt time");
+        }
     }
 
     private static void CapitalStreamingClientRejectsClosedSocketsAndWindowRecreates()
@@ -3795,6 +4031,110 @@ public static class SyntheticBasketBuilderTests
         client.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
+    private static void CapitalStreamingCleanupIsBoundedAndIdempotent()
+    {
+        var socket = new FakeCapitalStreamingSocket(WebSocketState.Open, blockClose: true);
+        var client = new CapitalStreamingClient(socket);
+        var stopwatch = Stopwatch.StartNew();
+
+        client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+        stopwatch.Stop();
+        if (stopwatch.Elapsed > TimeSpan.FromSeconds(2))
+        {
+            throw new Exception($"stream cleanup must be bounded and idempotent; elapsed {stopwatch.Elapsed}");
+        }
+        AssertEqual(1, socket.DisposeCount, "stream cleanup must dispose the socket exactly once");
+    }
+
+    private static void WindowLifetimeCancelsAndRejectsLateCompletion()
+    {
+        using var lifetime = new WindowLifetime();
+        var updates = 0;
+
+        if (!lifetime.TryApply(() => updates++)) throw new Exception("an open window must accept UI completion");
+        if (!lifetime.BeginClosing()) throw new Exception("the first close transition must win");
+        if (lifetime.BeginClosing()) throw new Exception("the close transition must be idempotent");
+        if (!lifetime.Token.IsCancellationRequested) throw new Exception("closing must cancel outstanding terminal operations");
+        if (lifetime.TryApply(() => updates++)) throw new Exception("late UI completion must be rejected after close begins");
+        AssertEqual(1, updates, "late completion must not mutate window state");
+
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "protected override void OnClosing",
+            "_windowLifetime.BeginClosing()",
+            "_windowLifetime.Token",
+            "Func<CancellationToken, Task>",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal window lifecycle contract missing {required}");
+            }
+        }
+        if (source.Contains("protected override async void OnClosed", StringComparison.Ordinal))
+        {
+            throw new Exception("window cleanup must not race through async-void OnClosed");
+        }
+    }
+
+    private static void WebViewRuntimeProfileIsExternalAndExplicitlyConfigured()
+    {
+        var localAppData = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "capetf-local-app-data"));
+        var expected = Path.Combine(localAppData, "CAPETF", "WebView2");
+        AssertEqual(expected, WebViewRuntimeProfile.GetUserDataFolder(localAppData), "WebView2 profile must have a stable per-user path");
+
+        var terminal = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        var dashboard = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml.cs"));
+        if (!terminal.Contains("WebViewRuntimeProfile.CreateEnvironmentAsync", StringComparison.Ordinal) ||
+            !dashboard.Contains("WebViewRuntimeProfile.CreateEnvironmentAsync", StringComparison.Ordinal))
+        {
+            throw new Exception("every WebView host must pass the explicit external user-data environment to EnsureCoreWebView2Async");
+        }
+    }
+
+    private static void DesktopPublishAndThirdPartyPackagingContractsAreComplete()
+    {
+        var projectPath = SourcePath("desktop", "CAPETF.Desktop", "CAPETF.Desktop.csproj");
+        var project = File.ReadAllText(projectPath);
+        var installer = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "build-installer.ps1"));
+        var readme = File.ReadAllText(SourcePath("desktop", "README.md"));
+        var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
+        var chartLibrary = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "lightweight-charts.standalone.production.js"));
+        var assetDirectory = SourcePath("desktop", "CAPETF.Desktop", "Assets");
+
+        foreach (var notice in new[]
+        {
+            "lightweight-charts.LICENSE.txt",
+            "lightweight-charts.NOTICE.txt",
+            "lucide.LICENSE.txt",
+            "THIRD-PARTY-NOTICES.txt",
+        })
+        {
+            var path = Path.Combine(assetDirectory, notice);
+            if (!File.Exists(path) || new FileInfo(path).Length == 0) throw new Exception($"packaged third-party notice missing or empty: {notice}");
+            if (!project.Contains($"Assets\\{notice}", StringComparison.Ordinal)) throw new Exception($"project publish content missing {notice}");
+        }
+
+        if (!html.Contains("attributionLogo: true", StringComparison.Ordinal) ||
+            !chartLibrary.Contains("tradingview.com", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new Exception("the terminal must preserve a visible TradingView attribution logo/link");
+        }
+        if (File.Exists(Path.Combine(assetDirectory, "klinecharts.min.js")) ||
+            project.Contains("klinecharts", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new Exception("unused KLineCharts code must not remain in source or publish content");
+        }
+        if (!installer.Contains("--self-contained true", StringComparison.Ordinal) ||
+            !readme.Contains("WebView2 Runtime", StringComparison.Ordinal))
+        {
+            throw new Exception("publish command and prerequisite documentation must describe the self-contained package accurately");
+        }
+    }
+
     private static void SyntheticTerminalHtmlExposesResizableRailAndPersistentDrawingTools()
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
@@ -3806,8 +4146,6 @@ public static class SyntheticBasketBuilderTests
         {
             "id=\"component-splitter\"",
             "container-type: inline-size",
-            "@container (max-width: 700px)",
-            "grid-column: 1 / -1",
             "pointerdown",
             "pointermove",
             "pointerup",
@@ -3869,6 +4207,15 @@ public static class SyntheticBasketBuilderTests
             {
                 throw new Exception($"terminal chart HTML missing Task 6 workspace contract: {required}");
             }
+        }
+
+        var responsiveFooter = ExtractCssBlock(html, "@container (max-width: 700px)");
+        var footerRule = ExtractCssBlock(responsiveFooter, "#footer");
+        var ohlcRule = ExtractCssBlock(responsiveFooter, "#ohlc");
+        if (!footerRule.Contains("grid-template-rows: auto auto", StringComparison.Ordinal) ||
+            !ohlcRule.Contains("grid-column: 1 / -1", StringComparison.Ordinal))
+        {
+            throw new Exception("compact footer layout declarations must be scoped to #footer and #ohlc inside the 700px container query");
         }
 
         if (!drawings.Contains("capcom-terminal-drawings:", StringComparison.Ordinal))
@@ -3973,6 +4320,172 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception("terminal live tick handler must not rebuild full chart series with setData");
         }
+    }
+
+    private static void SyntheticTerminalRuntimeCoalescesTicksAndRejectsStaleBasketFrames()
+    {
+        var htmlPath = SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html");
+        const string script = """
+            const assert = require('node:assert/strict');
+            const fs = require('node:fs');
+            const vm = require('node:vm');
+
+            class FakeClassList {
+              constructor() { this.values = new Set(); }
+              add(...values) { values.forEach(value => this.values.add(value)); }
+              remove(...values) { values.forEach(value => this.values.delete(value)); }
+              contains(value) { return this.values.has(value); }
+              toggle(value, force) {
+                const enabled = force === undefined ? !this.values.has(value) : !!force;
+                if (enabled) this.values.add(value); else this.values.delete(value);
+                return enabled;
+              }
+            }
+
+            class FakeElement {
+              constructor(id = '') {
+                this.id = id;
+                this.dataset = {};
+                this.classList = new FakeClassList();
+                this.style = { display: '', setProperty() {} };
+                this.textContent = '';
+                this.innerHTML = '';
+                this.value = id === 'quantity' ? '300' : '';
+                this.disabled = false;
+                this.attributes = new Map();
+              }
+              addEventListener() {}
+              removeEventListener() {}
+              setAttribute(name, value) { this.attributes.set(name, String(value)); }
+              getAttribute(name) { return this.attributes.get(name) || null; }
+              getBoundingClientRect() { return { left: 0, top: 0, right: 800, width: 800, height: 600 }; }
+              hasPointerCapture() { return false; }
+              setPointerCapture() {}
+              releasePointerCapture() {}
+              focus() { document.activeElement = this; }
+            }
+
+            const elements = new Map();
+            const element = id => {
+              if (!elements.has(id)) elements.set(id, new FakeElement(id));
+              return elements.get(id);
+            };
+            global.window = globalThis;
+            global.document = {
+              activeElement: null,
+              body: new FakeElement('body'),
+              documentElement: new FakeElement('html'),
+              getElementById: element,
+              querySelectorAll() { return []; }
+            };
+            global.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+            global.confirm = () => true;
+            global.addEventListener = () => {};
+            global.removeEventListener = () => {};
+
+            let nextFrame = 1;
+            const frames = new Map();
+            global.requestAnimationFrame = callback => {
+              const id = nextFrame++;
+              frames.set(id, callback);
+              return id;
+            };
+            global.cancelAnimationFrame = id => frames.delete(id);
+            function flushFrames() {
+              const queued = Array.from(frames.values());
+              frames.clear();
+              queued.forEach(callback => callback());
+            }
+
+            const candleSetData = [];
+            const candleUpdates = [];
+            let seriesCount = 0;
+            function makeSeries() {
+              const isCandle = seriesCount++ === 0;
+              return {
+                setData(rows) { if (isCandle) candleSetData.push(rows.map(row => ({ ...row }))); },
+                update(row) { if (isCandle) candleUpdates.push({ ...row }); },
+                createPriceLine() { return {}; },
+                removePriceLine() {},
+                priceToCoordinate(value) { return Number(value); },
+                coordinateToPrice(value) { return Number(value); },
+                attachPrimitive() {},
+                detachPrimitive() {}
+              };
+            }
+            const timeScale = {
+              fitContent() {}, scrollToRealTime() {}, applyOptions() {}, scrollPosition() { return 0; },
+              scrollToPosition() {}, timeToCoordinate(value) { return Number(value); },
+              coordinateToTime(value) { return Number(value); }
+            };
+            global.LightweightCharts = {
+              CandlestickSeries: {}, LineSeries: {}, CrosshairMode: { Normal: 0 },
+              version() { return 'test'; },
+              createChart() {
+                return {
+                  addSeries() { return makeSeries(); },
+                  timeScale() { return timeScale; },
+                  priceScale() { return { applyOptions() {} }; },
+                  subscribeCrosshairMove() {}, resize() {}
+                };
+              }
+            };
+            const fakeDrawingManager = {
+              updateContext() {}, getRecords() { return []; }, setRecords() {}, setTool() { return true; },
+              cancel() {}, undo() {}, redo() {}, setMagnet() {}, setLocked() {}, setVisible() {},
+              setStyle() {}, clear() {}, getState() { return {}; }
+            };
+            global.CapComDrawings = {
+              createManager() { return fakeDrawingManager; },
+              createTextDialogController() { return { open() {}, close() {}, dispose() {} }; },
+              switchDrawingIdentity(manager, storage, oldIdentity, nextIdentity) { return nextIdentity; },
+              persistStoredRecords() { return true; }
+            };
+            global.lucide = { createIcons() {} };
+
+            const html = fs.readFileSync(process.argv[1], 'utf8');
+            const matches = Array.from(html.matchAll(/<script>([\s\S]*?)<\/script>/g));
+            assert.ok(matches.length > 0, 'terminal inline script must exist');
+            vm.runInThisContext(matches.at(-1)[1], { filename: process.argv[1] });
+
+            function makePayload(identity, close) {
+              return {
+                Symbol: identity,
+                DrawingIdentity: identity,
+                BidPrice: close - 1,
+                AskPrice: close + 1,
+                Candles: [{ Time: 100, Open: close, High: close, Low: close, Close: close }],
+                Components: [{ Epic: `${identity}-LEG`, Bid: close - 1, Offer: close + 1 }]
+              };
+            }
+            function makeTick(identity, candle, bid) {
+              return {
+                DrawingIdentity: identity,
+                Candle: candle,
+                BidPrice: bid,
+                AskPrice: bid + 2,
+                ComponentQuotes: [{ Epic: `${identity}-LEG`, Bid: bid, Offer: bid + 2, QuoteStatus: 'fresh' }]
+              };
+            }
+
+            window.setTerminalData(makePayload('basket-a', 100));
+            window.updateTerminalTick(makeTick('basket-a', { Time: 100, Open: 100, High: 112, Low: 99, Close: 110 }, 109));
+            window.updateTerminalTick(makeTick('basket-a', null, 110));
+            flushFrames();
+            assert.equal(candleUpdates.at(-1)?.close, 110,
+              'metadata-only coalescing must retain the preceding price-changing candle');
+
+            candleUpdates.length = 0;
+            window.updateTerminalTick(makeTick('basket-a', { Time: 100, Open: 100, High: 151, Low: 99, Close: 150 }, 149));
+            window.setTerminalData(makePayload('basket-b', 200));
+            flushFrames();
+            assert.equal(candleUpdates.length, 0,
+              'a full new-basket payload must cancel and invalidate the old pending frame');
+            assert.equal(candleSetData.at(-1).at(-1).close, 200,
+              'an old-basket pending tick must not mutate newly loaded chart data');
+            """;
+
+        RunNodeDrawingContract(htmlPath, script, "terminal tick coalescing/identity DOM");
     }
 
     private static void CapComTerminalUsesTask6PayloadBridge()
@@ -4413,6 +4926,28 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void OutOfOrderStreamingQuoteDoesNotMutateComponentState()
+    {
+        var sourceTime = DateTimeOffset.Parse("2026-07-27T14:00:00Z");
+        var basket = CreateLiveBasket("SYN-ORDERED", "ORDERED-LEG", 100m, sourceTime);
+        var component = basket.Components.Single();
+        component.Instrument.Bid = 99m;
+        component.Instrument.Offer = 101m;
+        component.Instrument.LastTickAt = sourceTime;
+        var candle = basket.Candles[^1];
+
+        var result = SyntheticLiveUpdate.ApplyQuote(
+            basket,
+            new QuoteUpdate("ORDERED-LEG", 89m, 91m, 90m, sourceTime.AddSeconds(-1)));
+
+        AssertFalse(result.Matched, "an out-of-order stream quote must be rejected before a terminal tick is emitted");
+        AssertNear(99m, component.Instrument.Bid ?? 0m, "an out-of-order quote must not rewind bid state");
+        AssertNear(101m, component.Instrument.Offer ?? 0m, "an out-of-order quote must not rewind offer state");
+        AssertNear(100m, component.Instrument.Price ?? 0m, "an out-of-order quote must not rewind component price");
+        AssertEqual(sourceTime, component.Instrument.LastTickAt, "an out-of-order quote must not rewind source time");
+        AssertEqual(candle, basket.Candles[^1], "an out-of-order quote must not mutate the synthetic candle");
+    }
+
     private static void SavedSyntheticBasketStorePersistsFormulaDetails()
     {
         var folder = Path.Combine(Path.GetTempPath(), $"capetf-saved-{Guid.NewGuid():N}");
@@ -4675,6 +5210,99 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void SavedBasketRestorePreservesExactFormulaAndRejectsMissingEpics()
+    {
+        var day = DateTimeOffset.Parse("2026-07-01T00:00:00Z");
+        var savedComponents = new[]
+        {
+            new SavedSyntheticComponent("RESTORE-D", "Saved D", "USD", 40m, 0.40m, 400m),
+            new SavedSyntheticComponent("RESTORE-B", "Saved B", "USD", 20m, 0.20m, 200m),
+            new SavedSyntheticComponent("RESTORE-A", "Saved A", "USD", 10m, 0.10m, 100m),
+            new SavedSyntheticComponent("RESTORE-C", "Saved C", "USD", 30m, 0.30m, 300m),
+        };
+        var saved = new SavedSyntheticBasket(
+            "RESTORE-FOUR",
+            "Restore four legs",
+            "SYN-RESTORE-EXACT",
+            "US / USD / Technology",
+            SyntheticStrategyKind.MeanReversion,
+            day,
+            day,
+            savedComponents);
+        var current = savedComponents.Select((component, index) => new MarketInstrument
+        {
+            Epic = component.Epic,
+            Name = $"Current {component.Epic}",
+            Currency = "USD",
+            LotSize = index + 1,
+        }).ToList();
+        var history = current.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => (IReadOnlyList<OhlcPoint>)new[]
+            {
+                FlatCandle(day, 100m + current.IndexOf(instrument) * 50m),
+                FlatCandle(day.AddDays(1), 105m + current.IndexOf(instrument) * 50m),
+                FlatCandle(day.AddDays(2), 111m + current.IndexOf(instrument) * 51m),
+            },
+            StringComparer.OrdinalIgnoreCase);
+        var load = new HistoryLoadResult(history, day, day.AddDays(2), 3);
+
+        var restored = SavedSyntheticBasketRestorer.Restore(saved, current, load, "Daily", 252, 2)
+            ?? throw new Exception("a complete saved four-leg basket must restore");
+
+        AssertEqual(saved.Symbol, restored.Basket.Symbol, "saved symbol must survive restore");
+        AssertEqual(saved.Block, restored.Basket.Block, "saved block must survive restore");
+        AssertEqual(saved.Strategy, restored.Strategy, "saved strategy must survive restore");
+        AssertEqual(4, restored.Basket.Components.Count, "all saved legs must survive restore");
+        AssertEqual(
+            string.Join("|", savedComponents.Select(component => component.Epic)),
+            string.Join("|", restored.Basket.Components.Select(component => component.Instrument.Epic)),
+            "saved component order and exact set must survive restore");
+        for (var index = 0; index < savedComponents.Length; index++)
+        {
+            var expected = savedComponents[index];
+            var actual = restored.Basket.Components[index];
+            AssertNear(expected.Weight, actual.Weight, $"saved weight {index} must survive restore");
+            AssertNear(expected.FormulaMultiplier, actual.FormulaMultiplier, $"saved multiplier {index} must survive restore");
+            AssertNear(expected.ReferencePrice ?? 0m, actual.FormulaReferencePrice ?? 0m, $"saved reference price {index} must survive restore");
+            AssertEqual($"Current {expected.Epic}", actual.Instrument.Name, $"current instrument metadata {index} must be used");
+        }
+
+        var missingOne = SavedSyntheticBasketRestorer.Restore(saved, current.Take(3).ToList(), load, "Daily", 252, 2);
+        if (missingOne is not null)
+        {
+            throw new Exception("a saved four-leg basket missing one current epic must fail instead of degrading to three legs");
+        }
+    }
+
+    private static void SavedBasketLoadUsesFaithfulFormulaRestorer()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        var start = source.IndexOf("private async Task LoadSavedBasketAsync", StringComparison.Ordinal);
+        var end = source.IndexOf("private static IReadOnlyList<MarketInstrument> SelectStrategyCandidates", start, StringComparison.Ordinal);
+        if (start < 0 || end <= start) throw new Exception("saved basket load method must remain available");
+        var loadBlock = source[start..end];
+
+        foreach (var required in new[]
+        {
+            "SavedSyntheticBasketRestorer.Restore",
+            "_basket = restored.Basket",
+            "StrategyBox.SelectedValue = restored.Strategy",
+        })
+        {
+            if (!loadBlock.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"saved basket load must restore persisted formula identity: missing {required}");
+            }
+        }
+
+        if (loadBlock.Contains("SyntheticHistoryService.BuildSelected", StringComparison.Ordinal) ||
+            loadBlock.Contains(".OfType<MarketInstrument>()", StringComparison.Ordinal))
+        {
+            throw new Exception("saved basket load must not silently drop missing epics or rebuild a generic formula");
+        }
+    }
+
     private static void SavedSyntheticBasketStoreDeletesSelectedBasket()
     {
         var folder = Path.Combine(Path.GetTempPath(), $"capetf-saved-delete-{Guid.NewGuid():N}");
@@ -4812,6 +5440,23 @@ public static class SyntheticBasketBuilderTests
         return Path.Combine([directory.FullName, .. parts]);
     }
 
+    private static string ExtractCssBlock(string css, string selector)
+    {
+        var selectorIndex = css.IndexOf(selector, StringComparison.Ordinal);
+        if (selectorIndex < 0) throw new Exception($"CSS selector missing: {selector}");
+        var openBrace = css.IndexOf('{', selectorIndex);
+        if (openBrace < 0) throw new Exception($"CSS block missing opening brace: {selector}");
+        var depth = 0;
+        for (var index = openBrace; index < css.Length; index++)
+        {
+            if (css[index] == '{') depth++;
+            if (css[index] != '}') continue;
+            depth--;
+            if (depth == 0) return css[(openBrace + 1)..index];
+        }
+        throw new Exception($"CSS block missing closing brace: {selector}");
+    }
+
     private sealed class StubCapitalHandler : HttpMessageHandler
     {
         public List<string> RequestUris { get; } = [];
@@ -4881,9 +5526,32 @@ public static class SyntheticBasketBuilderTests
         });
     }
 
-    private sealed class FakeCapitalStreamingSocket(WebSocketState state, bool closeOnReceive = false) : ICapitalStreamingSocket
+    private sealed class HistoryFailureHandler(HttpStatusCode status, string body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/api/v1/session", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var login = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+                };
+                login.Headers.Add("CST", "cst-token");
+                login.Headers.Add("X-SECURITY-TOKEN", "security-token");
+                return Task.FromResult(login);
+            }
+
+            return Task.FromResult(new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            });
+        }
+    }
+
+    private sealed class FakeCapitalStreamingSocket(WebSocketState state, bool closeOnReceive = false, bool blockClose = false) : ICapitalStreamingSocket
     {
         public WebSocketState State { get; private set; } = state;
+        public int DisposeCount { get; private set; }
 
         public Task ConnectAsync(Uri uri, CancellationToken cancellationToken)
         {
@@ -4902,10 +5570,15 @@ public static class SyntheticBasketBuilderTests
 
         public Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
         {
+            if (blockClose) return Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             State = WebSocketState.Closed;
             return Task.CompletedTask;
         }
 
-        public void Dispose() => State = WebSocketState.Closed;
+        public void Dispose()
+        {
+            DisposeCount++;
+            State = WebSocketState.Closed;
+        }
     }
 }

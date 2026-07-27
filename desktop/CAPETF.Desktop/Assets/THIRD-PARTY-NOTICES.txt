@@ -1,0 +1,11 @@
+CAPETF Desktop includes these locally packaged third-party components:
+
+- TradingView Lightweight Charts 5.2.0, licensed under Apache-2.0. See
+  lightweight-charts.LICENSE.txt and lightweight-charts.NOTICE.txt. The chart
+  keeps the TradingView attribution logo and link enabled.
+- Lucide 1.27.0, licensed under ISC with listed Feather-derived icons under
+  MIT. See lucide.LICENSE.txt.
+
+CAPETF's synthetic-drawings.js was implemented independently using the public
+Lightweight Charts v5 primitive APIs. It was not copied from deepentropy or
+another third-party drawing implementation.

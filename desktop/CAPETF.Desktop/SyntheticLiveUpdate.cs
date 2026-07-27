@@ -20,6 +20,11 @@ public static class SyntheticLiveUpdate
     {
         var component = basket.Components.FirstOrDefault(item => item.Instrument.Epic == update.Epic);
         if (component is null) return default;
+        if (component.Instrument.LastTickAt is { } lastSourceTime &&
+            update.Time.ToUniversalTime() < lastSourceTime.ToUniversalTime())
+        {
+            return default;
+        }
 
         component.Instrument.Bid = update.Bid is > 0 ? update.Bid : null;
         component.Instrument.Offer = update.Offer is > 0 ? update.Offer : null;

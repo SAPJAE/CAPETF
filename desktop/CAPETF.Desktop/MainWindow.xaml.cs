@@ -187,7 +187,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            await SyntheticChartWebView.EnsureCoreWebView2Async();
+            var environment = await WebViewRuntimeProfile.CreateEnvironmentAsync();
+            await SyntheticChartWebView.EnsureCoreWebView2Async(environment);
             _syntheticChartReady = false;
             SyntheticChartWebView.NavigationCompleted += SyntheticChartWebView_NavigationCompleted;
             var chartPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-chart.html");
@@ -218,7 +219,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            await TerminalChartWebView.EnsureCoreWebView2Async();
+            var environment = await WebViewRuntimeProfile.CreateEnvironmentAsync();
+            await TerminalChartWebView.EnsureCoreWebView2Async(environment);
             _terminalChartReady = false;
             TerminalChartWebView.CoreWebView2.WebMessageReceived += TerminalWebMessageReceived;
             TerminalChartWebView.CoreWebView2.ProcessFailed += (_, args) =>

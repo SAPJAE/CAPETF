@@ -50,7 +50,7 @@ public sealed class SyntheticHistoryService
                     component.Status = "History n/a";
                 }
             }
-            catch (Exception ex)
+            catch (CapitalApiException ex) when (ex.IsHistoryUnavailable)
             {
                 component.Status = $"History n/a: {ex.Message}";
             }

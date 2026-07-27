@@ -5,8 +5,10 @@
 Start the self-contained Windows executable directly:
 
 ```powershell
-.\publish\cap.com-terminal-v4\CAPETF.exe
+.\publish\cap.com-terminal-v4-complete\CAPETF.exe
 ```
+
+The package includes the .NET 8 Windows Desktop runtime. Microsoft Edge WebView2 Runtime remains an application prerequisite and is normally installed with current Windows releases. Browser state is stored per user under `%LOCALAPPDATA%\CAPETF\WebView2`, outside the unpacked release.
 
 The release stores credentials with Windows DPAPI for the current Windows user. On launch, it uses saved Capital.com credentials when they are available, loads the selected universe, and starts the applicable market-data stream after a basket is built.
 

@@ -12,21 +12,41 @@ internal sealed class CapitalApiException(HttpStatusCode statusCode, string reas
     public HttpStatusCode StatusCode { get; } = statusCode;
     public string ResponseBody { get; } = responseBody;
 
+    public string? ErrorCode
+    {
+        get
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(ResponseBody);
+                return document.RootElement.TryGetProperty("errorCode", out var value) ? value.GetString() : null;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+    }
+
+    public bool IsHistoryUnavailable =>
+        StatusCode == HttpStatusCode.NotFound ||
+        StatusCode == HttpStatusCode.BadRequest && ErrorCode is
+            "error.prices.not-found" or
+            "error.market.not-found" or
+            "error.instrument.not-found" or
+            "error.invalid.epic" or
+            "error.no.prices";
+
     public bool IsHistoryBoundary
     {
         get
         {
             if (StatusCode != HttpStatusCode.BadRequest) return false;
-            try
-            {
-                using var document = JsonDocument.Parse(ResponseBody);
-                var code = document.RootElement.TryGetProperty("errorCode", out var value) ? value.GetString() : null;
-                return code is "error.invalid.from" or "error.invalid.to" or "error.invalid.date-range";
-            }
-            catch (JsonException)
-            {
-                return false;
-            }
+            return ErrorCode is
+                "error.invalid.from" or
+                "error.invalid.to" or
+                "error.invalid.date-range" or
+                "error.invalid.daterange";
         }
     }
 }
@@ -252,12 +272,27 @@ public sealed class CapitalApiClient : IDisposable
             Bid = bid,
             Offer = offer,
             Price = price,
+            LastTickAt = root.TryGetProperty("snapshot", out snapshot)
+                ? ParseSnapshotTimestamp(snapshot)
+                : null,
             Status = root.TryGetProperty("snapshot", out snapshot)
                 ? ReadString(snapshot, "marketStatus") ?? ""
                 : "",
         };
 
         return string.IsNullOrWhiteSpace(result.Epic) ? null : result;
+    }
+
+    private static DateTimeOffset? ParseSnapshotTimestamp(JsonElement snapshot)
+    {
+        var source = ReadString(snapshot, "updateTimeUTC") ?? ReadString(snapshot, "updateTime");
+        return DateTimeOffset.TryParse(
+            source,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out var parsed)
+                ? parsed
+                : null;
     }
 
     private static IReadOnlyList<OhlcPoint> ParseOhlcPrices(JsonElement root)

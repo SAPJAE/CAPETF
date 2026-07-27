@@ -388,26 +388,41 @@
     return Math.hypot(point.x - (start.x + amount * dx), point.y - (start.y + amount * dy));
   }
 
+  function buildTimeIndex(orderedTimes) {
+    const entries = [];
+    for (const time of Array.isArray(orderedTimes) ? orderedTimes : []) {
+      const normalized = normalizeTimestamp(time);
+      if (normalized !== null) entries.push({ time, normalized });
+    }
+    entries.sort((left, right) => left.normalized - right.normalized);
+    return entries.filter((entry, index) => index === 0 || entry.normalized !== entries[index - 1].normalized);
+  }
+
+  function nearestTimeEntry(timeIndex, target) {
+    if (!Array.isArray(timeIndex) || timeIndex.length === 0 || target === null) return null;
+    let low = 0;
+    let high = timeIndex.length;
+    while (low < high) {
+      const middle = low + Math.floor((high - low) / 2);
+      if (timeIndex[middle].normalized < target) low = middle + 1;
+      else high = middle;
+    }
+    if (low === 0) return timeIndex[0];
+    if (low === timeIndex.length) return timeIndex[timeIndex.length - 1];
+    const before = timeIndex[low - 1];
+    const after = timeIndex[low];
+    return target - before.normalized <= after.normalized - target ? before : after;
+  }
+
   function timeCoordinate(state, time) {
     const timeScale = state.chart.timeScale();
     const direct = timeScale.timeToCoordinate(time);
     if (direct !== null && Number.isFinite(direct)) return direct;
     const target = normalizeTimestamp(time);
-    if (target === null || !Array.isArray(state.orderedTimes)) return null;
-    let nearestCoordinate = null;
-    let nearestDistance = Infinity;
-    for (const candidate of state.orderedTimes) {
-      const normalized = normalizeTimestamp(candidate);
-      if (normalized === null) continue;
-      const coordinate = timeScale.timeToCoordinate(candidate);
-      if (coordinate === null || !Number.isFinite(coordinate)) continue;
-      const distance = Math.abs(normalized - target);
-      if (distance < nearestDistance) {
-        nearestCoordinate = coordinate;
-        nearestDistance = distance;
-      }
-    }
-    return nearestCoordinate;
+    const nearest = nearestTimeEntry(state.timeIndex, target);
+    if (!nearest) return null;
+    const coordinate = timeScale.timeToCoordinate(nearest.time);
+    return coordinate !== null && Number.isFinite(coordinate) ? coordinate : null;
   }
 
   function pointCoordinates(state, point) {
@@ -679,6 +694,7 @@
       series: options.series,
       container: options.container,
       orderedTimes: Array.isArray(options.orderedTimes) ? options.orderedTimes.slice() : [],
+      timeIndex: buildTimeIndex(options.orderedTimes),
       pricePrecision: Number.isInteger(options.pricePrecision) ? Math.max(0, Math.min(10, options.pricePrecision)) : 5,
       records: [],
       undoStack: [],
@@ -812,17 +828,8 @@
 
     function nearestOrderedTime(time) {
       const target = normalizeTimestamp(time);
-      if (target === null || state.orderedTimes.length === 0) return time;
-      let nearest = time;
-      let distance = Infinity;
-      for (const candidate of state.orderedTimes) {
-        const normalized = normalizeTimestamp(candidate);
-        if (normalized !== null && Math.abs(normalized - target) < distance) {
-          nearest = candidate;
-          distance = Math.abs(normalized - target);
-        }
-      }
-      return sanitizeTime(nearest) ?? time;
+      const nearest = nearestTimeEntry(state.timeIndex, target);
+      return sanitizeTime(nearest?.time) ?? time;
     }
 
     function dataPoint(coordinate) {
@@ -1178,7 +1185,10 @@
 
       updateContext(context) {
         const next = isObject(context) ? context : {};
-        if (Array.isArray(next.orderedTimes)) state.orderedTimes = next.orderedTimes.slice();
+        if (Array.isArray(next.orderedTimes)) {
+          state.orderedTimes = next.orderedTimes.slice();
+          state.timeIndex = buildTimeIndex(state.orderedTimes);
+        }
         if (Number.isInteger(next.pricePrecision)) {
           state.pricePrecision = Math.max(0, Math.min(10, next.pricePrecision));
         }

@@ -15,6 +15,7 @@ public static class SyntheticTerminalLiveUpdate
             result.CandleChanged,
             result.Matched
                 ? new SyntheticTerminalTickPayload(
+                    SyntheticTerminalChartPayload.DrawingIdentity(basket),
                     candle is null ? null : new TerminalCandle(
                         candle.Time.ToUnixTimeSeconds(), candle.Open, candle.High, candle.Low, candle.Close),
                     basket.BidPrice,

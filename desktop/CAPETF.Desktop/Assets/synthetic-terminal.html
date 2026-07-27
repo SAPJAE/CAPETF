@@ -730,6 +730,8 @@
     let railPointerId = null;
     let pendingTerminalTick = null;
     let terminalTickFrame = null;
+    let terminalPayloadGeneration = 0;
+    let activeTerminalIdentity = '';
     const SYNTHETIC_PRICE_FLOOR = -10;
     const RAIL_WIDTH_KEY = 'capcom-terminal-rail-width';
     const RAIL_MIN_WIDTH = 260;
@@ -843,7 +845,8 @@
         layout: {
           background: { color: '#030712' },
           textColor: '#cbd5e1',
-          fontFamily: 'Segoe UI, Arial, sans-serif'
+          fontFamily: 'Segoe UI, Arial, sans-serif',
+          attributionLogo: true
         },
         grid: {
           vertLines: { color: '#111827' },
@@ -1230,14 +1233,24 @@
     }
 
     window.setTerminalData = function(nextPayload) {
+      terminalPayloadGeneration += 1;
+      activeTerminalIdentity = getField(nextPayload, 'DrawingIdentity', 'drawingIdentity',
+        getField(nextPayload, 'Symbol', 'symbol', ''));
+      pendingTerminalTick = null;
+      if (terminalTickFrame !== null) cancelAnimationFrame(terminalTickFrame);
+      terminalTickFrame = null;
       apply(nextPayload, false);
     };
 
     function flushTerminalTick() {
       terminalTickFrame = null;
-      const tick = pendingTerminalTick;
+      const pending = pendingTerminalTick;
       pendingTerminalTick = null;
-      if (!tick || !candleSeries) return;
+      if (!pending ||
+          pending.generation !== terminalPayloadGeneration ||
+          pending.identity !== activeTerminalIdentity ||
+          !candleSeries) return;
+      const tick = pending.tick;
 
       payload.BidPrice = getField(tick, 'BidPrice', 'bidPrice', null);
       payload.AskPrice = getField(tick, 'AskPrice', 'askPrice', null);
@@ -1279,7 +1292,20 @@
     }
 
     window.updateTerminalTick = function(nextTick) {
-      pendingTerminalTick = nextTick;
+      const identity = getField(nextTick, 'DrawingIdentity', 'drawingIdentity', '');
+      if (!identity || identity !== activeTerminalIdentity) return;
+      const previous = pendingTerminalTick &&
+        pendingTerminalTick.generation === terminalPayloadGeneration &&
+        pendingTerminalTick.identity === identity
+          ? pendingTerminalTick.tick
+          : null;
+      const incomingCandle = getField(nextTick, 'Candle', 'candle', null);
+      const retainedCandle = incomingCandle || getField(previous, 'Candle', 'candle', null);
+      pendingTerminalTick = {
+        generation: terminalPayloadGeneration,
+        identity,
+        tick: { ...(previous || {}), ...(nextTick || {}), Candle: retainedCandle }
+      };
       if (terminalTickFrame === null) terminalTickFrame = requestAnimationFrame(flushTerminalTick);
     };
 
@@ -1293,7 +1319,7 @@
     };
 
     window.clearTerminal = function() {
-      apply({ Candles: [], Components: [] }, false);
+      window.setTerminalData({ Candles: [], Components: [] });
     };
 
     window.resizeTerminal = function() {

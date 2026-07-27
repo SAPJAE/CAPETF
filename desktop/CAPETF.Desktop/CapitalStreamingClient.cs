@@ -34,7 +34,9 @@ public sealed class CapitalStreamingClient : IAsyncDisposable
     private readonly ICapitalStreamingSocket _socket;
     private readonly CancellationTokenSource _lifetime = new();
     private Task? _readerTask;
+    private Task? _pingTask;
     private int _correlationId;
+    private int _disposeStarted;
 
     public event EventHandler<QuoteUpdate>? QuoteReceived;
     public event EventHandler<string>? StatusChanged;
@@ -62,7 +64,7 @@ public sealed class CapitalStreamingClient : IAsyncDisposable
         await _socket.ConnectAsync(new Uri("wss://api-streaming-capital.backend-capital.com/connect"), cancellationToken);
         _readerTask = Task.Run(() => ReadLoopAsync(_lifetime.Token));
         StatusChanged?.Invoke(this, "Realtime connected");
-        _ = Task.Run(() => PingLoopAsync(session, _lifetime.Token));
+        _pingTask = Task.Run(() => PingLoopAsync(session, _lifetime.Token));
     }
 
     public Task SubscribeQuotesAsync(CapitalSession session, IEnumerable<string> epics, CancellationToken cancellationToken = default)
@@ -144,10 +146,16 @@ public sealed class CapitalStreamingClient : IAsyncDisposable
 
     private async Task PingLoopAsync(CapitalSession session, CancellationToken cancellationToken)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        try
         {
-            await Task.Delay(TimeSpan.FromMinutes(4), cancellationToken).ConfigureAwait(false);
-            await SendAsync(new { destination = "ping", correlationId = NextCorrelation(), cst = session.Cst, securityToken = session.SecurityToken }, cancellationToken);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromMinutes(4), cancellationToken).ConfigureAwait(false);
+                await SendAsync(new { destination = "ping", correlationId = NextCorrelation(), cst = session.Cst, securityToken = session.SecurityToken }, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
         }
     }
 
@@ -165,7 +173,12 @@ public sealed class CapitalStreamingClient : IAsyncDisposable
                 var offer = ReadDecimal(payload, "ofr");
                 var price = bid is not null && offer is not null ? (bid.Value + offer.Value) / 2m : bid ?? offer;
                 var time = ReadTimestamp(payload);
-                QuoteReceived?.Invoke(this, new QuoteUpdate(epic, bid, offer, price, time));
+                if (time is null)
+                {
+                    StatusChanged?.Invoke(this, "Realtime quote ignored: source timestamp missing.");
+                    return;
+                }
+                QuoteReceived?.Invoke(this, new QuoteUpdate(epic, bid, offer, price, time.Value));
                 return;
             }
 
@@ -192,24 +205,52 @@ public sealed class CapitalStreamingClient : IAsyncDisposable
         return element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out var parsed) ? parsed : null;
     }
 
-    private static DateTimeOffset ReadTimestamp(JsonElement payload)
+    private static DateTimeOffset? ReadTimestamp(JsonElement payload)
     {
         if (payload.TryGetProperty("timestamp", out var timestamp) && timestamp.ValueKind == JsonValueKind.Number && timestamp.TryGetInt64(out var ms))
         {
             return DateTimeOffset.FromUnixTimeMilliseconds(ms);
         }
-        return DateTimeOffset.Now;
+        return null;
     }
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0) return;
         _lifetime.Cancel();
-        if (_socket.State == WebSocketState.Open)
+        try
         {
-            await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "CAPETF closing", CancellationToken.None);
+            if (_socket.State == WebSocketState.Open)
+            {
+                using var closeTimeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(750));
+                try
+                {
+                    await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "CAPETF closing", closeTimeout.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (closeTimeout.IsCancellationRequested)
+                {
+                }
+                catch
+                {
+                    // Shutdown is best-effort; disposal below always releases the socket.
+                }
+            }
+
+            var backgroundTasks = new[] { _readerTask, _pingTask }.Where(task => task is not null).Cast<Task>().ToArray();
+            if (backgroundTasks.Length > 0)
+            {
+                var combined = Task.WhenAll(backgroundTasks);
+                if (await Task.WhenAny(combined, Task.Delay(500)).ConfigureAwait(false) == combined)
+                {
+                    try { await combined.ConfigureAwait(false); }
+                    catch { }
+                }
+            }
         }
-        _socket.Dispose();
-        _lifetime.Dispose();
-        if (_readerTask is not null) await Task.WhenAny(_readerTask, Task.Delay(500));
+        finally
+        {
+            _socket.Dispose();
+            _lifetime.Dispose();
+        }
     }
 }

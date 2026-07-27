@@ -2,6 +2,74 @@ namespace CAPETF.Desktop;
 
 public static class SyntheticBasketBuilder
 {
+    internal static SyntheticBasket? BuildSavedFormula(
+        SavedSyntheticBasket saved,
+        IReadOnlyList<MarketInstrument> orderedInstruments,
+        HistoryLoadResult history,
+        string timeframe,
+        int periodsPerYear,
+        int minimumCandles)
+    {
+        if (periodsPerYear <= 0) throw new ArgumentOutOfRangeException(nameof(periodsPerYear));
+        if (minimumCandles < 2) throw new ArgumentOutOfRangeException(nameof(minimumCandles));
+        if (orderedInstruments.Count != saved.Components.Count) return null;
+
+        var cluster = new List<Candidate>(orderedInstruments.Count);
+        for (var index = 0; index < orderedInstruments.Count; index++)
+        {
+            var instrument = orderedInstruments[index];
+            if (!string.Equals(instrument.Epic, saved.Components[index].Epic, StringComparison.OrdinalIgnoreCase) ||
+                !history.CandlesByEpic.TryGetValue(instrument.Epic, out var source) ||
+                SyntheticHistoryService.DistinctAlignmentKeyCount(source, timeframe) < minimumCandles)
+            {
+                return null;
+            }
+
+            var candles = source.OrderBy(candle => candle.Time).ToList();
+            cluster.Add(new Candidate(
+                instrument,
+                candles,
+                AnnualizedVolatilityPct(candles, periodsPerYear),
+                FourYearReturnPct(candles),
+                TrailingReturnsPct(candles, periodsPerYear),
+                MaximumDrawdownPct(candles),
+                CurrentDrawdownPct(candles)));
+        }
+
+        var multipliers = saved.Components.Select(component => component.FormulaMultiplier).ToList();
+        var syntheticCandles = NormalizeSyntheticCandleOpens(BuildCandles(cluster, multipliers)).ToList();
+        var sharedLivePrices = FindFinalSharedPrices(cluster);
+        if (syntheticCandles.Count < 2 || sharedLivePrices.Count != cluster.Count) return null;
+
+        var basket = new SyntheticBasket
+        {
+            Symbol = saved.Symbol,
+            Block = saved.Block,
+            AverageVolatilityPct = decimal.Round(cluster.Average(candidate => candidate.VolatilityPct), 2),
+            SimilarityScore = decimal.Round(ClusterSimilarity(cluster), 2),
+            BasketPrice = syntheticCandles[^1].Close,
+            LastUpdated = syntheticCandles[^1].Time,
+        };
+        for (var index = 0; index < cluster.Count; index++)
+        {
+            var savedComponent = saved.Components[index];
+            basket.Components.Add(new SyntheticComponent(
+                cluster[index].Instrument,
+                savedComponent.Weight,
+                cluster[index].VolatilityPct,
+                cluster[index].FourYearReturnPct)
+            {
+                FormulaMultiplier = savedComponent.FormulaMultiplier,
+                FormulaReferencePrice = savedComponent.ReferencePrice,
+                LastAppliedPrice = sharedLivePrices[index],
+                SyntheticBaselinePrice = savedComponent.ReferencePrice,
+            });
+        }
+        foreach (var candle in syntheticCandles) basket.Candles.Add(candle);
+        SyntheticQuoteCalculator.Refresh(basket);
+        return basket;
+    }
+
     public static SyntheticBuildResult Build(
         string block,
         IReadOnlyList<MarketInstrument> instruments,
@@ -58,6 +126,7 @@ public static class SyntheticBasketBuilder
 
                 var multipliers = CalculateDisplayMultipliers(cluster, weights, sharedBaselinePrices);
                 var syntheticCandles = NormalizeSyntheticCandleOpens(BuildCandles(cluster, multipliers)).ToList();
+                var sharedLivePrices = FindFinalSharedPrices(cluster);
                 var basket = new SyntheticBasket
                 {
                     Symbol = $"SYN-{NormalizeSymbol(block)}-{baskets.Count + 1:00}",
@@ -78,7 +147,7 @@ public static class SyntheticBasketBuilder
                     {
                         FormulaMultiplier = multipliers[index],
                         FormulaReferencePrice = sharedBaselinePrices[index],
-                        LastAppliedPrice = cluster[index].Candles[^1].Close,
+                        LastAppliedPrice = sharedLivePrices[index],
                         SyntheticBaselinePrice = sharedBaselinePrices[index],
                     });
                 }
@@ -137,9 +206,31 @@ public static class SyntheticBasketBuilder
         return FindSharedBaselinePrices(cluster, candle => candle.Time.Date);
     }
 
+    private static IReadOnlyList<decimal> FindFinalSharedPrices(IReadOnlyList<Candidate> cluster)
+    {
+        if (cluster.Any(item => HasSubDailyCadence(item.Candles)))
+        {
+            return FindSharedPrices(cluster, candle => candle.Time, useFinalKey: true);
+        }
+
+        if (cluster.Any(item => HasWeeklyCadence(item.Candles)))
+        {
+            return FindSharedPrices(cluster, candle => WeekStart(candle.Time.Date), useFinalKey: true);
+        }
+
+        return FindSharedPrices(cluster, candle => candle.Time.Date, useFinalKey: true);
+    }
+
     private static IReadOnlyList<decimal> FindSharedBaselinePrices<TKey>(
         IReadOnlyList<Candidate> cluster,
         Func<OhlcPoint, TKey> keySelector)
+        where TKey : notnull =>
+        FindSharedPrices(cluster, keySelector, useFinalKey: false);
+
+    private static IReadOnlyList<decimal> FindSharedPrices<TKey>(
+        IReadOnlyList<Candidate> cluster,
+        Func<OhlcPoint, TKey> keySelector,
+        bool useFinalKey)
         where TKey : notnull
     {
         var candlesByKey = cluster
@@ -152,7 +243,8 @@ public static class SyntheticBasketBuilder
             .ToList();
         if (sharedKeys.Count == 0) return [];
 
-        return candlesByKey.Select(rows => rows[sharedKeys[0]].Close).ToList();
+        var selectedKey = useFinalKey ? sharedKeys[^1] : sharedKeys[0];
+        return candlesByKey.Select(rows => rows[selectedKey].Close).ToList();
     }
 
     private static IReadOnlyList<decimal> ApplyWeightBounds(IReadOnlyList<decimal> source, decimal minimum, decimal maximum)

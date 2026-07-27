@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
@@ -15,6 +16,7 @@ public partial class CapComTerminalWindow : Window
     private readonly CapitalApiClient _api = new();
     private readonly SyntheticHistoryService _history;
     private readonly TerminalOperationState _operationState = new();
+    private readonly WindowLifetime _windowLifetime = new();
     private readonly List<MarketInstrument> _instruments = [];
     private readonly ObservableCollection<TerminalComponentRow> _components = [];
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>> _instrumentsByUniverse = [];
@@ -32,7 +34,6 @@ public partial class CapComTerminalWindow : Window
     private SyntheticTerminalPayload? _pendingPayload;
     private bool _chartReady;
     private bool _streamReconnectScheduled;
-    private bool _isClosing;
 
     public CapComTerminalWindow()
     {
@@ -47,7 +48,7 @@ public partial class CapComTerminalWindow : Window
         ComponentsList.ItemsSource = _components;
         LoadSavedCredentials();
         RefreshSavedBaskets();
-        _ = InitializeChartHostAsync();
+        _ = InitializeChartHostAsync(_windowLifetime.Token);
         SizeChanged += async (_, _) => await InvokeTerminalScriptAsync("window.resizeTerminal && window.resizeTerminal();");
     }
 
@@ -66,22 +67,24 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
-        await RunOperationAsync("Connecting to Capital.com", async () =>
+        await RunOperationAsync("Connecting to Capital.com", async cancellationToken =>
         {
             ConnectionText.Text = $"connecting to {SavedCredentialLabel(saved)}...";
-            await _api.LoginAsync(saved);
+            await _api.LoginAsync(saved, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             ConnectionText.Text = $"connected to {SavedCredentialLabel(saved)}";
             StatusText.Text = $"Connected to {SavedCredentialLabel(saved)}. Loading universe...";
-            await LoadStocksAsync();
+            await LoadStocksAsync(cancellationToken);
         });
     }
 
-    private Task LoadStocksAsync() => LoadUniverseAsync(SelectedUniverse());
+    private Task LoadStocksAsync(CancellationToken cancellationToken) => LoadUniverseAsync(SelectedUniverse(), cancellationToken);
 
-    private async Task LoadUniverseAsync(TerminalUniverseKind universe)
+    private async Task LoadUniverseAsync(TerminalUniverseKind universe, CancellationToken cancellationToken)
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var etfCache = EnsureEtfCatalogLoaded();
             if (_instrumentsByUniverse.TryGetValue(universe, out var instruments))
             {
@@ -112,7 +115,7 @@ public partial class CapComTerminalWindow : Window
                 if (etfCache is not null && etfCache.Instruments.Count > 0)
                 {
                     var enriched = TerminalUniverseLoadPolicy.RequiresEtfMetadataEnrichment(universe, etfCache.Instruments)
-                        ? await EnrichEtfMetadataAsync(etfCache.Instruments)
+                        ? await EnrichEtfMetadataAsync(etfCache.Instruments, cancellationToken)
                         : etfCache.Instruments;
                     ApplyUniverse(universe, enriched, etfCache.OhlcByEpic, etfCache.OhlcByEpicAndResolution);
                     var source = etfCache.SourceAsOf is null ? "" : $" Source date {etfCache.SourceAsOf:yyyy-MM-dd}.";
@@ -121,12 +124,16 @@ public partial class CapComTerminalWindow : Window
                 }
             }
 
-            await LoadStocksFromApiAsync();
+            await LoadStocksFromApiAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
             StatusText.Text = $"Cached {UniverseLabel(universe).ToLowerInvariant()} load failed; trying Capital.com API. {ex.Message}";
-            await LoadStocksFromApiAsync();
+            await LoadStocksFromApiAsync(cancellationToken);
         }
     }
 
@@ -135,7 +142,7 @@ public partial class CapComTerminalWindow : Window
         await RunOperationAsync("Building synthetic basket", BuildSyntheticAsync);
     }
 
-    private async Task BuildSyntheticAsync()
+    private async Task BuildSyntheticAsync(CancellationToken cancellationToken)
     {
         if (_instruments.Count == 0)
         {
@@ -150,7 +157,7 @@ public partial class CapComTerminalWindow : Window
         var minCandles = MinimumCandles(resolution);
         var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments.Where(item => TerminalUniverse.Accepts(SelectedUniverse(), item, _knownEtfEpics)).ToList(), limit: 500);
         var activeCachedCandles = CachedCandlesForResolution(resolution);
-        var candles = BuildCachedCandles(candidates, activeCachedCandles, resolution, minCandles, candidateLimit: 500);
+        var candles = BuildCachedCandles(candidates, activeCachedCandles, resolution, minCandles, candidateLimit: 500, cancellationToken);
         var seedText = SeedText();
         candles = await SyntheticTerminalBuildPolicy.LoadCandidateHistoryFallbackAsync(
             strategy,
@@ -158,7 +165,7 @@ public partial class CapComTerminalWindow : Window
             candidates,
             candles,
             maximumCandidates: 12,
-            selected => LoadCandidateHistoryAsync(selected, resolution));
+            selected => LoadCandidateHistoryAsync(selected, resolution, cancellationToken));
         var isSeededSimilarBuild =
             strategy == SyntheticStrategyKind.SimilarToSelectedSymbol &&
             !string.IsNullOrWhiteSpace(seedText);
@@ -181,7 +188,7 @@ public partial class CapComTerminalWindow : Window
             {
                 var seedLabel = string.IsNullOrWhiteSpace(seed.Symbol) ? seed.Epic : seed.Symbol;
                 StatusText.Text = $"Loading Capital.com history for {seedLabel}...";
-                var seedHistory = await LoadSelectedHistoryAsync([seed], resolution);
+                var seedHistory = await LoadSelectedHistoryAsync([seed], resolution, cancellationToken);
                 var loadedRows = seedHistory.CandlesByEpic.TryGetValue(seed.Epic, out var loaded) ? loaded : [];
                 if (SyntheticHistoryService.DistinctAlignmentKeyCount(loadedRows, resolution) >= minCandles)
                 {
@@ -208,8 +215,9 @@ public partial class CapComTerminalWindow : Window
                 _instruments,
                 seededCandles,
                 periodsPerYear,
-                minCandles))
-            : await Task.Run(() => SyntheticTerminalSelector.SelectBest(block, selectionCandidates, candles, periodsPerYear, minCandles));
+                minCandles), cancellationToken)
+            : await Task.Run(() => SyntheticTerminalSelector.SelectBest(block, selectionCandidates, candles, periodsPerYear, minCandles), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         if (_basket is null)
         {
             await ClearTerminalChartAsync();
@@ -221,7 +229,7 @@ public partial class CapComTerminalWindow : Window
         }
 
         var selectedComponents = _basket.Components.Select(component => component.Instrument).ToList();
-        var selectedHistory = await LoadSelectedHistoryAsync(selectedComponents, resolution);
+        var selectedHistory = await LoadSelectedHistoryAsync(selectedComponents, resolution, cancellationToken);
         _operationState.BeginStage("Building selected basket");
         await Task.Yield();
         _basket = SyntheticHistoryService.BuildSelected(block, selectedComponents, selectedHistory, resolution, periodsPerYear, minCandles);
@@ -232,13 +240,13 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
-        await RefreshBasketMarketDetailsAsync(_basket);
+        await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
         _operationState.BeginStage("Rendering synthetic chart");
         await Task.Yield();
         await RenderSyntheticChartAsync(_basket);
         var buildStatus = $"{_basket.Symbol}: {_basket.Components.Count} legs, {HistoryRange(selectedHistory)}, similarity {_basket.SimilarityScore:0.##}, average volatility {_basket.AverageVolatilityPct:0.##}%.";
         StatusText.Text = buildStatus;
-        await TryStartStreamingCurrentBasketAsync(buildStatus);
+        await TryStartStreamingCurrentBasketAsync(buildStatus, cancellationToken);
     }
 
     private void SaveBasket_Click(object sender, RoutedEventArgs e)
@@ -259,7 +267,7 @@ public partial class CapComTerminalWindow : Window
     {
         UpdateDeleteBasketButtonState();
         if (_loadingSavedBaskets || SavedBasketsBox.SelectedItem is not SavedSyntheticBasket saved) return;
-        await RunOperationAsync($"Loading saved basket {saved.Name}", () => LoadSavedBasketAsync(saved));
+        await RunOperationAsync($"Loading saved basket {saved.Name}", cancellationToken => LoadSavedBasketAsync(saved, cancellationToken));
     }
 
     private void DeleteBasket_Click(object sender, RoutedEventArgs e)
@@ -286,45 +294,52 @@ public partial class CapComTerminalWindow : Window
         StatusText.Text = $"Deleted saved basket {saved.Name}.";
     }
 
-    private async Task LoadSavedBasketAsync(SavedSyntheticBasket saved)
+    private async Task LoadSavedBasketAsync(SavedSyntheticBasket saved, CancellationToken cancellationToken)
     {
         if (_instruments.Count == 0)
         {
-            await LoadStocksAsync();
+            await LoadStocksAsync(cancellationToken);
         }
 
         var resolution = SelectedResolution();
         var periodsPerYear = PeriodsPerYear(resolution);
         var minCandles = MinimumCandles(resolution);
-        var selectedInstruments = saved.Components
+        var resolvedInstruments = saved.Components
             .Select(component => _instruments.FirstOrDefault(instrument => string.Equals(instrument.Epic, component.Epic, StringComparison.OrdinalIgnoreCase)))
-            .OfType<MarketInstrument>()
             .ToList();
-        if (selectedInstruments.Count < 3)
+        if (resolvedInstruments.Count != saved.Components.Count || resolvedInstruments.Any(instrument => instrument is null))
         {
             StatusText.Text = $"Saved basket {saved.Name} could not be loaded because some leg symbols are missing from the universe.";
             return;
         }
+        var selectedInstruments = resolvedInstruments.Select(instrument => instrument!).ToList();
 
-        var selectedHistory = await LoadSelectedHistoryAsync(selectedInstruments, resolution);
+        var selectedHistory = await LoadSelectedHistoryAsync(selectedInstruments, resolution, cancellationToken);
         _operationState.BeginStage("Building selected basket");
         await Task.Yield();
-        _basket = SyntheticHistoryService.BuildSelected(saved.Block, selectedInstruments, selectedHistory, resolution, periodsPerYear, minCandles);
-        if (_basket is null)
+        var restored = SavedSyntheticBasketRestorer.Restore(
+            saved,
+            selectedInstruments,
+            selectedHistory,
+            resolution,
+            periodsPerYear,
+            minCandles);
+        if (restored is null)
         {
             await ClearTerminalChartAsync();
             StatusText.Text = $"Saved basket {saved.Name} has no usable current history.";
             return;
         }
 
-        _basket = RenameBasket(_basket, saved.Symbol, saved.Block);
-        await RefreshBasketMarketDetailsAsync(_basket);
+        _basket = restored.Basket;
+        StrategyBox.SelectedValue = restored.Strategy;
+        await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
         _operationState.BeginStage("Rendering synthetic chart");
         await Task.Yield();
         await RenderSyntheticChartAsync(_basket);
         var loadStatus = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs, {HistoryRange(selectedHistory)}.";
         StatusText.Text = loadStatus;
-        await TryStartStreamingCurrentBasketAsync(loadStatus);
+        await TryStartStreamingCurrentBasketAsync(loadStatus, cancellationToken);
     }
 
     private static IReadOnlyList<MarketInstrument> SelectStrategyCandidates(
@@ -353,14 +368,16 @@ public partial class CapComTerminalWindow : Window
             .ToList();
     }
 
-    private Task LoadStocksFromApiAsync() => LoadUniverseFromApiAsync(SelectedUniverse());
+    private Task LoadStocksFromApiAsync(CancellationToken cancellationToken) =>
+        LoadUniverseFromApiAsync(SelectedUniverse(), cancellationToken);
 
-    private async Task LoadUniverseFromApiAsync(TerminalUniverseKind universe)
+    private async Task LoadUniverseFromApiAsync(TerminalUniverseKind universe, CancellationToken cancellationToken)
     {
-        await EnsureConnectedAsync();
+        await EnsureConnectedAsync(cancellationToken);
         EnsureEtfCatalogLoaded();
         StatusText.Text = $"Loading Capital.com {UniverseLabel(universe).ToLowerInvariant()}...";
-        var markets = await _api.SearchMarketsAsync(TerminalUniverseLoadPolicy.ApiSearchTerm(universe, SeedText()));
+        var markets = await _api.SearchMarketsAsync(TerminalUniverseLoadPolicy.ApiSearchTerm(universe, SeedText()), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         var normalized = TerminalUniverseLoadPolicy.NormalizeApiFallback(universe, markets, _knownEtfEpics);
         ApplyUniverse(universe, normalized, EmptyCandles(), EmptyCandlesByResolution());
         StatusText.Text = $"{_instruments.Count} {UniverseLabel(universe).ToLowerInvariant()} loaded from Capital.com API.";
@@ -371,7 +388,8 @@ public partial class CapComTerminalWindow : Window
         IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> source,
         string resolution,
         int minCandles,
-        int candidateLimit)
+        int candidateLimit,
+        CancellationToken cancellationToken)
     {
         var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>();
         var checkedCount = 0;
@@ -381,6 +399,7 @@ public partial class CapComTerminalWindow : Window
         StatusText.Text = $"Scanning cached history for {total} stocks...";
         foreach (var item in candidates.Take(candidateLimit))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             checkedCount++;
             _operationState.Report("Scanning cached history", checkedCount, total);
             if (source.TryGetValue(item.Epic, out var rows) &&
@@ -416,16 +435,19 @@ public partial class CapComTerminalWindow : Window
 
     private async Task<HistoryLoadResult> LoadSelectedHistoryAsync(
         IReadOnlyList<MarketInstrument> selectedComponents,
-        string resolution)
+        string resolution,
+        CancellationToken cancellationToken)
     {
-        await EnsureConnectedAsync();
+        await EnsureConnectedAsync(cancellationToken);
         _operationState.BeginStage($"Loading full {resolution} history", selectedComponents.Count);
         var progress = new Progress<HistoryLoadProgress>(update =>
         {
+            if (_windowLifetime.IsClosing) return;
             _operationState.Report($"Loading full {resolution} history", update.CompletedComponents, update.TotalComponents);
             StatusText.Text = $"Loading full {resolution} history for selected leg {update.CompletedComponents} of {update.TotalComponents}: {update.Epic}.";
         });
-        var apiHistory = await _history.LoadSelectedAsync(selectedComponents, resolution, progress);
+        var apiHistory = await _history.LoadSelectedAsync(selectedComponents, resolution, progress, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         return SyntheticHistoryService.MergeSelectedHistory(
             selectedComponents,
             resolution,
@@ -435,16 +457,18 @@ public partial class CapComTerminalWindow : Window
 
     private async Task<HistoryLoadResult> LoadCandidateHistoryAsync(
         IReadOnlyList<MarketInstrument> candidates,
-        string resolution)
+        string resolution,
+        CancellationToken cancellationToken)
     {
-        await EnsureConnectedAsync();
+        await EnsureConnectedAsync(cancellationToken);
         _operationState.BeginStage($"Loading candidate {resolution} history", candidates.Count);
         var progress = new Progress<HistoryLoadProgress>(update =>
         {
+            if (_windowLifetime.IsClosing) return;
             _operationState.Report($"Loading candidate {resolution} history", update.CompletedComponents, update.TotalComponents);
             StatusText.Text = $"Loading Capital.com {resolution} history for candidate {update.CompletedComponents} of {update.TotalComponents}: {update.Epic}.";
         });
-        return await _history.LoadSelectedAsync(candidates, resolution, progress);
+        return await _history.LoadSelectedAsync(candidates, resolution, progress, cancellationToken);
     }
 
     private static string HistoryRange(HistoryLoadResult history) =>
@@ -452,7 +476,7 @@ public partial class CapComTerminalWindow : Window
             ? $"{history.SharedCount} shared candles from {history.SharedStart:yyyy-MM-dd} to {history.SharedEnd:yyyy-MM-dd}"
             : "no shared candles";
 
-    private async Task TryStartStreamingCurrentBasketAsync(string baseStatus)
+    private async Task TryStartStreamingCurrentBasketAsync(string baseStatus, CancellationToken cancellationToken)
     {
         if (_basket is null)
         {
@@ -461,7 +485,7 @@ public partial class CapComTerminalWindow : Window
 
         try
         {
-            await StartStreamingCurrentBasketAsync();
+            await StartStreamingCurrentBasketAsync(cancellationToken);
         }
         catch (Exception ex)
         {
@@ -469,27 +493,32 @@ public partial class CapComTerminalWindow : Window
         }
     }
 
-    private async Task StartStreamingCurrentBasketAsync()
+    private async Task StartStreamingCurrentBasketAsync(CancellationToken cancellationToken)
     {
         _operationState.BeginStage("Starting live stream", 2);
-        await EnsureConnectedAsync();
+        await EnsureConnectedAsync(cancellationToken);
         if (_basket is null) return;
 
         if (_streaming is null || !_streaming.IsConnected)
         {
             if (_streaming is not null) await _streaming.DisposeAsync();
+            cancellationToken.ThrowIfCancellationRequested();
             var streaming = new CapitalStreamingClient();
             streaming.QuoteReceived += Streaming_QuoteReceived;
-            streaming.StatusChanged += (_, message) => Dispatcher.Invoke(() => ConnectionText.Text = message);
+            streaming.StatusChanged += (_, message) =>
+            {
+                if (_windowLifetime.IsClosing) return;
+                _ = Dispatcher.InvokeAsync(() => _windowLifetime.TryApply(() => ConnectionText.Text = message));
+            };
             streaming.Disconnected += Streaming_Disconnected;
-            await streaming.ConnectAsync(_api.Session!);
+            await streaming.ConnectAsync(_api.Session!, cancellationToken);
             _streaming = streaming;
         }
 
         var epics = SyntheticTerminalWorkspace.StreamingEpics(_basket);
-        await _streaming.SubscribeQuotesAsync(_api.Session!, epics);
+        await _streaming.SubscribeQuotesAsync(_api.Session!, epics, cancellationToken);
         _operationState.Report("Starting live stream", 1, 2);
-        await _streaming.SubscribeOhlcAsync(_api.Session!, epics, SyntheticHistoryService.RequestResolution(SelectedResolution()));
+        await _streaming.SubscribeOhlcAsync(_api.Session!, epics, SyntheticHistoryService.RequestResolution(SelectedResolution()), cancellationToken);
         _operationState.Report("Starting live stream", 2, 2);
         ConnectionText.Text = $"Streaming {_basket.Symbol}";
         StatusText.Text = $"Streaming {_basket.Symbol}: {epics.Count} component epics.";
@@ -497,13 +526,13 @@ public partial class CapComTerminalWindow : Window
 
     private void Streaming_Disconnected(object? sender, string message)
     {
-        if (_isClosing) return;
+        if (_windowLifetime.IsClosing) return;
         _ = Dispatcher.InvokeAsync(async () => await ReconnectStreamingAsync(message));
     }
 
     private async Task ReconnectStreamingAsync(string message)
     {
-        if (_isClosing || _streamReconnectScheduled || _basket is null || _api.Session is null || _operationState.IsBusy) return;
+        if (_windowLifetime.IsClosing || _streamReconnectScheduled || _basket is null || _api.Session is null || _operationState.IsBusy) return;
         _streamReconnectScheduled = true;
         try
         {
@@ -516,11 +545,15 @@ public partial class CapComTerminalWindow : Window
         }
     }
 
-    private async Task RefreshBasketMarketDetailsAsync(SyntheticBasket basket)
+    private async Task RefreshBasketMarketDetailsAsync(SyntheticBasket basket, CancellationToken cancellationToken)
     {
         try
         {
-            await EnsureConnectedAsync();
+            await EnsureConnectedAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -531,14 +564,20 @@ public partial class CapComTerminalWindow : Window
         var completed = 0;
         foreach (var component in basket.Components)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var details = await _api.GetMarketDetailsAsync(component.Instrument.Epic);
+                var details = await _api.GetMarketDetailsAsync(component.Instrument.Epic, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
                 if (details is not null)
                 {
                     ApplyMarketDetails(component.Instrument, details);
                     component.NotifyInstrumentPriceChanged();
                 }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -556,12 +595,15 @@ public partial class CapComTerminalWindow : Window
 
     private static void ApplyMarketDetails(MarketInstrument target, MarketInstrument details)
     {
-        if (details.Bid is > 0) target.Bid = details.Bid;
-        if (details.Offer is > 0) target.Offer = details.Offer;
-        if (details.Price is > 0)
+        var canApplyQuote = target.LastTickAt is null ||
+            details.LastTickAt is { } snapshotTime &&
+            snapshotTime.ToUniversalTime() >= target.LastTickAt.Value.ToUniversalTime();
+        if (canApplyQuote)
         {
-            target.Price = details.Price;
-            target.LastTickAt = DateTimeOffset.UtcNow;
+            target.Bid = details.Bid is > 0 ? details.Bid : null;
+            target.Offer = details.Offer is > 0 ? details.Offer : null;
+            if (details.Price is > 0) target.Price = details.Price;
+            target.LastTickAt = details.LastTickAt;
         }
 
         if (details.LotSize is > 0) target.LotSize = details.LotSize;
@@ -585,18 +627,18 @@ public partial class CapComTerminalWindow : Window
         }
 
         var basket = _basket;
-        await RunOperationAsync($"Reloading {SelectedResolution()} history", async () =>
+        await RunOperationAsync($"Reloading {SelectedResolution()} history", async cancellationToken =>
         {
             await SetTerminalIntervalAsync();
-            await ReloadSelectedBasketHistoryAsync(basket);
+            await ReloadSelectedBasketHistoryAsync(basket, cancellationToken);
         });
     }
 
-    private async Task ReloadSelectedBasketHistoryAsync(SyntheticBasket existingBasket)
+    private async Task ReloadSelectedBasketHistoryAsync(SyntheticBasket existingBasket, CancellationToken cancellationToken)
     {
         var resolution = SelectedResolution();
         var selectedComponents = existingBasket.Components.Select(component => component.Instrument).ToList();
-        var history = await LoadSelectedHistoryAsync(selectedComponents, resolution);
+        var history = await LoadSelectedHistoryAsync(selectedComponents, resolution, cancellationToken);
         _operationState.BeginStage("Building selected basket");
         await Task.Yield();
         var rebuilt = SyntheticHistoryService.BuildSelected(
@@ -613,20 +655,21 @@ public partial class CapComTerminalWindow : Window
         }
 
         _basket = RenameBasket(rebuilt, existingBasket.Symbol, existingBasket.Block);
-        await RefreshBasketMarketDetailsAsync(_basket);
+        await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
         _operationState.BeginStage("Rendering synthetic chart");
         await Task.Yield();
         await RenderSyntheticChartAsync(_basket);
         var reloadStatus = $"{_basket.Symbol}: reloaded {resolution} history for the same {_basket.Components.Count} legs, {HistoryRange(history)}.";
         StatusText.Text = reloadStatus;
-        await TryStartStreamingCurrentBasketAsync(reloadStatus);
+        await TryStartStreamingCurrentBasketAsync(reloadStatus, cancellationToken);
     }
 
     private async void Streaming_QuoteReceived(object? sender, QuoteUpdate update)
     {
+        if (_windowLifetime.IsClosing) return;
         await Dispatcher.InvokeAsync(() =>
         {
-            if (_basket is null) return;
+            if (_windowLifetime.IsClosing || _basket is null) return;
             var result = SyntheticTerminalLiveUpdate.Apply(_basket, update);
             if (!result.Matched) return;
             if (result.Tick is not null) _ = SendTerminalTickAsync(result.Tick);
@@ -637,17 +680,21 @@ public partial class CapComTerminalWindow : Window
         });
     }
 
-    private async Task EnsureConnectedAsync()
+    private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (_api.Session is not null) return;
         var saved = _credentialStore.Load();
         if (saved is null) throw new InvalidOperationException("No saved Capital.com keys found.");
-        await _api.LoginAsync(saved);
+        await _api.LoginAsync(saved, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         ConnectionText.Text = "connected";
     }
 
-    private async Task<bool> RunOperationAsync(string operationName, Func<Task> action, int? total = null)
+    private async Task<bool> RunOperationAsync(string operationName, Func<CancellationToken, Task> action, int? total = null)
     {
+        var cancellationToken = _windowLifetime.Token;
+        if (cancellationToken.IsCancellationRequested) return false;
         if (!_operationState.TryBegin(operationName, total))
         {
             StatusText.Text = $"{_operationState.Label} is already running.";
@@ -658,9 +705,14 @@ public partial class CapComTerminalWindow : Window
         await SetTerminalBusyAsync(true, operationName);
         try
         {
-            await action();
+            await action(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             _operationState.Complete();
             return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return false;
         }
         catch (Exception ex)
         {
@@ -673,8 +725,11 @@ public partial class CapComTerminalWindow : Window
         }
         finally
         {
-            await SetTerminalBusyAsync(false);
-            SetOperationControlsEnabled(true);
+            if (!_windowLifetime.IsClosing)
+            {
+                await SetTerminalBusyAsync(false);
+                SetOperationControlsEnabled(true);
+            }
         }
     }
 
@@ -748,9 +803,9 @@ public partial class CapComTerminalWindow : Window
     {
         if (_api.Session is null) return;
         var universe = SelectedUniverse();
-        await RunOperationAsync($"Loading {UniverseLabel(universe).ToLowerInvariant()} universe", async () =>
+        await RunOperationAsync($"Loading {UniverseLabel(universe).ToLowerInvariant()} universe", async cancellationToken =>
         {
-            await LoadUniverseAsync(universe);
+            await LoadUniverseAsync(universe, cancellationToken);
             _basket = null;
             await ClearTerminalChartAsync();
         });
@@ -781,15 +836,18 @@ public partial class CapComTerminalWindow : Window
         return cache;
     }
 
-    private async Task<IReadOnlyList<MarketInstrument>> EnrichEtfMetadataAsync(IReadOnlyList<MarketInstrument> instruments)
+    private async Task<IReadOnlyList<MarketInstrument>> EnrichEtfMetadataAsync(
+        IReadOnlyList<MarketInstrument> instruments,
+        CancellationToken cancellationToken)
     {
-        await EnsureConnectedAsync();
+        await EnsureConnectedAsync(cancellationToken);
 
         var enriched = new List<MarketInstrument>(instruments.Count);
         _operationState.BeginStage("Loading ETF market details", instruments.Count);
         var completed = 0;
         foreach (var instrument in instruments)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!_knownEtfEpics.Contains(instrument.Epic) || !EtfMetadataMerger.NeedsEnrichment(instrument))
             {
                 enriched.Add(instrument);
@@ -800,8 +858,13 @@ public partial class CapComTerminalWindow : Window
 
             try
             {
-                var details = await _api.GetMarketDetailsAsync(instrument.Epic);
+                var details = await _api.GetMarketDetailsAsync(instrument.Epic, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
                 enriched.Add(details is null ? instrument : EtfMetadataMerger.Merge(instrument, details));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch
             {
@@ -895,10 +958,11 @@ public partial class CapComTerminalWindow : Window
             _ => 52,
         };
 
-    private async Task InitializeChartHostAsync()
+    private async Task InitializeChartHostAsync(CancellationToken cancellationToken)
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var terminalPath = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
             if (!File.Exists(terminalPath))
             {
@@ -906,10 +970,13 @@ public partial class CapComTerminalWindow : Window
                 return;
             }
 
-            await TerminalWebView.EnsureCoreWebView2Async();
+            var environment = await WebViewRuntimeProfile.CreateEnvironmentAsync(cancellationToken);
+            await TerminalWebView.EnsureCoreWebView2Async(environment);
+            cancellationToken.ThrowIfCancellationRequested();
             TerminalWebView.CoreWebView2.WebMessageReceived += TerminalWebMessageReceived;
             TerminalWebView.NavigationCompleted += async (_, _) =>
             {
+                if (_windowLifetime.IsClosing) return;
                 _chartReady = true;
                 await InvokeTerminalScriptAsync("window.resizeTerminal && window.resizeTerminal();");
                 if (_pendingPayload is not null)
@@ -983,6 +1050,7 @@ public partial class CapComTerminalWindow : Window
 
     private async Task InvokeTerminalScriptAsync(string script)
     {
+        if (_windowLifetime.IsClosing) return;
         try
         {
             if (_chartReady && TerminalWebView.CoreWebView2 is not null)
@@ -992,7 +1060,7 @@ public partial class CapComTerminalWindow : Window
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"Chart command failed: {ex.Message}";
+            _windowLifetime.TryApply(() => StatusText.Text = $"Chart command failed: {ex.Message}");
         }
     }
 
@@ -1066,6 +1134,7 @@ public partial class CapComTerminalWindow : Window
 
     private void TerminalWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
+        if (_windowLifetime.IsClosing) return;
         try
         {
             using var message = JsonDocument.Parse(e.WebMessageAsJson);
@@ -1112,15 +1181,27 @@ public partial class CapComTerminalWindow : Window
         }
     }
 
-    protected override async void OnClosed(EventArgs e)
+    protected override void OnClosing(CancelEventArgs e)
     {
-        _isClosing = true;
-        if (_streaming is not null)
-        {
-            await _streaming.DisposeAsync();
-        }
+        base.OnClosing(e);
+        if (e.Cancel) return;
+        _windowLifetime.BeginClosing();
+    }
 
-        _api.Dispose();
-        base.OnClosed(e);
+    protected override void OnClosed(EventArgs e)
+    {
+        try
+        {
+            _streaming?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _api.Dispose();
+            _windowLifetime.Dispose();
+            base.OnClosed(e);
+        }
     }
 }

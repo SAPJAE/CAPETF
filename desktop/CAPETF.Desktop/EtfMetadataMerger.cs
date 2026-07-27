@@ -13,8 +13,8 @@ public static class EtfMetadataMerger
             Type = First(cached.Type, details.Type),
             Currency = First(cached.Currency, details.Currency),
             Country = country,
-            Region = FirstMeaningful(cached.Region, details.Region, RegionFromCountry(country)),
-            Sector = FirstMeaningful(cached.Sector, details.Sector, "All"),
+            Region = FirstMeaningful(cached.Region, details.Region, RegionFromCountry(country), "Other"),
+            Sector = FirstMeaningful(cached.Sector, details.Sector, "All", "All"),
             Status = First(details.Status, cached.Status),
             Price = cached.Price ?? details.Price,
             Bid = cached.Bid ?? details.Bid,
@@ -40,10 +40,10 @@ public static class EtfMetadataMerger
     private static string First(string first, string second) =>
         !string.IsNullOrWhiteSpace(first) ? first : second;
 
-    private static string FirstMeaningful(string first, string second, string fallback) =>
-        !string.IsNullOrWhiteSpace(first) && !string.Equals(first, fallback, StringComparison.OrdinalIgnoreCase)
+    private static string FirstMeaningful(string first, string second, string fallback, string placeholder) =>
+        !string.IsNullOrWhiteSpace(first) && !string.Equals(first, placeholder, StringComparison.OrdinalIgnoreCase)
             ? first
-            : !string.IsNullOrWhiteSpace(second)
+            : !string.IsNullOrWhiteSpace(second) && !string.Equals(second, placeholder, StringComparison.OrdinalIgnoreCase)
                 ? second
                 : fallback;
 

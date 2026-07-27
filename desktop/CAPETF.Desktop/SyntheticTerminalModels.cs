@@ -12,6 +12,7 @@ public sealed record TerminalComponentQuote(
     string QuoteStatus);
 
 public sealed record SyntheticTerminalTickPayload(
+    string DrawingIdentity,
     TerminalCandle? Candle,
     decimal? BidPrice,
     decimal? AskPrice,

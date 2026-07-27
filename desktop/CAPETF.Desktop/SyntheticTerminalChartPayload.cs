@@ -49,14 +49,18 @@ public static class SyntheticTerminalChartPayload
                 QuoteStatus(component.Instrument.LastTickAt, observedAt))).ToList());
     }
 
-    private static string DrawingIdentity(SyntheticBasket basket) =>
+    internal static string DrawingIdentity(SyntheticBasket basket) =>
         string.Join("|", new[] { basket.Symbol }.Concat(basket.Components
             .Select(component => component.Instrument.Epic)
             .Where(epic => !string.IsNullOrWhiteSpace(epic))
             .OrderBy(epic => epic, StringComparer.OrdinalIgnoreCase)));
 
-    internal static string QuoteStatus(DateTimeOffset? quoteTimestamp, DateTimeOffset now) =>
-        quoteTimestamp is not null && now - quoteTimestamp.Value <= FreshQuoteAge ? "fresh" : "stale";
+    internal static string QuoteStatus(DateTimeOffset? quoteTimestamp, DateTimeOffset now)
+    {
+        if (quoteTimestamp is null) return "stale";
+        var age = now.ToUniversalTime() - quoteTimestamp.Value.ToUniversalTime();
+        return age >= TimeSpan.Zero && age <= FreshQuoteAge ? "fresh" : "stale";
+    }
 
     private static IReadOnlyList<TerminalLinePoint> MovingAverage(IReadOnlyList<OhlcPoint> source, int period)
     {
