@@ -573,7 +573,7 @@
     <main id="workspace" class="ticket-hidden">
       <section id="chart-panel">
         <div id="chart-surface">
-          <nav id="drawing-tool-rail" aria-label="Drawing tools">
+          <nav id="drawing-tool-rail" aria-label="Drawing tools" data-drawing-ui>
             <button type="button" class="icon-button chart-tool active" data-tool="cursor" title="Cursor / select" aria-label="Cursor / select" aria-pressed="true"><i data-lucide="mouse-pointer-2"></i></button>
             <button type="button" class="icon-button chart-tool" data-tool="trend" title="Trend line" aria-label="Trend line" aria-pressed="false"><i data-lucide="trending-up"></i></button>
             <button type="button" class="icon-button chart-tool" data-tool="ray" title="Ray" aria-label="Ray" aria-pressed="false"><i data-lucide="move-right"></i></button>
@@ -592,11 +592,11 @@
             </div>
           </nav>
           <div id="chart-root">
-            <div id="drawing-history-bar" aria-label="Drawing history">
+            <div id="drawing-history-bar" aria-label="Drawing history" data-drawing-ui>
               <button type="button" class="icon-button" id="undo-drawing" title="Undo drawing change" aria-label="Undo drawing change" disabled><i data-lucide="undo-2"></i></button>
               <button type="button" class="icon-button" id="redo-drawing" title="Redo drawing change" aria-label="Redo drawing change" disabled><i data-lucide="redo-2"></i></button>
             </div>
-            <div id="drawing-style-bar" class="hidden" aria-label="Selected drawing style">
+            <div id="drawing-style-bar" class="hidden" aria-label="Selected drawing style" data-drawing-ui>
               <label class="sr-only" for="drawing-color">Drawing color</label>
               <input id="drawing-color" type="color" value="#38bdf8" title="Drawing color">
               <label class="sr-only" for="drawing-width">Line width</label>
@@ -612,7 +612,7 @@
                 <button type="button" data-line-style="dotted" title="Dotted line" aria-label="Dotted line" aria-pressed="false"><span class="line-sample"></span></button>
               </div>
             </div>
-            <div id="text-annotation-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="text-annotation-title">
+            <div id="text-annotation-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="text-annotation-title" data-drawing-ui>
               <form id="text-annotation-form">
                 <label class="sr-only" id="text-annotation-title" for="text-annotation-input">Annotation text</label>
                 <input id="text-annotation-input" type="text" maxlength="500" autocomplete="off" placeholder="Annotation text">
@@ -677,6 +677,7 @@
     const modeButtons = Array.from(document.querySelectorAll('.mode'));
     const maButtons = Array.from(document.querySelectorAll('.ma'));
     const toolButtons = Array.from(document.querySelectorAll('.chart-tool'));
+    const textToolButton = toolButtons.find(button => button.dataset.tool === 'text');
     const lineStyleButtons = Array.from(document.querySelectorAll('[data-line-style]'));
     const undoDrawingButton = document.getElementById('undo-drawing');
     const redoDrawingButton = document.getElementById('redo-drawing');
@@ -689,6 +690,7 @@
     const textAnnotationOverlay = document.getElementById('text-annotation-overlay');
     const textAnnotationForm = document.getElementById('text-annotation-form');
     const textAnnotationInput = document.getElementById('text-annotation-input');
+    const cancelTextAnnotationButton = document.getElementById('cancel-text-annotation');
 
     let chart = null;
     let candleSeries = null;
@@ -1175,21 +1177,8 @@
 
     function restoreDrawingsForIdentity(identity) {
       if (!drawingManager) return;
-      drawingIdentity = identity || '';
-      const records = CapComDrawings.loadStoredRecords(localStorage, drawingIdentity);
-      drawingManager.setRecords(records);
-    }
-
-    function closeTextAnnotation() {
-      textAnnotationOverlay.classList.add('hidden');
-      textAnnotationInput.value = '';
-      if (drawingManager) drawingManager.cancel();
-    }
-
-    function openTextAnnotation() {
-      textAnnotationOverlay.classList.remove('hidden');
-      textAnnotationInput.value = '';
-      textAnnotationInput.focus();
+      drawingIdentity = CapComDrawings.switchDrawingIdentity(
+        drawingManager, localStorage, drawingIdentity, identity);
     }
 
     function renderChart(fitContent) {
@@ -1359,7 +1348,10 @@
         : 'cursor';
       if (normalized === 'text') {
         drawingManager.cancel();
-        openTextAnnotation();
+        const focused = document.activeElement && document.activeElement !== document.body
+          ? document.activeElement
+          : textToolButton;
+        textDialogController.open(focused);
         return true;
       }
       return drawingManager.setTool(normalized);
@@ -1408,6 +1400,19 @@
       document.getElementById('order-preview').textContent = [summary, ...rows].join(' | ');
     };
 
+    const textDialogController = CapComDrawings.createTextDialogController({
+      overlay: textAnnotationOverlay,
+      form: textAnnotationForm,
+      input: textAnnotationInput,
+      cancelButton: cancelTextAnnotationButton,
+      onSubmit(text) {
+        if (drawingManager) drawingManager.setTool('text', text);
+      },
+      onCancel() {
+        if (drawingManager) drawingManager.cancel();
+      }
+    });
+
     intervalButtons.forEach(button => button.addEventListener('click', () => window.setTerminalInterval(button.dataset.interval)));
     modeButtons.forEach(button => button.addEventListener('click', () => window.setTerminalChartMode(button.dataset.mode)));
     maButtons.forEach(button => button.addEventListener('click', () => window.toggleTerminalMa(button.dataset.ma, !maVisibility[button.dataset.ma])));
@@ -1424,21 +1429,6 @@
     }));
     drawingWidthSelect.addEventListener('change', () => applySelectedStyle({ lineWidth: Number(drawingWidthSelect.value) }));
     lineStyleButtons.forEach(button => button.addEventListener('click', () => applySelectedStyle({ lineStyle: button.dataset.lineStyle })));
-    textAnnotationForm.addEventListener('submit', event => {
-      event.preventDefault();
-      const text = CapComDrawings.normalizeAnnotationText(textAnnotationInput.value);
-      if (!text || !drawingManager) return;
-      textAnnotationOverlay.classList.add('hidden');
-      textAnnotationInput.value = '';
-      drawingManager.setTool('text', text);
-    });
-    document.getElementById('cancel-text-annotation').addEventListener('click', closeTextAnnotation);
-    textAnnotationOverlay.addEventListener('keydown', event => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        closeTextAnnotation();
-      }
-    });
     document.getElementById('fit-chart').addEventListener('click', window.fitTerminalChart);
     document.getElementById('components-toggle').addEventListener('click', window.toggleTerminalComponents);
     document.getElementById('buy-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('buy', document.getElementById('quantity').value));

@@ -9,6 +9,7 @@
   const MAX_TEXT_LENGTH = 500;
   const HIT_DISTANCE = 8;
   const STORAGE_PREFIX = 'capcom-terminal-drawings:';
+  const INTERACTIVE_TAGS = new Set(['A', 'BUTTON', 'INPUT', 'LABEL', 'OPTION', 'SELECT', 'TEXTAREA']);
   const DEFAULT_STYLE = Object.freeze({
     color: '#38bdf8',
     fillColor: 'rgba(56, 189, 248, 0.12)',
@@ -253,6 +254,117 @@
     if (typeof value !== 'string') return null;
     const text = value.trim().slice(0, MAX_TEXT_LENGTH);
     return text || null;
+  }
+
+  function switchDrawingIdentity(manager, storage, currentIdentity, nextIdentity) {
+    const current = typeof currentIdentity === 'string' ? currentIdentity : '';
+    const next = typeof nextIdentity === 'string' ? nextIdentity : '';
+    if (!manager || current === next) return current;
+    manager.cancel();
+    manager.setRecords(loadStoredRecords(storage, next), { emit: false });
+    return next;
+  }
+
+  function createTextDialogController(options) {
+    const overlay = options && options.overlay;
+    const form = options && options.form;
+    const input = options && options.input;
+    const cancelButton = options && options.cancelButton;
+    if (!overlay || !form || !input || !cancelButton) {
+      throw new Error('createTextDialogController requires overlay, form, input, and cancelButton');
+    }
+
+    let returnFocus = null;
+    const ownerDocument = overlay.ownerDocument || global.document;
+
+    function focusableElements() {
+      if (typeof overlay.querySelectorAll !== 'function') return [input, cancelButton];
+      return Array.from(overlay.querySelectorAll(
+        'button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])'))
+        .filter(element => !element.disabled &&
+          !(typeof element.hasAttribute === 'function' && element.hasAttribute('hidden')));
+    }
+
+    function restoreFocus() {
+      const target = returnFocus;
+      returnFocus = null;
+      if (target && typeof target.focus === 'function') target.focus();
+    }
+
+    function hide(cancelled) {
+      overlay.classList.add('hidden');
+      input.value = '';
+      try {
+        if (cancelled && typeof options.onCancel === 'function') options.onCancel();
+      } finally {
+        restoreFocus();
+      }
+    }
+
+    function onSubmit(event) {
+      event.preventDefault && event.preventDefault();
+      const text = normalizeAnnotationText(input.value);
+      if (!text) return;
+      overlay.classList.add('hidden');
+      input.value = '';
+      try {
+        if (typeof options.onSubmit === 'function') options.onSubmit(text);
+      } finally {
+        restoreFocus();
+      }
+    }
+
+    function onCancel(event) {
+      event && event.preventDefault && event.preventDefault();
+      hide(true);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault && event.preventDefault();
+        event.stopPropagation && event.stopPropagation();
+        hide(true);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = focusableElements();
+      if (focusable.length === 0) {
+        event.preventDefault && event.preventDefault();
+        return;
+      }
+      const active = ownerDocument && ownerDocument.activeElement;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const outside = !active || typeof overlay.contains !== 'function' || !overlay.contains(active);
+      if (event.shiftKey && (active === first || outside)) {
+        event.preventDefault && event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || outside)) {
+        event.preventDefault && event.preventDefault();
+        first.focus();
+      }
+    }
+
+    form.addEventListener('submit', onSubmit);
+    cancelButton.addEventListener('click', onCancel);
+    overlay.addEventListener('keydown', onKeyDown);
+
+    return Object.freeze({
+      open(focusTarget) {
+        returnFocus = focusTarget || (ownerDocument && ownerDocument.activeElement) || null;
+        overlay.classList.remove('hidden');
+        input.value = '';
+        input.focus();
+      },
+      close() {
+        hide(true);
+      },
+      dispose() {
+        form.removeEventListener('submit', onSubmit);
+        cancelButton.removeEventListener('click', onCancel);
+        overlay.removeEventListener('keydown', onKeyDown);
+      }
+    });
   }
 
   function uniqueId() {
@@ -819,8 +931,39 @@
       primitive.invalidate();
     }
 
+    function isInteractiveTarget(target) {
+      for (let current = target; current; current = current.parentElement || current.parentNode) {
+        const tagName = typeof current.tagName === 'string' ? current.tagName.toUpperCase() : '';
+        if (INTERACTIVE_TAGS.has(tagName) || current.isContentEditable === true) return true;
+        if (typeof current.hasAttribute === 'function' &&
+            (current.hasAttribute('data-drawing-ui') || current.hasAttribute('data-drawing-interactive'))) {
+          return true;
+        }
+        if (current === state.container) break;
+      }
+      return false;
+    }
+
+    function releasePointer(event) {
+      if (state.container.releasePointerCapture && event.pointerId !== undefined) {
+        try { state.container.releasePointerCapture(event.pointerId); } catch (_) {}
+      }
+    }
+
+    function cancelPointerGesture(event, suppressClick) {
+      state.brushDraft = null;
+      if (state.drag) replaceRecords(state.drag.before, false);
+      state.drag = null;
+      state.hoverPoint = null;
+      state.suppressClick = suppressClick;
+      releasePointer(event);
+      status('Drawing cancelled');
+      primitive.invalidate();
+    }
+
     function onPointerDown(event) {
-      if (state.disposed || event.button !== undefined && event.button !== 0) return;
+      if (state.disposed || isInteractiveTarget(event.target) ||
+          event.button !== undefined && event.button !== 0) return;
       const coordinate = eventCoordinate(event);
       if (state.tool === 'brush') {
         const point = dataPoint(coordinate);
@@ -848,7 +991,7 @@
     }
 
     function onPointerMove(event) {
-      if (state.disposed) return;
+      if (state.disposed || isInteractiveTarget(event.target)) return;
       const coordinate = eventCoordinate(event);
       state.hoverPoint = dataPoint(coordinate);
       if (state.brushDraft && state.hoverPoint) {
@@ -863,6 +1006,11 @@
     }
 
     function onPointerUp(event) {
+      if (state.disposed) return;
+      if (isInteractiveTarget(event.target)) {
+        if (state.brushDraft || state.drag) cancelPointerGesture(event, false);
+        return;
+      }
       if (state.brushDraft) {
         const points = state.brushDraft;
         state.brushDraft = null;
@@ -878,23 +1026,13 @@
           state.suppressClick = true;
         }
       }
-      if (state.container.releasePointerCapture && event.pointerId !== undefined) {
-        try { state.container.releasePointerCapture(event.pointerId); } catch (_) {}
-      }
+      releasePointer(event);
       primitive.invalidate();
     }
 
     function onPointerCancel(event) {
-      state.brushDraft = null;
-      if (state.drag) replaceRecords(state.drag.before, false);
-      state.drag = null;
-      state.hoverPoint = null;
-      state.suppressClick = true;
-      if (state.container.releasePointerCapture && event.pointerId !== undefined) {
-        try { state.container.releasePointerCapture(event.pointerId); } catch (_) {}
-      }
-      status('Drawing cancelled');
-      primitive.invalidate();
+      if (state.disposed) return;
+      if (state.brushDraft || state.drag) cancelPointerGesture(event, true);
     }
 
     function requestedText(point) {
@@ -906,6 +1044,10 @@
     }
 
     function onClick(event) {
+      if (isInteractiveTarget(event.target)) {
+        state.suppressClick = false;
+        return;
+      }
       if (state.disposed || state.tool === 'cursor' || state.tool === 'brush') {
         state.suppressClick = false;
         return;
@@ -942,6 +1084,7 @@
       if (state.drag) replaceRecords(state.drag.before, false);
       state.drag = null;
       state.tool = 'cursor';
+      state.text = '';
       state.suppressClick = false;
       status('Drawing cancelled');
       notifyState();
@@ -995,10 +1138,10 @@
         return true;
       },
 
-      setRecords(records) {
+      setRecords(records, configuration) {
         state.undoStack = [];
         state.redoStack = [];
-        replaceRecords(records, true);
+        replaceRecords(records, !configuration || configuration.emit !== false);
         select(null);
         return outputRecords();
       },
@@ -1018,7 +1161,8 @@
           state.pricePrecision = Math.max(0, Math.min(10, next.pricePrecision));
         }
         state.records = enrichMeasurements(state.records);
-        notifyRecords();
+        notifyState();
+        primitive.invalidate();
         return outputRecords();
       },
 
@@ -1150,6 +1294,8 @@
     persistStoredRecords,
     confirmClear,
     normalizeAnnotationText,
+    switchDrawingIdentity,
+    createTextDialogController,
     createManager
   });
 })(window);

@@ -93,15 +93,14 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlShowsBidAndAskWithoutLastPrice();
         SyntheticTerminalHtmlUsesPackagedChartLibrary();
         SyntheticTerminalHtmlRejectsKLineChartRuntime();
+        SyntheticDrawingsRuntimeExercisesReviewRegressions();
         SyntheticDrawingWorkspaceRuntimeCoordinatesManagerStateAndPersistence();
         SyntheticTerminalHtmlUsesV3LightweightChartsTerminal();
         SyntheticTerminalHtmlUsesV5SeriesApiAndChartSideTools();
         SyntheticDrawingsAssetPublishesWithProjectContentEntry();
         SyntheticDrawingsRuntimeValidatesRecordsMeasurementAndHistory();
-        SyntheticDrawingsRuntimeExercisesReviewRegressions();
         SyntheticTerminalHtmlExposesResizableRailAndPersistentDrawingTools();
         SyntheticTerminalHtmlDisablesNativeLastCloseDecorations();
-        SyntheticTerminalHtmlResetsTransientDrawingStateBeforeRestore();
         SyntheticTerminalHtmlCoalescesIncrementalTicksAndUsesStableDrawingIdentity();
         CapComTerminalUsesTask6PayloadBridge();
         SyntheticTerminalHtmlExposesResizeFunction();
@@ -2640,7 +2639,13 @@ public static class SyntheticBasketBuilderTests
                   value.detached();
                 },
               };
-              const manager = api.createManager({ chart, series, container, orderedTimes: [100, 200, 300] });
+              const manager = api.createManager({
+                chart,
+                series,
+                container,
+                orderedTimes: [100, 200, 300],
+                ...(options.managerOptions || {}),
+              });
               return {
                 container,
                 manager,
@@ -2671,6 +2676,53 @@ public static class SyntheticBasketBuilderTests
 
             function dispatchWindow(name, event) {
               for (const handler of [...(windowHandlers.get(name) || [])]) handler(event);
+            }
+
+            function target(tagName, parentElement = null, attributes = []) {
+              return {
+                tagName,
+                parentElement,
+                isContentEditable: false,
+                hasAttribute(name) { return attributes.includes(name); },
+              };
+            }
+
+            function fakeElement(tagName, ownerDocument) {
+              const listeners = new Map();
+              const classes = new Set(['hidden']);
+              return {
+                tagName,
+                ownerDocument,
+                parentElement: null,
+                value: '',
+                disabled: false,
+                listeners,
+                classList: {
+                  add(name) { classes.add(name); },
+                  remove(name) { classes.delete(name); },
+                  contains(name) { return classes.has(name); },
+                },
+                addEventListener(name, handler) { listeners.set(name, handler); },
+                removeEventListener(name, handler) {
+                  if (listeners.get(name) === handler) listeners.delete(name);
+                },
+                dispatch(name, event = {}) {
+                  listeners.get(name)?.({
+                    target: this,
+                    preventDefault() {},
+                    stopPropagation() {},
+                    ...event,
+                  });
+                },
+                focus() { ownerDocument.activeElement = this; },
+                contains(node) {
+                  for (let current = node; current; current = current.parentElement) {
+                    if (current === this) return true;
+                  }
+                  return false;
+                },
+                querySelectorAll() { return this.focusables || []; },
+              };
             }
 
             function render(environment, horizontalPixelRatio, verticalPixelRatio) {
@@ -2851,6 +2903,122 @@ public static class SyntheticBasketBuilderTests
               assert.equal(chartEvent.defaultPrevented, true);
             }));
 
+            test('cancels pending anchors when the drawing identity changes', () => withEnvironment(environment => {
+              const values = new Map([
+                ['capcom-terminal-drawings:basket-b', JSON.stringify([{ ...trend, id: 'basket-b-trend' }])],
+              ]);
+              const storage = { getItem(key) { return values.get(key) ?? null; } };
+              environment.manager.setTool('trend');
+              dispatchContainer(environment, 'click', pointer(100, 100));
+
+              const identity = api.switchDrawingIdentity(
+                environment.manager, storage, 'basket-a', 'basket-b');
+
+              assert.equal(identity, 'basket-b');
+              assert.equal(environment.manager.getState().tool, 'cursor');
+              assert.deepEqual(environment.manager.getRecords().map(record => record.id), ['basket-b-trend']);
+              dispatchContainer(environment, 'click', pointer(300, 110));
+              assert.deepEqual(environment.manager.getRecords().map(record => record.id), ['basket-b-trend'],
+                'basket A anchor must not complete inside basket B');
+            }));
+
+            test('excludes nested chart controls from drawing pointer and click input', () => withEnvironment(environment => {
+              const button = target('BUTTON', environment.container);
+              const buttonIcon = target('svg', button);
+              const styleBar = target('DIV', environment.container, ['data-drawing-ui']);
+              const colorInput = target('INPUT', styleBar);
+
+              environment.manager.setTool('hline');
+              dispatchContainer(environment, 'click', pointer(150, 150, { target: buttonIcon }));
+              dispatchContainer(environment, 'click', pointer(160, 160, { target: colorInput }));
+              assert.deepEqual(environment.manager.getRecords(), [], 'nested button/input clicks must not place drawings');
+
+              environment.manager.setTool('brush');
+              dispatchContainer(environment, 'pointerdown', pointer(90, 90, { target: buttonIcon }));
+              dispatchContainer(environment, 'pointermove', pointer(110, 110, { target: buttonIcon }));
+              dispatchContainer(environment, 'pointerup', pointer(110, 110, { target: buttonIcon }));
+              assert.deepEqual(environment.manager.getRecords(), [], 'nested button pointer events must not start a draft');
+
+              dispatchContainer(environment, 'pointerdown', pointer(100, 100));
+              dispatchContainer(environment, 'pointermove', pointer(130, 130, { target: colorInput }));
+              dispatchContainer(environment, 'pointerup', pointer(130, 130, { target: colorInput }));
+              dispatchContainer(environment, 'click', pointer(130, 130, { target: colorInput }));
+              assert.deepEqual(environment.manager.getRecords(), [], 'releasing over a nested input must cancel the draft');
+
+              dispatchContainer(environment, 'pointerdown', pointer(100, 100));
+              dispatchContainer(environment, 'pointermove', pointer(130, 130));
+              dispatchContainer(environment, 'pointercancel', pointer(130, 130, { target: buttonIcon }));
+              assert.deepEqual(environment.manager.getRecords(), [], 'nested control cancellation must discard the draft');
+            }));
+
+            test('context-only updates never publish unchanged records', () => {
+              const changedRecords = [];
+              const environment = makeEnvironment({
+                managerOptions: { onRecordsChanged(records) { changedRecords.push(records); } },
+              });
+              try {
+                environment.manager.setRecords([{ ...trend, id: 'measure-review', type: 'measure' }]);
+                changedRecords.length = 0;
+                environment.manager.updateContext({ orderedTimes: [100, 200, 300] });
+                environment.manager.updateContext({ orderedTimes: [100, 150, 200, 300], pricePrecision: 5 });
+                assert.equal(environment.manager.getRecords()[0].bars, 4);
+                assert.equal(changedRecords.length, 0, 'live context frames must not trigger persistence callbacks');
+              } finally {
+                environment.manager.dispose();
+              }
+            });
+
+            test('text dialog traps Tab and restores focus for every close path', () => {
+              const ownerDocument = { activeElement: null };
+              const trigger = fakeElement('BUTTON', ownerDocument);
+              const overlay = fakeElement('DIV', ownerDocument);
+              const form = fakeElement('FORM', ownerDocument);
+              const input = fakeElement('INPUT', ownerDocument);
+              const submit = fakeElement('BUTTON', ownerDocument);
+              const cancel = fakeElement('BUTTON', ownerDocument);
+              form.parentElement = overlay;
+              input.parentElement = form;
+              submit.parentElement = form;
+              cancel.parentElement = form;
+              overlay.focusables = [input, submit, cancel];
+              let submitted = null;
+              let cancelled = 0;
+              const dialog = api.createTextDialogController({
+                overlay,
+                form,
+                input,
+                cancelButton: cancel,
+                onSubmit(text) { submitted = text; },
+                onCancel() { cancelled += 1; },
+              });
+
+              dialog.open(trigger);
+              assert.equal(ownerDocument.activeElement, input);
+              ownerDocument.activeElement = cancel;
+              let tabPrevented = false;
+              overlay.dispatch('keydown', { key: 'Tab', preventDefault() { tabPrevented = true; } });
+              assert.equal(ownerDocument.activeElement, input);
+              assert.equal(tabPrevented, true);
+              ownerDocument.activeElement = input;
+              overlay.dispatch('keydown', { key: 'Tab', shiftKey: true, preventDefault() {} });
+              assert.equal(ownerDocument.activeElement, cancel);
+              input.value = '  Desk note  ';
+              form.dispatch('submit');
+              assert.equal(submitted, 'Desk note');
+              assert.equal(ownerDocument.activeElement, trigger, 'submit must restore tool focus');
+
+              dialog.open(trigger);
+              cancel.dispatch('click');
+              assert.equal(cancelled, 1);
+              assert.equal(ownerDocument.activeElement, trigger, 'cancel button must restore tool focus');
+
+              dialog.open(trigger);
+              overlay.dispatch('keydown', { key: 'Escape' });
+              assert.equal(cancelled, 2);
+              assert.equal(ownerDocument.activeElement, trigger, 'Escape must restore tool focus');
+              dialog.dispose();
+            });
+
             test('removes listeners if primitive attachment throws', () => {
               const container = makeContainer();
               const chart = { timeScale() { return {}; } };
@@ -2880,7 +3048,8 @@ public static class SyntheticBasketBuilderTests
 
             const api = window.CapComDrawings;
             for (const name of ['formatMeasurement', 'drawingStorageKey', 'loadStoredRecords',
-              'persistStoredRecords', 'confirmClear', 'normalizeAnnotationText']) {
+              'persistStoredRecords', 'confirmClear', 'normalizeAnnotationText', 'switchDrawingIdentity',
+              'createTextDialogController']) {
               assert.equal(typeof api[name], 'function', `missing workspace helper ${name}`);
             }
 
@@ -2952,9 +3121,11 @@ public static class SyntheticBasketBuilderTests
             manager.setRecords([measure, { type: 'bad' }]);
             assert.equal(manager.getState().recordCount, 1);
             assert.equal(manager.getRecords()[0].bars, 2);
+            changedRecords.length = 0;
             manager.updateContext({ orderedTimes: [100, 200, 300] });
+            manager.updateContext({ orderedTimes: [100, 200, 300], pricePrecision: 5 });
             assert.equal(manager.getRecords()[0].bars, 3, 'candle context refresh must update measurements');
-            assert.ok(changedRecords.length >= 2, 'context refresh must publish JSON-safe records');
+            assert.equal(changedRecords.length, 0, 'context refresh must never publish unchanged records');
             const fills = [];
             const context = {
               save() {}, restore() {}, setLineDash() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
@@ -3645,7 +3816,9 @@ public static class SyntheticBasketBuilderTests
             "maxlength=\"500\"",
             "window.confirm('Clear all drawings?')",
             "CapComDrawings.createManager",
-            "drawingManager.setRecords",
+            "CapComDrawings.switchDrawingIdentity",
+            "CapComDrawings.createTextDialogController",
+            "data-drawing-ui",
             "drawingManager.getRecords",
             "drawingManager.setTool",
             "drawingManager.undo",
@@ -3735,25 +3908,6 @@ public static class SyntheticBasketBuilderTests
             {
                 throw new Exception($"candlestick series must not enable native last-close decoration: {forbidden}");
             }
-        }
-    }
-
-    private static void SyntheticTerminalHtmlResetsTransientDrawingStateBeforeRestore()
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-terminal.html");
-        if (!File.Exists(path)) throw new Exception("terminal chart HTML must be copied to output");
-        var html = File.ReadAllText(path);
-        var restoreStart = html.IndexOf("function restoreDrawingsForIdentity", StringComparison.Ordinal);
-        var restoreEnd = html.IndexOf("function renderChart", restoreStart, StringComparison.Ordinal);
-        if (restoreStart < 0 || restoreEnd < restoreStart) throw new Exception("terminal chart HTML must retain a focused manager restore helper");
-        var restore = html[restoreStart..restoreEnd];
-        var identitySet = restore.IndexOf("drawingIdentity = identity || '';", StringComparison.Ordinal);
-        var sanitizeLoad = restore.IndexOf("CapComDrawings.loadStoredRecords", StringComparison.Ordinal);
-        var recordSet = restore.IndexOf("drawingManager.setRecords", StringComparison.Ordinal);
-
-        if (identitySet < 0 || sanitizeLoad < identitySet || recordSet < sanitizeLoad)
-        {
-            throw new Exception("drawing identity restore must set identity, sanitize stored records, then update the manager");
         }
     }
 
