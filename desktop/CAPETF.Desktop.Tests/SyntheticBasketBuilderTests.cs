@@ -130,6 +130,7 @@ public static class SyntheticBasketBuilderTests
         CapComTerminalShowsActionableConnectionFailures();
         CapitalApiClientAllowsReconnectAfterRequests();
         CapitalApiClientParsesMarketDetailsSnapshotAndDealingRules();
+        CapitalApiClientDoesNotTreatLocalSnapshotTimeAsUtc();
         MarketSnapshotRejectsOlderSourceTimeAndClearsMissingSides();
         CapitalStreamingTimestampParserRequiresSourceTime();
         CapitalStreamingClientRejectsClosedSocketsAndWindowRecreates();
@@ -3955,6 +3956,32 @@ public static class SyntheticBasketBuilderTests
         AssertEqual("US", details.Region, "market details should parse region");
         AssertEqual("Technology", details.Sector, "market details should parse sector");
         AssertEqual(DateTimeOffset.Parse("2026-07-27T13:45:12.345Z"), details.LastTickAt, "market details must retain the Capital.com source snapshot timestamp");
+    }
+
+    private static void CapitalApiClientDoesNotTreatLocalSnapshotTimeAsUtc()
+    {
+        const string json =
+            """
+            {
+              "instrument": { "epic": "AMD", "name": "Advanced Micro Devices" },
+              "snapshot": {
+                "marketStatus": "TRADEABLE",
+                "updateTime": "2026-07-27T20:52:11.279",
+                "bid": 484.16,
+                "offer": 484.76
+              }
+            }
+            """;
+
+        var details = CapitalApiClient.ParseMarketDetails(json);
+
+        if (details is null) throw new Exception("market details should preserve a snapshot with account-local time");
+        AssertNear(484.16m, details.Bid ?? 0m, "account-local snapshots should still supply bid");
+        AssertNear(484.76m, details.Offer ?? 0m, "account-local snapshots should still supply ask");
+        if (details.LastTickAt is not null)
+        {
+            throw new Exception("offset-less updateTime must not be treated as UTC and block newer WebSocket ticks");
+        }
     }
 
     private static void MarketSnapshotRejectsOlderSourceTimeAndClearsMissingSides()

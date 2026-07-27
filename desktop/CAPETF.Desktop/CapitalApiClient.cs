@@ -285,7 +285,8 @@ public sealed class CapitalApiClient : IDisposable
 
     private static DateTimeOffset? ParseSnapshotTimestamp(JsonElement snapshot)
     {
-        var source = ReadString(snapshot, "updateTimeUTC") ?? ReadString(snapshot, "updateTime");
+        var source = ReadString(snapshot, "updateTimeUTC");
+        if (string.IsNullOrWhiteSpace(source)) return null;
         return DateTimeOffset.TryParse(
             source,
             CultureInfo.InvariantCulture,
