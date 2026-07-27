@@ -50,7 +50,11 @@
       const day = Number(time.day);
       if (Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day) &&
           year >= 1 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-        return Date.UTC(year, month - 1, day);
+        const date = new Date(0);
+        date.setUTCFullYear(year, month - 1, day);
+        if (date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day) {
+          return date.getTime();
+        }
       }
     }
     return null;
@@ -116,8 +120,8 @@
       if (result.time === null) return null;
     } else if (record.type === 'brush') {
       if (!Array.isArray(record.points)) return null;
-      result.points = record.points.map(sanitizePoint).filter(Boolean);
-      if (result.points.length < 2 || result.points.length > 5000) return null;
+      result.points = record.points.map(sanitizePoint);
+      if (result.points.length < 2 || result.points.length > 5000 || result.points.some(point => !point)) return null;
     } else if (record.type === 'text') {
       result.point = sanitizePoint(record.point);
       if (!result.point || typeof record.text !== 'string' || !record.text.trim()) return null;
@@ -300,6 +304,8 @@
         context.setLineDash(lineDash(style, horizontalRatio));
       };
       const segment = (start, end) => {
+        const pixelRatio = Math.abs(end.x - start.x) < 0.0001 ? horizontalRatio : verticalRatio;
+        context.lineWidth = Math.max(1, style.lineWidth * pixelRatio);
         context.beginPath();
         context.moveTo(x(start.x), y(start.y));
         context.lineTo(x(end.x), y(end.y));
@@ -337,6 +343,8 @@
             const endX = deltaX > 0 ? width : 0;
             const endY = first.y + (second.y - first.y) * ((endX - first.x) / deltaX);
             segment(first, { x: endX, y: endY });
+          } else if (second.y !== first.y) {
+            segment(first, { x: first.x, y: second.y > first.y ? height : 0 });
           }
         } else if (record.type === 'rectangle' || record.type === 'measure') {
           const left = Math.min(first.x, second.x);
@@ -636,9 +644,13 @@
             }
           } else {
             let end = second;
-            if (record.type === 'ray' && second.x !== first.x) {
-              const endX = second.x > first.x ? bounds.width : 0;
-              end = { x: endX, y: first.y + (second.y - first.y) * ((endX - first.x) / (second.x - first.x)) };
+            if (record.type === 'ray') {
+              if (second.x !== first.x) {
+                const endX = second.x > first.x ? bounds.width : 0;
+                end = { x: endX, y: first.y + (second.y - first.y) * ((endX - first.x) / (second.x - first.x)) };
+              } else if (second.y !== first.y) {
+                end = { x: first.x, y: second.y > first.y ? bounds.height : 0 };
+              }
             }
             if (distanceToSegment(coordinate, first, end) <= HIT_DISTANCE) return { record, anchor: null };
           }
@@ -766,6 +778,19 @@
       primitive.invalidate();
     }
 
+    function onPointerCancel(event) {
+      state.brushDraft = null;
+      if (state.drag) replaceRecords(state.drag.before, false);
+      state.drag = null;
+      state.hoverPoint = null;
+      state.suppressClick = true;
+      if (state.container.releasePointerCapture && event.pointerId !== undefined) {
+        try { state.container.releasePointerCapture(event.pointerId); } catch (_) {}
+      }
+      status('Drawing cancelled');
+      primitive.invalidate();
+    }
+
     function requestedText(point) {
       let text = state.text;
       if (!text && typeof options.requestText === 'function') {
@@ -816,11 +841,37 @@
       primitive.invalidate();
     }
 
+    function isEditableTarget(target) {
+      if (!target) return false;
+      const tagName = typeof target.tagName === 'string' ? target.tagName.toUpperCase() : '';
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName) || target.isContentEditable === true) return true;
+      return typeof target.closest === 'function' &&
+        target.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]') !== null;
+    }
+
     function onKeyDown(event) {
       if (event.key === 'Escape') cancel();
-      if ((event.key === 'Delete' || event.key === 'Backspace') && state.selectedId) {
+      if ((event.key === 'Delete' || event.key === 'Backspace') && state.selectedId && !isEditableTarget(event.target)) {
         if (manager.deleteSelected()) event.preventDefault && event.preventDefault();
       }
+    }
+
+    function addInputListeners() {
+      state.container.addEventListener('pointerdown', onPointerDown);
+      state.container.addEventListener('pointermove', onPointerMove);
+      state.container.addEventListener('pointerup', onPointerUp);
+      state.container.addEventListener('pointercancel', onPointerCancel);
+      state.container.addEventListener('click', onClick);
+      if (global.addEventListener) global.addEventListener('keydown', onKeyDown);
+    }
+
+    function removeInputListeners() {
+      state.container.removeEventListener('pointerdown', onPointerDown);
+      state.container.removeEventListener('pointermove', onPointerMove);
+      state.container.removeEventListener('pointerup', onPointerUp);
+      state.container.removeEventListener('pointercancel', onPointerCancel);
+      state.container.removeEventListener('click', onClick);
+      if (global.removeEventListener) global.removeEventListener('keydown', onKeyDown);
     }
 
     const manager = {
@@ -932,12 +983,7 @@
       dispose() {
         if (state.disposed) return;
         state.disposed = true;
-        state.container.removeEventListener('pointerdown', onPointerDown);
-        state.container.removeEventListener('pointermove', onPointerMove);
-        state.container.removeEventListener('pointerup', onPointerUp);
-        state.container.removeEventListener('pointercancel', onPointerUp);
-        state.container.removeEventListener('click', onClick);
-        if (global.removeEventListener) global.removeEventListener('keydown', onKeyDown);
+        removeInputListeners();
         if (typeof state.series.detachPrimitive === 'function') state.series.detachPrimitive(primitive);
         primitive.detached();
         state.records = [];
@@ -946,13 +992,16 @@
       }
     };
 
-    state.container.addEventListener('pointerdown', onPointerDown);
-    state.container.addEventListener('pointermove', onPointerMove);
-    state.container.addEventListener('pointerup', onPointerUp);
-    state.container.addEventListener('pointercancel', onPointerUp);
-    state.container.addEventListener('click', onClick);
-    if (global.addEventListener) global.addEventListener('keydown', onKeyDown);
     state.series.attachPrimitive(primitive);
+    try {
+      addInputListeners();
+    } catch (error) {
+      removeInputListeners();
+      if (typeof state.series.detachPrimitive === 'function') state.series.detachPrimitive(primitive);
+      primitive.detached();
+      state.disposed = true;
+      throw error;
+    }
 
     return manager;
   }

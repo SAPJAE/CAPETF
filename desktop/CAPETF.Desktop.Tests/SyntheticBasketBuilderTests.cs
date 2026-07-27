@@ -95,8 +95,9 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlRejectsKLineChartRuntime();
         SyntheticTerminalHtmlUsesV3LightweightChartsTerminal();
         SyntheticTerminalHtmlUsesV5SeriesApiAndChartSideTools();
-        SyntheticDrawingsAssetPublishesAndExposesV5PrimitiveContract();
+        SyntheticDrawingsAssetPublishesWithProjectContentEntry();
         SyntheticDrawingsRuntimeValidatesRecordsMeasurementAndHistory();
+        SyntheticDrawingsRuntimeExercisesReviewRegressions();
         SyntheticTerminalHtmlExposesResizableRailAndPersistentDrawingTools();
         SyntheticTerminalHtmlDisablesNativeLastCloseDecorations();
         SyntheticTerminalHtmlResetsTransientDrawingStateBeforeRestore();
@@ -2414,7 +2415,7 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
-    private static void SyntheticDrawingsAssetPublishesAndExposesV5PrimitiveContract()
+    private static void SyntheticDrawingsAssetPublishesWithProjectContentEntry()
     {
         var sourcePath = SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-drawings.js");
         var outputPath = Path.Combine(AppContext.BaseDirectory, "Assets", "synthetic-drawings.js");
@@ -2434,42 +2435,6 @@ public static class SyntheticBasketBuilderTests
             throw new Exception($"drawing manager packaging contract missing: {string.Join(", ", missing)}");
         }
 
-        var source = File.ReadAllText(sourcePath);
-        foreach (var required in new[]
-        {
-            "window.CapComDrawings",
-            "calculateMeasurement",
-            "validateRecord",
-            "sanitizeRecords",
-            "createManager",
-            "paneViews()",
-            "updateAllViews()",
-            "attached(",
-            "detached()",
-            "useBitmapCoordinateSpace",
-            "horizontalPixelRatio",
-            "verticalPixelRatio",
-            "attachPrimitive",
-            "detachPrimitive",
-        })
-        {
-            if (!source.Contains(required, StringComparison.Ordinal))
-            {
-                throw new Exception($"drawing manager must expose the v5 primitive contract: missing {required}");
-            }
-        }
-
-        foreach (var method in new[]
-        {
-            "setTool", "setRecords", "getRecords", "undo", "redo", "deleteSelected", "clear",
-            "setLocked", "setVisible", "setMagnet", "setStyle", "dispose",
-        })
-        {
-            if (!source.Contains($"{method}(", StringComparison.Ordinal))
-            {
-                throw new Exception($"drawing manager public API missing {method}");
-            }
-        }
     }
 
     private static void SyntheticDrawingsRuntimeValidatesRecordsMeasurementAndHistory()
@@ -2590,6 +2555,311 @@ public static class SyntheticBasketBuilderTests
             assert.equal(attached, null, 'dispose must detach the internal primitive');
             """;
 
+        RunNodeDrawingContract(modulePath, script, "drawing API/measurement/history");
+    }
+
+    private static void SyntheticDrawingsRuntimeExercisesReviewRegressions()
+    {
+        var modulePath = SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-drawings.js");
+        const string script = """
+            const assert = require('node:assert/strict');
+            const windowHandlers = new Map();
+            global.window = globalThis;
+            global.addEventListener = (name, handler) => {
+              if (!windowHandlers.has(name)) windowHandlers.set(name, new Set());
+              windowHandlers.get(name).add(handler);
+            };
+            global.removeEventListener = (name, handler) => windowHandlers.get(name)?.delete(handler);
+            require(process.argv[1]);
+
+            const api = window.CapComDrawings;
+            const failures = [];
+            const common = {
+              style: { color: '#22c55e', fillColor: 'rgba(34, 197, 94, .12)', lineWidth: 2, lineStyle: 'solid' },
+              visible: true,
+              locked: false,
+            };
+            const trend = {
+              ...common,
+              id: 'trend-review',
+              type: 'trend',
+              p1: { time: 100, price: 100 },
+              p2: { time: 300, price: 110 },
+            };
+
+            function test(name, body) {
+              try { body(); }
+              catch (error) { failures.push(`${name}: ${error.message}`); }
+            }
+
+            function makeContainer() {
+              const handlers = new Map();
+              return {
+                handlers,
+                addEventListener(name, handler) { handlers.set(name, handler); },
+                removeEventListener(name, handler) {
+                  if (handlers.get(name) === handler) handlers.delete(name);
+                },
+                getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 400 }; },
+                setPointerCapture() {},
+                releasePointerCapture() {},
+              };
+            }
+
+            function makeEnvironment(options = {}) {
+              const container = makeContainer();
+              let primitive = null;
+              let requestUpdates = 0;
+              let detachCount = 0;
+              const timeScale = {
+                timeToCoordinate(time) { return typeof time === 'number' ? time : null; },
+                coordinateToTime(x) { return x >= 0 && x <= 800 ? x : null; },
+              };
+              const chart = { timeScale() { return timeScale; } };
+              const series = {
+                priceToCoordinate(price) { return Number.isFinite(Number(price)) ? Number(price) : null; },
+                coordinateToPrice(y) { return y >= 0 && y <= 400 ? y : null; },
+                attachPrimitive(value) {
+                  if (options.attachThrows) throw new Error('attach failed');
+                  primitive = value;
+                  value.attached({ requestUpdate() { requestUpdates += 1; } });
+                },
+                detachPrimitive(value) {
+                  if (primitive === value) primitive = null;
+                  detachCount += 1;
+                  value.detached();
+                },
+              };
+              const manager = api.createManager({ chart, series, container, orderedTimes: [100, 200, 300] });
+              return {
+                container,
+                manager,
+                get primitive() { return primitive; },
+                get requestUpdates() { return requestUpdates; },
+                get detachCount() { return detachCount; },
+              };
+            }
+
+            function pointer(x, y, extras = {}) {
+              return {
+                clientX: x,
+                clientY: y,
+                button: 0,
+                pointerId: 7,
+                target: { tagName: 'DIV', isContentEditable: false },
+                defaultPrevented: false,
+                preventDefault() { this.defaultPrevented = true; },
+                ...extras,
+              };
+            }
+
+            function dispatchContainer(environment, name, event) {
+              const handler = environment.container.handlers.get(name);
+              assert.equal(typeof handler, 'function', `missing ${name} handler`);
+              handler(event);
+            }
+
+            function dispatchWindow(name, event) {
+              for (const handler of [...(windowHandlers.get(name) || [])]) handler(event);
+            }
+
+            function render(environment, horizontalPixelRatio, verticalPixelRatio) {
+              const strokes = [];
+              let path = [];
+              const context = {
+                lineWidth: 0,
+                save() {}, restore() {}, setLineDash() {},
+                beginPath() { path = []; },
+                moveTo(x, y) { path.push(['moveTo', x, y]); },
+                lineTo(x, y) { path.push(['lineTo', x, y]); },
+                stroke() { strokes.push({ lineWidth: this.lineWidth, path: path.map(entry => [...entry]) }); },
+                fillRect() {}, strokeRect() {}, fillText() {}, arc() {}, fill() {},
+                measureText() { return { width: 0 }; },
+              };
+              const primitive = environment.primitive;
+              assert.ok(primitive, 'primitive must remain attached');
+              primitive.updateAllViews();
+              primitive.paneViews()[0].renderer().draw({
+                useBitmapCoordinateSpace(draw) {
+                  draw({
+                    context,
+                    horizontalPixelRatio,
+                    verticalPixelRatio,
+                    bitmapSize: { width: 800 * horizontalPixelRatio, height: 400 * verticalPixelRatio },
+                  });
+                },
+              });
+              return strokes;
+            }
+
+            function withEnvironment(body) {
+              const environment = makeEnvironment();
+              try { body(environment); }
+              finally { environment.manager.dispose(); }
+            }
+
+            test('rejects a brush when any nested point is malformed', () => {
+              const malformed = {
+                ...common,
+                id: 'brush-malformed',
+                type: 'brush',
+                points: [{ time: 100, price: 100 }, null, { time: 300, price: 110 }],
+              };
+              assert.equal(api.validateRecord(malformed), false);
+              assert.deepEqual(api.sanitizeRecords([malformed]), []);
+            });
+
+            test('rejects impossible business-day timestamps', () => {
+              const invalidDay = { year: 2025, month: 2, day: 31 };
+              assert.equal(api.validateRecord({ ...common, id: 'bad-day', type: 'vline', time: invalidDay }), false);
+              assert.equal(api.validateRecord({
+                ...trend,
+                p1: { time: invalidDay, price: 100 },
+              }), false);
+              assert.equal(api.calculateMeasurement(
+                { time: invalidDay, price: 100 },
+                { time: { year: 2025, month: 3, day: 2 }, price: 110 },
+                [invalidDay]), null);
+            });
+
+            test('drives primitive attached/update/detached lifecycle', () => {
+              const environment = makeEnvironment();
+              const attachedPrimitive = environment.primitive;
+              environment.manager.setRecords([trend]);
+              assert.ok(environment.requestUpdates > 0, 'record changes must request a primitive update');
+              environment.manager.dispose();
+              const updatesAfterDispose = environment.requestUpdates;
+              environment.manager.setRecords([trend]);
+              assert.equal(environment.requestUpdates, updatesAfterDispose, 'detached primitive must stop requesting updates');
+              assert.equal(environment.detachCount, 1);
+              assert.equal(environment.primitive, null);
+              assert.ok(attachedPrimitive.paneViews().length > 0);
+            });
+
+            test('places and drags drawings through hit-tested handlers', () => withEnvironment(environment => {
+              environment.manager.setTool('trend');
+              dispatchContainer(environment, 'click', pointer(100, 100));
+              dispatchContainer(environment, 'click', pointer(300, 110));
+              assert.deepEqual(environment.manager.getRecords().map(record => record.type), ['trend']);
+
+              environment.manager.setTool('cursor');
+              dispatchContainer(environment, 'pointerdown', pointer(200, 105));
+              dispatchContainer(environment, 'pointermove', pointer(210, 125));
+              dispatchContainer(environment, 'pointerup', pointer(210, 125));
+              let moved = environment.manager.getRecords()[0];
+              assert.deepEqual({ p1: moved.p1, p2: moved.p2 }, {
+                p1: { time: 110, price: 120 },
+                p2: { time: 310, price: 130 },
+              });
+
+              dispatchContainer(environment, 'pointerdown', pointer(110, 120));
+              dispatchContainer(environment, 'pointermove', pointer(130, 140));
+              dispatchContainer(environment, 'pointerup', pointer(130, 140));
+              moved = environment.manager.getRecords()[0];
+              assert.deepEqual(moved.p1, { time: 130, price: 140 });
+              assert.deepEqual(moved.p2, { time: 310, price: 130 });
+            }));
+
+            test('pointer cancellation discards brush placement without history', () => withEnvironment(environment => {
+              environment.manager.setTool('brush');
+              dispatchContainer(environment, 'pointerdown', pointer(100, 100));
+              dispatchContainer(environment, 'pointermove', pointer(120, 120));
+              dispatchContainer(environment, 'pointercancel', pointer(120, 120));
+              assert.deepEqual({ records: environment.manager.getRecords(), undo: environment.manager.undo() }, {
+                records: [],
+                undo: false,
+              });
+            }));
+
+            test('pointer cancellation rolls back dragging without history', () => withEnvironment(environment => {
+              environment.manager.setRecords([trend]);
+              const before = environment.manager.getRecords();
+              dispatchContainer(environment, 'pointerdown', pointer(200, 105));
+              dispatchContainer(environment, 'pointermove', pointer(220, 125));
+              dispatchContainer(environment, 'pointercancel', pointer(220, 125));
+              assert.deepEqual({ records: environment.manager.getRecords(), undo: environment.manager.undo() }, {
+                records: before,
+                undo: false,
+              });
+            }));
+
+            test('renders a vertical ray at non-unit pixel ratios', () => withEnvironment(environment => {
+              environment.manager.setRecords([{
+                ...common,
+                id: 'vertical-ray',
+                type: 'ray',
+                p1: { time: 100, price: 100 },
+                p2: { time: 100, price: 200 },
+              }]);
+              const strokes = render(environment, 2, 3);
+              assert.equal(strokes.length, 1);
+              assert.deepEqual(strokes[0].path, [
+                ['moveTo', 200, 300],
+                ['lineTo', 200, 1200],
+              ]);
+            }));
+
+            test('uses horizontal pixel ratio for vertical stroke width', () => withEnvironment(environment => {
+              environment.manager.setRecords([{
+                ...common,
+                id: 'vertical-line',
+                type: 'vline',
+                time: 100,
+              }]);
+              const strokes = render(environment, 2, 3);
+              assert.equal(strokes.length, 1);
+              assert.equal(strokes[0].lineWidth, 4);
+            }));
+
+            test('ignores deletion shortcuts from editable targets', () => withEnvironment(environment => {
+              for (const target of [
+                { tagName: 'INPUT', isContentEditable: false },
+                { tagName: 'TEXTAREA', isContentEditable: false },
+                { tagName: 'SELECT', isContentEditable: false },
+                { tagName: 'DIV', isContentEditable: true },
+              ]) {
+                environment.manager.setRecords([trend]);
+                dispatchContainer(environment, 'pointerdown', pointer(200, 105));
+                dispatchContainer(environment, 'pointerup', pointer(200, 105));
+                const event = { key: 'Delete', target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+                dispatchWindow('keydown', event);
+                assert.equal(environment.manager.getRecords().length, 1, `${target.tagName} must retain drawing`);
+                assert.equal(event.defaultPrevented, false);
+              }
+
+              environment.manager.setRecords([trend]);
+              dispatchContainer(environment, 'pointerdown', pointer(200, 105));
+              dispatchContainer(environment, 'pointerup', pointer(200, 105));
+              const chartEvent = {
+                key: 'Backspace',
+                target: { tagName: 'DIV', isContentEditable: false },
+                defaultPrevented: false,
+                preventDefault() { this.defaultPrevented = true; },
+              };
+              dispatchWindow('keydown', chartEvent);
+              assert.equal(environment.manager.getRecords().length, 0);
+              assert.equal(chartEvent.defaultPrevented, true);
+            }));
+
+            test('removes listeners if primitive attachment throws', () => {
+              const container = makeContainer();
+              const chart = { timeScale() { return {}; } };
+              const series = { attachPrimitive() { throw new Error('attach failed'); } };
+              assert.throws(() => api.createManager({ chart, series, container }), /attach failed/);
+              assert.equal(container.handlers.size, 0);
+              assert.equal(windowHandlers.get('keydown')?.size || 0, 0);
+            });
+
+            if (failures.length > 0) {
+              throw new Error(`Round 1 drawing regressions:\n${failures.join('\n')}`);
+            }
+            """;
+
+        RunNodeDrawingContract(modulePath, script, "drawing interactions/review regressions");
+    }
+
+    private static void RunNodeDrawingContract(string modulePath, string script, string contractName)
+    {
         var startInfo = new ProcessStartInfo("node")
         {
             RedirectStandardOutput = true,
@@ -2601,17 +2871,17 @@ public static class SyntheticBasketBuilderTests
         startInfo.ArgumentList.Add(script);
         startInfo.ArgumentList.Add(modulePath);
 
-        using var process = Process.Start(startInfo) ?? throw new Exception("could not start Node.js drawing contract test");
+        using var process = Process.Start(startInfo) ?? throw new Exception($"could not start Node.js {contractName} test");
         var standardOutput = process.StandardOutput.ReadToEnd();
         var standardError = process.StandardError.ReadToEnd();
         if (!process.WaitForExit(30_000))
         {
             process.Kill(entireProcessTree: true);
-            throw new Exception("Node.js drawing contract test timed out");
+            throw new Exception($"Node.js {contractName} test timed out");
         }
         if (process.ExitCode != 0)
         {
-            throw new Exception($"Node.js drawing contract test failed ({process.ExitCode}): {standardError}{standardOutput}");
+            throw new Exception($"Node.js {contractName} test failed ({process.ExitCode}): {standardError}{standardOutput}");
         }
     }
 
