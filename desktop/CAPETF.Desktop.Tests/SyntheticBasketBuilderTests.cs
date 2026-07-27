@@ -146,6 +146,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticStrategiesRankExpectedSetups();
         SyntheticStrategiesExposeBuildOptions();
         SyntheticStrategiesReturnClosestFallbackCandidates();
+        DipInsideUptrendBuildsFromBundledUsDailyUniverse();
         SyntheticQuoteUsesFormulaMultipliersForBidAsk();
         SyntheticQuoteTreatsMissingOrZeroSidesAsUnavailable();
         SyntheticOrderSizingUsesCapitalDealRules();
@@ -4803,6 +4804,49 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalLiveUpdate.Apply(basket, new QuoteUpdate("QA", 109m, 111m, 110m, DateTimeOffset.UtcNow));
         AssertNear(104m, basket.BidPrice ?? 0m, "live quote should recalculate synthetic bid");
         AssertNear(106m, basket.AskPrice ?? 0m, "live quote should recalculate synthetic ask");
+    }
+
+    private static void DipInsideUptrendBuildsFromBundledUsDailyUniverse()
+    {
+        var cached = DashboardStockChunkLoader.LoadStocks();
+        if (cached.Instruments.Count == 0 || cached.OhlcByEpicAndResolution is null) return;
+
+        const string block = "US / USD / All";
+        const int minimumCandles = 120;
+        var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, cached.Instruments, limit: 500);
+        var daily = cached.OhlcByEpicAndResolution
+            .Where(pair => pair.Value.TryGetValue("Daily", out var rows) &&
+                           SyntheticHistoryService.DistinctAlignmentKeyCount(rows, "Daily") >= minimumCandles)
+            .ToDictionary(pair => pair.Key, pair => pair.Value["Daily"], StringComparer.OrdinalIgnoreCase);
+        var weekly = cached.OhlcByEpicAndResolution
+            .Where(pair => pair.Value.TryGetValue("Weekly", out var rows) && rows.Count >= 2)
+            .ToDictionary(pair => pair.Key, pair => pair.Value["Weekly"], StringComparer.OrdinalIgnoreCase);
+        var ranked = SyntheticStrategyRanker.RankWithFallback(
+            SyntheticStrategyKind.DipInsideUptrend,
+            candidates,
+            daily,
+            primaryPeriodsPerYear: 252,
+            weekly,
+            fallbackPeriodsPerYear: 52,
+            maximum: 36);
+        var basket = SyntheticTerminalSelector.SelectBest(
+            block,
+            ranked.Select(rank => rank.Instrument).ToList(),
+            daily,
+            periodsPerYear: 252,
+            minimumCandles: minimumCandles);
+
+        if (basket is null)
+        {
+            var lengths = candidates
+                .Where(candidate => daily.ContainsKey(candidate.Epic))
+                .Select(candidate => daily[candidate.Epic].Count)
+                .ToList();
+            throw new Exception(
+                $"dip-inside-uptrend must build from bundled US Daily data; " +
+                $"candidates={candidates.Count}, usable={lengths.Count}, ranked={ranked.Count}, " +
+                $"range={(lengths.Count == 0 ? "n/a" : $"{lengths.Min()}-{lengths.Max()}")}");
+        }
     }
 
     private static void SyntheticQuoteTreatsMissingOrZeroSidesAsUnavailable()

@@ -35,6 +35,28 @@ public static class SyntheticStrategyCatalog
 
 public static class SyntheticStrategyRanker
 {
+    public static IReadOnlyList<SyntheticStrategyRank> RankWithFallback(
+        SyntheticStrategyKind strategy,
+        IReadOnlyList<MarketInstrument> instruments,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> primaryCandles,
+        int primaryPeriodsPerYear,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> fallbackCandles,
+        int fallbackPeriodsPerYear,
+        int maximum)
+    {
+        if (strategy == SyntheticStrategyKind.DipInsideUptrend && !ReferenceEquals(primaryCandles, fallbackCandles))
+        {
+            var longTerm = Rank(strategy, instruments, fallbackCandles, fallbackPeriodsPerYear, maximum);
+            if (longTerm.Count >= 3) return longTerm;
+        }
+
+        var primary = Rank(strategy, instruments, primaryCandles, primaryPeriodsPerYear, maximum);
+        if (primary.Count >= 3 || ReferenceEquals(primaryCandles, fallbackCandles)) return primary;
+
+        var fallback = Rank(strategy, instruments, fallbackCandles, fallbackPeriodsPerYear, maximum);
+        return fallback.Count >= 3 ? fallback : primary;
+    }
+
     public static IReadOnlyList<SyntheticStrategyRank> Rank(
         SyntheticStrategyKind strategy,
         IReadOnlyList<MarketInstrument> instruments,
@@ -152,16 +174,23 @@ public static class SyntheticStrategyRanker
 
     private static SyntheticStrategyRank? DipInsideUptrend(MarketInstrument instrument, IReadOnlyList<OhlcPoint> candles, decimal close)
     {
-        if (candles.Count < 220) return null;
-        var ma200 = AverageClose(candles.TakeLast(200));
-        var priorMa200 = AverageClose(candles.Skip(candles.Count - 220).Take(200));
-        var peak = candles.TakeLast(60).Select(row => row.Close).Max();
-        if (peak <= 0 || priorMa200 <= 0) return null;
+        const int trendShift = 20;
+        if (candles.Count < 80) return null;
+        var movingAveragePeriod = Math.Min(200, candles.Count - trendShift);
+        var longAverage = AverageClose(candles.TakeLast(movingAveragePeriod));
+        var priorLongAverage = AverageClose(candles
+            .Skip(candles.Count - movingAveragePeriod - trendShift)
+            .Take(movingAveragePeriod));
+        var peak = candles.TakeLast(Math.Min(60, candles.Count)).Select(row => row.Close).Max();
+        if (peak <= 0 || priorLongAverage <= 0) return null;
         var dip = (peak - close) / peak * 100m;
-        var trend = (ma200 - priorMa200) / priorMa200 * 100m;
-        if (trend > 0 && close < ma200)
+        var trend = (longAverage - priorLongAverage) / priorLongAverage * 100m;
+        if (trend > 0 && close < longAverage)
         {
-            return new SyntheticStrategyRank(instrument, decimal.Round(100m + dip * 2m + trend, 4), $"uptrend MA200 with {dip:0.##}% dip");
+            return new SyntheticStrategyRank(
+                instrument,
+                decimal.Round(100m + dip * 2m + trend, 4),
+                $"rising MA{movingAveragePeriod} with {dip:0.##}% dip");
         }
 
         var fallbackScore = Math.Max(1m, 60m + Math.Min(20m, Math.Max(0m, dip)) + Math.Min(10m, Math.Max(0m, trend)));

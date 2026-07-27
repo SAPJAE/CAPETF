@@ -176,7 +176,15 @@ public partial class CapComTerminalWindow : Window
         IReadOnlyList<MarketInstrument> selectionCandidates = SelectSyntheticCandidates(candidates, candles, maxSelection: 36);
         if (strategy != SyntheticStrategyKind.SimilarToSelectedSymbol)
         {
-            selectionCandidates = SelectStrategyCandidates(strategy, candidates, candles, periodsPerYear, maxSelection: 36);
+            var longTermCandles = resolution == "Weekly" ? candles : CachedCandlesForResolution("Weekly");
+            selectionCandidates = SelectStrategyCandidates(
+                strategy,
+                candidates,
+                candles,
+                periodsPerYear,
+                longTermCandles,
+                fallbackPeriodsPerYear: 52,
+                maxSelection: 36);
         }
 
         if (isSeededSimilarBuild)
@@ -347,9 +355,18 @@ public partial class CapComTerminalWindow : Window
         IReadOnlyList<MarketInstrument> candidates,
         IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
         int periodsPerYear,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> fallbackCandles,
+        int fallbackPeriodsPerYear,
         int maxSelection)
     {
-        var ranked = SyntheticStrategyRanker.Rank(strategy, candidates, candles, periodsPerYear, maxSelection);
+        var ranked = SyntheticStrategyRanker.RankWithFallback(
+            strategy,
+            candidates,
+            candles,
+            periodsPerYear,
+            fallbackCandles,
+            fallbackPeriodsPerYear,
+            maxSelection);
         return ranked.Count >= 3 ? ranked.Select(rank => rank.Instrument).ToList() : [];
     }
 
