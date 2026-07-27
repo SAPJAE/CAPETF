@@ -3710,7 +3710,6 @@ public static class SyntheticBasketBuilderTests
         var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
         foreach (var required in new[]
         {
-            "Selection Basis",
             "Legs / Formula",
             "Annualized vol",
             "4Y return",
@@ -3737,6 +3736,18 @@ public static class SyntheticBasketBuilderTests
             if (!html.Contains(required, StringComparison.Ordinal))
             {
                 throw new Exception($"terminal HTML missing selection-basis label {required}");
+            }
+        }
+        foreach (var removed in new[]
+        {
+            "Selection Basis",
+            "id=\"selection-basis\"",
+            "getElementById('selection-basis')",
+        })
+        {
+            if (html.Contains(removed, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal HTML must not reserve permanent rail space for {removed}");
             }
         }
         if (html.Contains(">Ticket<", StringComparison.Ordinal))

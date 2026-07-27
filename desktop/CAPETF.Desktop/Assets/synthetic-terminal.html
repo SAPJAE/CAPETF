@@ -653,10 +653,6 @@
           <div id="formula">Build a synthetic symbol.</div>
         </section>
         <section class="panel">
-          <div class="panel-title">Selection Basis</div>
-          <div id="selection-basis" class="muted">Build a basket to see why the legs were chosen.</div>
-        </section>
-        <section class="panel">
           <div class="panel-title">ORDER PREVIEW</div>
           <div id="order-ticket">
             <div id="quantity-row">
@@ -973,7 +969,6 @@
       document.getElementById('vol-match').textContent = components.length ? `VOL MATCH ${components.length} legs` : 'VOL MATCH n/a';
       document.getElementById('period').textContent = `${activeInterval} ${chartMode === 'heikin' ? 'Heikin Ashi' : 'Candles'}`;
       document.getElementById('formula').textContent = buildFormula(components);
-      document.getElementById('selection-basis').textContent = getField(payload, 'SelectionBasis', 'selectionBasis', 'Selection uses similar price path, similar volatility, similar drawdown, and same currency. Formula uses equal notional weights.');
       document.getElementById('components').innerHTML = components.map(componentRow).join('');
       renderFooter(last, last && last.time);
     }
