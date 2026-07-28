@@ -175,6 +175,14 @@ public static class SyntheticBasketBuilderTests
         SyntheticMarginPreviewUsesReciprocalInverseQuote();
         SyntheticMarginPreviewRejectsMissingConversion();
         CapComTerminalRefreshesMarginPreviewContract();
+        MarginPreviewPublicationRejectsSupersededFailures();
+        SyntheticMarginPreviewRejectsReversedDirectPair();
+        SyntheticMarginPreviewTriesEveryOrderedFxCandidate();
+        SyntheticMarginPreviewInvalidatesAllCaches();
+        CapComTerminalInvalidatesMarginCachesAfterEveryLogin();
+        SyntheticMarginMetadataAttemptsCachePartialAndFailedResponses();
+        SyntheticMarginMetadataAttemptsRetryAfterExpiry();
+        SyntheticMarginMetadataRefreshIsSingleFlight();
         SavedSyntheticBasketStorePersistsFormulaDetails();
         SavedBasketRestorePreservesExactFormulaAndRejectsMissingEpics();
         SavedBasketLoadUsesFaithfulFormulaRestorer();
@@ -5639,6 +5647,245 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void MarginPreviewPublicationRejectsSupersededFailures()
+    {
+        var requestBasket = CreateMarginPreviewBasket("USD");
+        var replacementBasket = CreateMarginPreviewBasket("USD");
+        using var first = new CancellationTokenSource();
+        using var replacement = new CancellationTokenSource();
+
+        AssertFalse(
+            SyntheticMarginPreviewPublication.IsCurrent(first, replacement, requestBasket, requestBasket),
+            "a non-cancellation failure must not publish after a replacement request owns the window");
+
+        first.Cancel();
+        AssertFalse(
+            SyntheticMarginPreviewPublication.IsCurrent(first, first, requestBasket, requestBasket),
+            "a canceled request must not publish a non-cancellation failure");
+
+        AssertFalse(
+            SyntheticMarginPreviewPublication.IsCurrent(replacement, replacement, requestBasket, replacementBasket),
+            "a request must not publish after the active basket identity changes");
+        AssertTrue(
+            SyntheticMarginPreviewPublication.IsCurrent(replacement, replacement, requestBasket, requestBasket),
+            "only the uncanceled owner for the same basket may publish a margin result");
+    }
+
+    private static void SyntheticMarginPreviewRejectsReversedDirectPair()
+    {
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+        };
+        var reversed = new MarketInstrument
+        {
+            Epic = "FX-USDEUR",
+            Symbol = "USD/EUR",
+            Name = "US Dollar / Euro",
+            Type = "CURRENCIES",
+        };
+        source.SearchResults["EUR/USD"] = [reversed];
+        source.SearchResults["USD/EUR"] = [reversed];
+        source.MarketDetails[reversed.Epic] = new MarketInstrument
+        {
+            Epic = reversed.Epic,
+            Bid = 0.90m,
+            Offer = 0.92m,
+        };
+
+        var summary = new SyntheticMarginPreviewService(source)
+            .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+
+        AssertNear(20m / 0.91m, summary.Buy.TotalMargin ?? throw new Exception("inverse BUY margin must be available"),
+            "a reversed symbol returned by direct search must be rejected and resolved through reciprocal inverse lookup");
+        AssertEqual(1, source.MarketDetailRequestCount(reversed.Epic),
+            "a reversed direct result must not fetch details until it is evaluated in inverse order");
+    }
+
+    private static void SyntheticMarginPreviewTriesEveryOrderedFxCandidate()
+    {
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+        };
+        source.SearchResults["EUR/USD"] =
+        [
+            new MarketInstrument { Epic = "FX-CLOSED", Symbol = "EUR/USD", Type = "CURRENCIES" },
+            new MarketInstrument { Epic = "FX-LIVE", Symbol = "EURUSD", Type = "CURRENCIES" },
+        ];
+        source.MarketDetails["FX-CLOSED"] = new MarketInstrument
+        {
+            Epic = "FX-CLOSED",
+            Bid = 1.08m,
+            Offer = null,
+        };
+        source.MarketDetails["FX-LIVE"] = new MarketInstrument
+        {
+            Epic = "FX-LIVE",
+            Bid = 1.09m,
+            Offer = 1.11m,
+        };
+
+        var summary = new SyntheticMarginPreviewService(source)
+            .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+
+        AssertNear(22m, summary.Buy.TotalMargin ?? throw new Exception("later direct FX candidate must be usable"),
+            "direct lookup must continue after an ordered candidate lacks a two-sided quote");
+        AssertEqual(1, source.MarketDetailRequestCount("FX-CLOSED"), "first ordered candidate must be inspected once");
+        AssertEqual(1, source.MarketDetailRequestCount("FX-LIVE"), "later ordered candidate must be inspected once");
+    }
+
+    private static void SyntheticMarginPreviewInvalidatesAllCaches()
+    {
+        var now = DateTimeOffset.Parse("2026-07-28T12:00:00Z");
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("session-one", "USD", 500m, now),
+        };
+        source.SearchResults["EUR/USD"] =
+        [
+            new MarketInstrument { Epic = "FX-EURUSD", Symbol = "EUR/USD", Type = "CURRENCIES" },
+        ];
+        source.MarketDetails["FX-EURUSD"] = new MarketInstrument
+        {
+            Epic = "FX-EURUSD",
+            Bid = 1.09m,
+            Offer = 1.11m,
+        };
+        source.MarketDetails["LEG"] = new MarketInstrument { Epic = "LEG", LotSize = 1m };
+        var service = new SyntheticMarginPreviewService(source, () => now);
+        var basket = CreateMarginPreviewBasket("EUR", includeMarginMetadata: false);
+
+        var first = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        AssertNear(500m, first.Available, "first session account availability");
+
+        source.Account = new CapitalAccountSnapshot("session-two", "USD", 900m, now);
+        source.MarketDetails["FX-EURUSD"] = new MarketInstrument
+        {
+            Epic = "FX-EURUSD",
+            Bid = 1.19m,
+            Offer = 1.21m,
+        };
+        service.InvalidateCaches();
+        var second = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+
+        AssertNear(900m, second.Available, "cache invalidation must fetch the new session's active account");
+        AssertEqual(2, source.AccountRequestCount, "active-account cache must not cross successful logins");
+        AssertEqual(2, source.MarketDetailRequestCount("FX-EURUSD"), "conversion cache must be cleared after login");
+        AssertEqual(2, source.MarketDetailRequestCount("LEG"), "metadata-attempt cache must be cleared after login");
+    }
+
+    private static void CapComTerminalInvalidatesMarginCachesAfterEveryLogin()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        var loginCount = source.Split("await _api.LoginAsync", StringSplitOptions.None).Length - 1;
+        var resetCount = source.Split("ResetMarginPreviewAfterLogin();", StringSplitOptions.None).Length - 1;
+
+        AssertEqual(2, loginCount, "window login contract must cover explicit connect and ensure-connected login");
+        AssertEqual(loginCount, resetCount, "every successful window login must immediately reset margin-preview state");
+        AssertTrue(source.Contains("_marginPreviewRefresh?.Cancel();", StringComparison.Ordinal),
+            "a successful login must cancel an in-flight preview from the prior session");
+        AssertTrue(source.Contains("_marginPreview.InvalidateCaches();", StringComparison.Ordinal),
+            "a successful login must invalidate all margin-preview caches");
+    }
+
+    private static void SyntheticMarginMetadataAttemptsCachePartialAndFailedResponses()
+    {
+        var partialSource = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+        };
+        partialSource.MarketDetails["LEG"] = new MarketInstrument { Epic = "LEG", LotSize = 1m };
+        var partialService = new SyntheticMarginPreviewService(partialSource);
+        var partialBasket = CreateMarginPreviewBasket("USD", includeMarginMetadata: false);
+
+        partialService.BuildAsync(partialBasket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        partialService.BuildAsync(partialBasket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        AssertEqual(1, partialSource.MarketDetailRequestCount("LEG"),
+            "partial metadata attempts must suppress repeated details requests inside the attempt TTL");
+
+        var failedSource = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+            MarketDetailsHandler = (epic, _) => epic == "LEG"
+                ? Task.FromException<MarketInstrument?>(new InvalidOperationException("details failed"))
+                : Task.FromResult<MarketInstrument?>(null),
+        };
+        var failedService = new SyntheticMarginPreviewService(failedSource);
+        var failedBasket = CreateMarginPreviewBasket("USD", includeMarginMetadata: false);
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                failedService.BuildAsync(failedBasket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+                throw new Exception("failed metadata request must remain observable to the preview caller");
+            }
+            catch (InvalidOperationException ex) when (ex.Message == "details failed")
+            {
+            }
+        }
+        AssertEqual(1, failedSource.MarketDetailRequestCount("LEG"),
+            "failed metadata attempts must suppress repeated details requests inside the attempt TTL");
+    }
+
+    private static void SyntheticMarginMetadataAttemptsRetryAfterExpiry()
+    {
+        var now = DateTimeOffset.Parse("2026-07-28T12:00:00Z");
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, now),
+        };
+        source.MarketDetails["LEG"] = new MarketInstrument { Epic = "LEG", LotSize = 1m };
+        var service = new SyntheticMarginPreviewService(source, () => now);
+        var basket = CreateMarginPreviewBasket("USD", includeMarginMetadata: false);
+
+        service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        now = now.AddSeconds(29);
+        service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        AssertEqual(1, source.MarketDetailRequestCount("LEG"), "metadata attempt cache must remain active before 30 seconds");
+
+        now = now.AddSeconds(2);
+        service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        AssertEqual(2, source.MarketDetailRequestCount("LEG"), "incomplete metadata must be retried after 30 seconds");
+    }
+
+    private static void SyntheticMarginMetadataRefreshIsSingleFlight()
+    {
+        var completion = new TaskCompletionSource<MarketInstrument?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+            MarketDetailsHandler = (epic, _) => epic == "LEG"
+                ? completion.Task
+                : Task.FromResult<MarketInstrument?>(null),
+        };
+        var service = new SyntheticMarginPreviewService(source);
+        var basket = CreateMarginPreviewBasket("USD", includeMarginMetadata: false);
+        var first = service.BuildAsync(basket, 100m, CancellationToken.None);
+        var second = service.BuildAsync(basket, 100m, CancellationToken.None);
+
+        try
+        {
+            AssertEqual(1, source.MarketDetailRequestCount("LEG"),
+                "concurrent builds must share one metadata details request per epic");
+        }
+        finally
+        {
+            completion.TrySetResult(new MarketInstrument
+            {
+                Epic = "LEG",
+                LotSize = 1m,
+                MinDealSize = 1m,
+                MinSizeIncrement = 1m,
+                MarginFactor = 20m,
+                MarginFactorUnit = "PERCENTAGE",
+            });
+        }
+
+        Task.WhenAll(first, second).GetAwaiter().GetResult();
+        AssertEqual(1, source.MarketDetailRequestCount("LEG"), "single-flight request count after both builds complete");
+    }
+
     private static SyntheticBasket CreateMarginPreviewBasket(string currency, bool includeMarginMetadata = true)
     {
         var basket = new SyntheticBasket { Symbol = "SYN-MARGIN-PREVIEW" };
@@ -6213,7 +6460,7 @@ public static class SyntheticBasketBuilderTests
 
     private sealed class FakeSyntheticMarginDataSource : ISyntheticMarginDataSource
     {
-        public CapitalAccountSnapshot Account { get; init; } =
+        public CapitalAccountSnapshot Account { get; set; } =
             new("active", "USD", 0m, DateTimeOffset.UnixEpoch);
         public Dictionary<string, MarketInstrument> MarketDetails { get; } =
             new(StringComparer.OrdinalIgnoreCase);
@@ -6221,6 +6468,9 @@ public static class SyntheticBasketBuilderTests
             new(StringComparer.OrdinalIgnoreCase);
         public List<string> SearchQueries { get; } = [];
         public int AccountRequestCount { get; private set; }
+        public Func<string, CancellationToken, Task<MarketInstrument?>>? MarketDetailsHandler { get; init; }
+        private Dictionary<string, int> MarketDetailRequestCounts { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
 
         public Task<CapitalAccountSnapshot> GetActiveAccountAsync(CancellationToken cancellationToken)
         {
@@ -6232,8 +6482,21 @@ public static class SyntheticBasketBuilderTests
         public Task<MarketInstrument?> GetMarketDetailsAsync(string epic, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            lock (MarketDetailRequestCounts)
+            {
+                MarketDetailRequestCounts[epic] = MarketDetailRequestCount(epic) + 1;
+            }
+            if (MarketDetailsHandler is not null) return MarketDetailsHandler(epic, cancellationToken);
             MarketDetails.TryGetValue(epic, out var details);
             return Task.FromResult(details);
+        }
+
+        public int MarketDetailRequestCount(string epic)
+        {
+            lock (MarketDetailRequestCounts)
+            {
+                return MarketDetailRequestCounts.TryGetValue(epic, out var count) ? count : 0;
+            }
         }
 
         public Task<IReadOnlyList<MarketInstrument>> SearchMarketsAsync(string query, CancellationToken cancellationToken)

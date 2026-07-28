@@ -75,6 +75,7 @@ public partial class CapComTerminalWindow : Window
         {
             ConnectionText.Text = $"connecting to {SavedCredentialLabel(saved)}...";
             await _api.LoginAsync(saved, cancellationToken);
+            ResetMarginPreviewAfterLogin();
             cancellationToken.ThrowIfCancellationRequested();
             ConnectionText.Text = $"connected to {SavedCredentialLabel(saved)}";
             StatusText.Text = $"Connected to {SavedCredentialLabel(saved)}. Loading universe...";
@@ -691,8 +692,15 @@ public partial class CapComTerminalWindow : Window
         var saved = _credentialStore.Load();
         if (saved is null) throw new InvalidOperationException("No saved Capital.com keys found.");
         await _api.LoginAsync(saved, cancellationToken);
+        ResetMarginPreviewAfterLogin();
         cancellationToken.ThrowIfCancellationRequested();
         ConnectionText.Text = "connected";
+    }
+
+    private void ResetMarginPreviewAfterLogin()
+    {
+        _marginPreviewRefresh?.Cancel();
+        _marginPreview.InvalidateCaches();
     }
 
     private async Task<bool> RunOperationAsync(string operationName, Func<CancellationToken, Task> action, int? total = null)
@@ -1080,7 +1088,7 @@ public partial class CapComTerminalWindow : Window
             await SetTerminalBusyAsync(true, "Refreshing margin preview");
             var summary = await _marginPreview.BuildAsync(basket, basketNotional, request.Token);
             request.Token.ThrowIfCancellationRequested();
-            if (!ReferenceEquals(_basket, basket)) return;
+            if (!SyntheticMarginPreviewPublication.IsCurrent(request, _marginPreviewRefresh, basket, _basket)) return;
             var json = JsonSerializer.Serialize(summary);
             await InvokeTerminalScriptAsync(
                 $"window.setTerminalMarginPreview && window.setTerminalMarginPreview({json});");
@@ -1090,6 +1098,7 @@ public partial class CapComTerminalWindow : Window
         }
         catch (Exception ex)
         {
+            if (!SyntheticMarginPreviewPublication.IsCurrent(request, _marginPreviewRefresh, basket, _basket)) return;
             var json = JsonSerializer.Serialize(new { Error = ex.Message });
             await InvokeTerminalScriptAsync(
                 $"window.setTerminalMarginPreview && window.setTerminalMarginPreview({json});");

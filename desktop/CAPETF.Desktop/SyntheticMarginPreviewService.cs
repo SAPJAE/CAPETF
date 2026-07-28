@@ -12,14 +12,30 @@ internal sealed class CapitalApiSyntheticMarginDataSource(CapitalApiClient api) 
         api.SearchMarketsAsync(query, cancellationToken);
 }
 
+internal static class SyntheticMarginPreviewPublication
+{
+    public static bool IsCurrent(
+        CancellationTokenSource request,
+        CancellationTokenSource? currentRequest,
+        SyntheticBasket requestBasket,
+        SyntheticBasket? currentBasket) =>
+        !request.IsCancellationRequested &&
+        ReferenceEquals(currentRequest, request) &&
+        ReferenceEquals(currentBasket, requestBasket);
+}
+
 internal sealed class SyntheticMarginPreviewService
 {
     private static readonly TimeSpan AccountCacheDuration = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ConversionCacheDuration = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan MetadataAttemptCacheDuration = TimeSpan.FromSeconds(30);
 
     private readonly ISyntheticMarginDataSource _source;
     private readonly Func<DateTimeOffset> _utcNow;
+    private readonly object _cacheLock = new();
     private readonly Dictionary<string, CachedConversion> _conversionCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CachedMetadataAttempt> _metadataAttempts =
         new(StringComparer.OrdinalIgnoreCase);
     private CapitalAccountSnapshot? _cachedAccount;
     private DateTimeOffset _accountCachedAt;
@@ -30,6 +46,17 @@ internal sealed class SyntheticMarginPreviewService
     {
         _source = source;
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+    }
+
+    public void InvalidateCaches()
+    {
+        lock (_cacheLock)
+        {
+            _cachedAccount = null;
+            _accountCachedAt = default;
+            _conversionCache.Clear();
+            _metadataAttempts.Clear();
+        }
     }
 
     public async Task<SyntheticMarginSummary> BuildAsync(
@@ -77,7 +104,7 @@ internal sealed class SyntheticMarginPreviewService
             var instrument = component.Instrument;
             if (!NeedsMarginMetadata(instrument)) continue;
 
-            var details = await _source.GetMarketDetailsAsync(instrument.Epic, cancellationToken);
+            var details = await GetMetadataAttempt(instrument.Epic).WaitAsync(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             if (details is null) continue;
 
@@ -99,18 +126,49 @@ internal sealed class SyntheticMarginPreviewService
         }
     }
 
+    private Task<MarketInstrument?> GetMetadataAttempt(string epic)
+    {
+        lock (_cacheLock)
+        {
+            var now = _utcNow();
+            if (_metadataAttempts.TryGetValue(epic, out var cached) &&
+                now - cached.StartedAt < MetadataAttemptCacheDuration)
+            {
+                return cached.Details;
+            }
+
+            Task<MarketInstrument?> details;
+            try
+            {
+                details = _source.GetMarketDetailsAsync(epic, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                details = Task.FromException<MarketInstrument?>(ex);
+            }
+            _metadataAttempts[epic] = new CachedMetadataAttempt(details, now);
+            return details;
+        }
+    }
+
     private async Task<CapitalAccountSnapshot> GetAccountAsync(CancellationToken cancellationToken)
     {
         var now = _utcNow();
-        if (_cachedAccount is not null && now - _accountCachedAt < AccountCacheDuration)
+        lock (_cacheLock)
         {
-            return _cachedAccount;
+            if (_cachedAccount is not null && now - _accountCachedAt < AccountCacheDuration)
+            {
+                return _cachedAccount;
+            }
         }
 
         var account = await _source.GetActiveAccountAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        _cachedAccount = account;
-        _accountCachedAt = _utcNow();
+        lock (_cacheLock)
+        {
+            _cachedAccount = account;
+            _accountCachedAt = _utcNow();
+        }
         return account;
     }
 
@@ -123,10 +181,13 @@ internal sealed class SyntheticMarginPreviewService
 
         var cacheKey = $"{fromCurrency}/{toCurrency}";
         var now = _utcNow();
-        if (_conversionCache.TryGetValue(cacheKey, out var cached) &&
-            now - cached.RetrievedAt < ConversionCacheDuration)
+        lock (_cacheLock)
         {
-            return cached.Rate;
+            if (_conversionCache.TryGetValue(cacheKey, out var cached) &&
+                now - cached.RetrievedAt < ConversionCacheDuration)
+            {
+                return cached.Rate;
+            }
         }
 
         var direct = await FindMidpointAsync(fromCurrency, toCurrency, cancellationToken);
@@ -143,7 +204,10 @@ internal sealed class SyntheticMarginPreviewService
                 $"Margin conversion {fromCurrency}/{toCurrency} is unavailable from Capital.com.");
         }
 
-        _conversionCache[cacheKey] = new CachedConversion(rate.Value, _utcNow());
+        lock (_cacheLock)
+        {
+            _conversionCache[cacheKey] = new CachedConversion(rate.Value, _utcNow());
+        }
         return rate.Value;
     }
 
@@ -154,14 +218,18 @@ internal sealed class SyntheticMarginPreviewService
     {
         var markets = await _source.SearchMarketsAsync($"{fromCurrency}/{toCurrency}", cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        var market = markets.FirstOrDefault(item => IsCurrencyPair(item, fromCurrency, toCurrency));
-        if (market is null || string.IsNullOrWhiteSpace(market.Epic)) return null;
+        foreach (var market in markets.Where(item => IsOrderedCurrencyPair(item, fromCurrency, toCurrency)))
+        {
+            if (string.IsNullOrWhiteSpace(market.Epic)) continue;
+            var details = await _source.GetMarketDetailsAsync(market.Epic, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (details?.Bid is > 0 && details.Offer is > 0)
+            {
+                return (details.Bid.Value + details.Offer.Value) / 2m;
+            }
+        }
 
-        var details = await _source.GetMarketDetailsAsync(market.Epic, cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
-        return details?.Bid is > 0 && details.Offer is > 0
-            ? (details.Bid.Value + details.Offer.Value) / 2m
-            : null;
+        return null;
     }
 
     private static bool NeedsMarginMetadata(MarketInstrument instrument) =>
@@ -187,16 +255,19 @@ internal sealed class SyntheticMarginPreviewService
         return currencies[0];
     }
 
-    private static bool IsCurrencyPair(MarketInstrument instrument, string fromCurrency, string toCurrency)
+    private static bool IsOrderedCurrencyPair(MarketInstrument instrument, string fromCurrency, string toCurrency)
     {
         if (!instrument.Type.Contains("CURRENC", StringComparison.OrdinalIgnoreCase)) return false;
-        var identity = NormalizePairIdentity($"{instrument.Symbol} {instrument.Name}");
-        return identity.Contains(fromCurrency, StringComparison.OrdinalIgnoreCase) &&
-               identity.Contains(toCurrency, StringComparison.OrdinalIgnoreCase);
+        var orderedPair = NormalizePairIdentity(fromCurrency + toCurrency);
+        var symbol = NormalizePairIdentity(instrument.Symbol);
+        if (symbol.Contains(orderedPair, StringComparison.OrdinalIgnoreCase)) return true;
+        var name = NormalizePairIdentity(instrument.Name);
+        return name.Contains(orderedPair, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizePairIdentity(string value) =>
         new(value.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
 
     private sealed record CachedConversion(decimal Rate, DateTimeOffset RetrievedAt);
+    private sealed record CachedMetadataAttempt(Task<MarketInstrument?> Details, DateTimeOffset StartedAt);
 }
