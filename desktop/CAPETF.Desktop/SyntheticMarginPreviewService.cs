@@ -131,10 +131,14 @@ internal sealed class SyntheticMarginPreviewService
         lock (_cacheLock)
         {
             var now = _utcNow();
-            if (_metadataAttempts.TryGetValue(epic, out var cached) &&
-                now - cached.StartedAt < MetadataAttemptCacheDuration)
+            if (_metadataAttempts.TryGetValue(epic, out var cached))
             {
-                return cached.Details;
+                if (!cached.Details.IsCompleted) return cached.Details;
+                cached.CompletedAt ??= now;
+                if (now - cached.CompletedAt.Value < MetadataAttemptCacheDuration)
+                {
+                    return cached.Details;
+                }
             }
 
             Task<MarketInstrument?> details;
@@ -146,7 +150,19 @@ internal sealed class SyntheticMarginPreviewService
             {
                 details = Task.FromException<MarketInstrument?>(ex);
             }
-            _metadataAttempts[epic] = new CachedMetadataAttempt(details, now);
+            var attempt = new CachedMetadataAttempt(details);
+            _metadataAttempts[epic] = attempt;
+            _ = details.ContinueWith(
+                _ =>
+                {
+                    lock (_cacheLock)
+                    {
+                        attempt.CompletedAt ??= _utcNow();
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
             return details;
         }
     }
@@ -262,12 +278,18 @@ internal sealed class SyntheticMarginPreviewService
         var symbol = NormalizePairIdentity(instrument.Symbol);
         if (symbol.Contains(orderedPair, StringComparison.OrdinalIgnoreCase)) return true;
         var name = NormalizePairIdentity(instrument.Name);
-        return name.Contains(orderedPair, StringComparison.OrdinalIgnoreCase);
+        var fromIndex = name.IndexOf(NormalizePairIdentity(fromCurrency), StringComparison.OrdinalIgnoreCase);
+        var toIndex = name.IndexOf(NormalizePairIdentity(toCurrency), StringComparison.OrdinalIgnoreCase);
+        return fromIndex >= 0 && toIndex > fromIndex;
     }
 
     private static string NormalizePairIdentity(string value) =>
         new(value.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
 
     private sealed record CachedConversion(decimal Rate, DateTimeOffset RetrievedAt);
-    private sealed record CachedMetadataAttempt(Task<MarketInstrument?> Details, DateTimeOffset StartedAt);
+    private sealed class CachedMetadataAttempt(Task<MarketInstrument?> details)
+    {
+        public Task<MarketInstrument?> Details { get; } = details;
+        public DateTimeOffset? CompletedAt { get; set; }
+    }
 }

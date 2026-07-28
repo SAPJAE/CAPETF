@@ -183,6 +183,8 @@ public static class SyntheticBasketBuilderTests
         SyntheticMarginMetadataAttemptsCachePartialAndFailedResponses();
         SyntheticMarginMetadataAttemptsRetryAfterExpiry();
         SyntheticMarginMetadataRefreshIsSingleFlight();
+        SyntheticMarginMetadataRefreshRemainsSingleFlightWhileRunningPastTtl();
+        SyntheticMarginPreviewMatchesOrderedDescriptiveNameOnlyPair();
         SavedSyntheticBasketStorePersistsFormulaDetails();
         SavedBasketRestorePreservesExactFormulaAndRejectsMissingEpics();
         SavedBasketLoadUsesFaithfulFormulaRestorer();
@@ -5735,6 +5737,53 @@ public static class SyntheticBasketBuilderTests
         AssertEqual(1, source.MarketDetailRequestCount("FX-LIVE"), "later ordered candidate must be inspected once");
     }
 
+    private static void SyntheticMarginPreviewMatchesOrderedDescriptiveNameOnlyPair()
+    {
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+        };
+        source.SearchResults["EUR/USD"] =
+        [
+            new MarketInstrument
+            {
+                Epic = "FX-NAME-REVERSED",
+                Symbol = "",
+                Name = "US Dollar / Euro",
+                Type = "CURRENCIES",
+            },
+            new MarketInstrument
+            {
+                Epic = "FX-NAME-DIRECT",
+                Symbol = "",
+                Name = "Euro / US Dollar",
+                Type = "CURRENCIES",
+            },
+        ];
+        source.MarketDetails["FX-NAME-REVERSED"] = new MarketInstrument
+        {
+            Epic = "FX-NAME-REVERSED",
+            Bid = 0.90m,
+            Offer = 0.92m,
+        };
+        source.MarketDetails["FX-NAME-DIRECT"] = new MarketInstrument
+        {
+            Epic = "FX-NAME-DIRECT",
+            Bid = 1.09m,
+            Offer = 1.11m,
+        };
+
+        var summary = new SyntheticMarginPreviewService(source)
+            .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+
+        AssertNear(22m, summary.Buy.TotalMargin ?? throw new Exception("descriptive name-only FX margin must be available"),
+            "Euro / US Dollar must match EUR-to-USD when the symbol has no currency codes");
+        AssertEqual(0, source.MarketDetailRequestCount("FX-NAME-REVERSED"),
+            "US Dollar / Euro must not match the EUR-to-USD direct pass");
+        AssertEqual(1, source.MarketDetailRequestCount("FX-NAME-DIRECT"),
+            "the ordered descriptive name-only candidate must provide the direct midpoint");
+    }
+
     private static void SyntheticMarginPreviewInvalidatesAllCaches()
     {
         var now = DateTimeOffset.Parse("2026-07-28T12:00:00Z");
@@ -5884,6 +5933,46 @@ public static class SyntheticBasketBuilderTests
 
         Task.WhenAll(first, second).GetAwaiter().GetResult();
         AssertEqual(1, source.MarketDetailRequestCount("LEG"), "single-flight request count after both builds complete");
+    }
+
+    private static void SyntheticMarginMetadataRefreshRemainsSingleFlightWhileRunningPastTtl()
+    {
+        var now = DateTimeOffset.Parse("2026-07-28T12:00:00Z");
+        var completion = new TaskCompletionSource<MarketInstrument?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, now),
+            MarketDetailsHandler = (epic, _) => epic == "LEG"
+                ? completion.Task
+                : Task.FromResult<MarketInstrument?>(null),
+        };
+        var service = new SyntheticMarginPreviewService(source, () => now);
+        var basket = CreateMarginPreviewBasket("USD", includeMarginMetadata: false);
+        var first = service.BuildAsync(basket, 100m, CancellationToken.None);
+
+        now = now.AddSeconds(31);
+        var second = service.BuildAsync(basket, 100m, CancellationToken.None);
+        try
+        {
+            AssertEqual(1, source.MarketDetailRequestCount("LEG"),
+                "an incomplete metadata request must remain single-flight after the retry TTL elapses");
+        }
+        finally
+        {
+            completion.TrySetResult(new MarketInstrument
+            {
+                Epic = "LEG",
+                LotSize = 1m,
+                MinDealSize = 1m,
+                MinSizeIncrement = 1m,
+                MarginFactor = 20m,
+                MarginFactorUnit = "PERCENTAGE",
+            });
+        }
+
+        Task.WhenAll(first, second).GetAwaiter().GetResult();
+        AssertEqual(1, source.MarketDetailRequestCount("LEG"),
+            "the shared long-running metadata request must remain the only source call after completion");
     }
 
     private static SyntheticBasket CreateMarginPreviewBasket(string currency, bool includeMarginMetadata = true)
