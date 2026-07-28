@@ -20,6 +20,8 @@ public static class SyntheticBasketBuilderTests
         CapComTerminalOperationGuardCompletesFailsAndRestoresControls();
         NewOperationCancelsAndSupersedesEarlierWork();
         IncompleteOhlcRowsAreExcluded();
+        MarketDetailsParseMarginMetadata();
+        AccountsParseActiveAvailableFunds();
         CapitalPricePathSupportsDatedHistoryWindows();
         CapitalHistoryPagingWindowsMatchCapitalResolutions();
         CapitalHistoryPagingRetainsSuccessfulRowsAtTerminalBoundary();
@@ -208,6 +210,38 @@ public static class SyntheticBasketBuilderTests
         AssertNear(102m, rows[0].High, "complete OHLC high should be retained");
         AssertNear(98m, rows[0].Low, "complete OHLC low should be retained");
         AssertNear(101m, rows[0].Close, "complete OHLC close should be retained");
+    }
+
+    private static void MarketDetailsParseMarginMetadata()
+    {
+        const string json = """
+        {
+          "instrument": {
+            "epic": "SAPD", "name": "SAP", "currency": "EUR",
+            "lotSize": 1, "marginFactor": 20, "marginFactorUnit": "PERCENTAGE"
+          },
+          "snapshot": { "bid": 127.10, "offer": 127.20 }
+        }
+        """;
+        var result = CapitalApiClient.ParseMarketDetails(json)!;
+        AssertNear(20m, result.MarginFactor ?? 0m, "margin factor");
+        AssertEqual("PERCENTAGE", result.MarginFactorUnit, "margin unit");
+    }
+
+    private static void AccountsParseActiveAvailableFunds()
+    {
+        const string json = """
+        { "accounts": [
+          { "accountId": "other", "preferred": true, "currency": "GBP",
+            "balance": { "available": 50 } },
+          { "accountId": "active", "preferred": false, "currency": "USD",
+            "balance": { "available": 1250.75 } }
+        ] }
+        """;
+        var result = CapitalApiClient.ParseActiveAccount(json, "active", DateTimeOffset.UnixEpoch);
+        AssertEqual("active", result.AccountId, "active account");
+        AssertEqual("USD", result.Currency, "account currency");
+        AssertNear(1250.75m, result.Available, "available funds");
     }
 
     private static void CapitalPricePathSupportsDatedHistoryWindows()

@@ -12,11 +12,19 @@ public sealed class ApiCredentials
     public bool UseDemo { get; set; } = true;
 }
 
+public sealed record CapitalAccountSnapshot(
+    string AccountId,
+    string Currency,
+    decimal Available,
+    DateTimeOffset RetrievedAt);
+
 public sealed class CapitalSession
 {
     public string Cst { get; init; } = "";
     public string SecurityToken { get; init; } = "";
     public bool UseDemo { get; init; }
+    public string CurrentAccountId { get; init; } = "";
+    public string AccountCurrency { get; init; } = "";
 }
 
 public sealed class MarketInstrument : INotifyPropertyChanged
@@ -46,6 +54,8 @@ public sealed class MarketInstrument : INotifyPropertyChanged
     public decimal? LotSize { get; set; }
     public decimal? MinDealSize { get; set; }
     public decimal? MinSizeIncrement { get; set; }
+    public decimal? MarginFactor { get; set; }
+    public string MarginFactorUnit { get; set; } = "";
     public ObservableCollection<ChartPoint> Points { get; } = [];
 
     public decimal? Price

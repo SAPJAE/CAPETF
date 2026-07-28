@@ -94,11 +94,14 @@ public sealed class CapitalApiClient : IDisposable
             throw new InvalidOperationException($"Capital.com login failed: {(int)response.StatusCode} {response.ReasonPhrase}. {body}");
         }
 
+        var loginMetadata = ParseLoginMetadata(body);
         _session = new CapitalSession
         {
             Cst = response.Headers.TryGetValues("CST", out var cst) ? cst.FirstOrDefault() ?? "" : "",
             SecurityToken = response.Headers.TryGetValues("X-SECURITY-TOKEN", out var security) ? security.FirstOrDefault() ?? "" : "",
             UseDemo = credentials.UseDemo,
+            CurrentAccountId = loginMetadata.AccountId,
+            AccountCurrency = loginMetadata.Currency,
         };
 
         if (string.IsNullOrWhiteSpace(_session.Cst) || string.IsNullOrWhiteSpace(_session.SecurityToken))
@@ -107,6 +110,13 @@ public sealed class CapitalApiClient : IDisposable
         }
 
         return _session;
+    }
+
+    public async Task<CapitalAccountSnapshot> GetActiveAccountAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureSession();
+        using var doc = await GetJsonAsync("api/v1/accounts", cancellationToken);
+        return ParseActiveAccount(doc.RootElement, _session!.CurrentAccountId, DateTimeOffset.UtcNow);
     }
 
     public async Task<IReadOnlyList<MarketInstrument>> SearchMarketsAsync(string searchTerm, CancellationToken cancellationToken = default)
@@ -267,6 +277,8 @@ public sealed class CapitalApiClient : IDisposable
             Region = ReadString(instrument, "region") ?? "",
             Sector = ReadString(instrument, "sector") ?? ReadString(instrument, "industry") ?? "",
             LotSize = ReadDecimal(instrument, "lotSize"),
+            MarginFactor = ReadDecimal(instrument, "marginFactor"),
+            MarginFactorUnit = ReadString(instrument, "marginFactorUnit") ?? "",
             MinDealSize = ReadRuleValue(root, "minDealSize"),
             MinSizeIncrement = ReadRuleValue(root, "minSizeIncrement"),
             Bid = bid,
@@ -281,6 +293,65 @@ public sealed class CapitalApiClient : IDisposable
         };
 
         return string.IsNullOrWhiteSpace(result.Epic) ? null : result;
+    }
+
+    internal static CapitalAccountSnapshot ParseActiveAccount(string json, string activeAccountId, DateTimeOffset retrievedAt)
+    {
+        using var document = JsonDocument.Parse(json);
+        return ParseActiveAccount(document.RootElement, activeAccountId, retrievedAt);
+    }
+
+    internal static CapitalAccountSnapshot ParseActiveAccount(JsonElement root, string activeAccountId, DateTimeOffset retrievedAt)
+    {
+        if (!root.TryGetProperty("accounts", out var accounts) || accounts.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("Capital.com did not return any accounts.");
+        }
+
+        JsonElement? selected = null;
+        foreach (var account in accounts.EnumerateArray())
+        {
+            if (string.Equals(ReadString(account, "accountId"), activeAccountId, StringComparison.Ordinal))
+            {
+                selected = account;
+                break;
+            }
+        }
+
+        if (selected is null)
+        {
+            foreach (var account in accounts.EnumerateArray())
+            {
+                if (account.TryGetProperty("preferred", out var preferred) && preferred.ValueKind == JsonValueKind.True)
+                {
+                    selected = account;
+                    break;
+                }
+            }
+        }
+
+        if (selected is null)
+        {
+            throw new InvalidOperationException($"Capital.com did not return active account '{activeAccountId}' or a preferred account.");
+        }
+
+        var accountValue = selected.Value;
+        var balance = accountValue.TryGetProperty("balance", out var balanceValue) && balanceValue.ValueKind == JsonValueKind.Object
+            ? ReadDecimal(balanceValue, "available") ?? 0m
+            : 0m;
+        return new CapitalAccountSnapshot(
+            ReadString(accountValue, "accountId") ?? "",
+            ReadString(accountValue, "currency") ?? ReadString(accountValue, "currencyIsoCode") ?? "",
+            balance,
+            retrievedAt);
+    }
+
+    private static (string AccountId, string Currency) ParseLoginMetadata(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return (
+            ReadString(document.RootElement, "currentAccountId") ?? "",
+            ReadString(document.RootElement, "currencyIsoCode") ?? "");
     }
 
     private static DateTimeOffset? ParseSnapshotTimestamp(JsonElement snapshot)
