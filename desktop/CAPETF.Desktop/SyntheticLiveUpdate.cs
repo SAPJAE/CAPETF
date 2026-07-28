@@ -34,12 +34,23 @@ public static class SyntheticLiveUpdate
         component.Instrument.LastTickAt = update.Time;
         basket.LastUpdated = update.Time;
         SyntheticQuoteCalculator.Refresh(basket);
-        if (update.Price is null || update.Price <= 0) return new SyntheticQuoteApplyResult(true, false);
 
         var componentPreviousPrice = component.LastAppliedPrice ?? component.SyntheticBaselinePrice ?? component.Instrument.Price;
-        component.Instrument.Price = update.Price;
-        component.LastAppliedPrice = update.Price;
-        component.NotifyInstrumentPriceChanged();
+        var componentPrice = update.Price.GetValueOrDefault();
+        var hasUsableComponentPrice = componentPrice > 0;
+        if (hasUsableComponentPrice)
+        {
+            component.Instrument.Price = componentPrice;
+            component.LastAppliedPrice = componentPrice;
+            component.NotifyInstrumentPriceChanged();
+        }
+
+        if (TryApplyCurrentSyntheticQuote(basket, update.Time, timeframe, out var completeQuoteChanged))
+        {
+            return new SyntheticQuoteApplyResult(true, completeQuoteChanged);
+        }
+
+        if (!hasUsableComponentPrice) return new SyntheticQuoteApplyResult(true, false);
         if (componentPreviousPrice is null || componentPreviousPrice <= 0 || basket.Candles.Count == 0)
         {
             return new SyntheticQuoteApplyResult(true, false);
@@ -47,12 +58,13 @@ public static class SyntheticLiveUpdate
 
         var candleRolled = StartCurrentCandleIfNeeded(basket, update.Time, timeframe);
         var last = basket.Candles[^1];
-        var delta = (update.Price.Value - componentPreviousPrice.Value) * component.FormulaMultiplier;
+        var delta = (componentPrice - componentPreviousPrice.Value) * component.FormulaMultiplier;
+        var nextClose = decimal.Round(last.Close + delta, 6);
         var updated = last with
         {
-            High = Math.Max(last.High, last.Close + delta),
-            Low = Math.Min(last.Low, last.Close + delta),
-            Close = decimal.Round(last.Close + delta, 6),
+            High = Math.Max(last.High, nextClose),
+            Low = Math.Min(last.Low, nextClose),
+            Close = nextClose,
         };
         var candleChanged = candleRolled || updated != last;
         if (updated != last)
@@ -61,6 +73,43 @@ public static class SyntheticLiveUpdate
         }
         if (candleChanged) basket.BasketPrice = updated.Close;
         return new SyntheticQuoteApplyResult(true, candleChanged);
+    }
+
+    public static bool ApplyCurrentSyntheticQuote(
+        SyntheticBasket basket,
+        DateTimeOffset quoteTime,
+        string? timeframe) =>
+        TryApplyCurrentSyntheticQuote(basket, quoteTime, timeframe, out var changed) && changed;
+
+    private static bool TryApplyCurrentSyntheticQuote(
+        SyntheticBasket basket,
+        DateTimeOffset quoteTime,
+        string? timeframe,
+        out bool changed)
+    {
+        changed = false;
+        if (basket.BidPrice is not > 0 || basket.AskPrice is not > 0 || basket.Candles.Count == 0)
+        {
+            return false;
+        }
+
+        var candleRolled = StartCurrentCandleIfNeeded(basket, quoteTime, timeframe);
+        var last = basket.Candles[^1];
+        var midpoint = decimal.Round((basket.BidPrice.Value + basket.AskPrice.Value) / 2m, 6);
+        var updated = last with
+        {
+            High = Math.Max(last.High, midpoint),
+            Low = Math.Min(last.Low, midpoint),
+            Close = midpoint,
+        };
+        changed = candleRolled || updated != last;
+        if (updated != last) basket.Candles[^1] = updated;
+        if (changed)
+        {
+            basket.BasketPrice = midpoint;
+            basket.LastUpdated = quoteTime;
+        }
+        return true;
     }
 
     private static bool StartCurrentCandleIfNeeded(

@@ -91,6 +91,8 @@ public static class SyntheticBasketBuilderTests
         SeededSyntheticSelectorDoesNotResolveShortTickersByLooseNameContains();
         SyntheticTerminalLiveUpdateReturnsIncrementalTick();
         LiveWeeklyQuoteStartsCurrentCandleInsteadOfRepaintingPriorWeek();
+        LiveCandleCloseTracksCompleteSyntheticQuoteMidpoint();
+        MarketSnapshotsConstructOngoingCandleBeforeFirstStreamTick();
         IncrementalAndNativeFreshnessUseIndependentUtcNow();
         StreamingQuoteClearsMissingAndZeroSides();
         StreamingQuoteClearsUnavailableSidesWithoutUsablePrice();
@@ -2080,7 +2082,7 @@ public static class SyntheticBasketBuilderTests
         if (!result.CandleChanged) throw new Exception("terminal live update must update the current synthetic candle");
         if (result.Tick is null) throw new Exception("terminal live update must return a compact tick payload");
         if (result.Tick.Candle is null) throw new Exception("a changed live candle must be included in the compact tick payload");
-        AssertNear(12m, result.Tick.Candle.Close, "terminal tick must contain the updated synthetic close");
+        AssertNear(12.1m, result.Tick.Candle.Close, "terminal tick must contain the live synthetic bid/ask midpoint");
         AssertEqual(1, result.Tick.ComponentQuotes.Count, "terminal tick should carry component quote metadata without full chart history");
         AssertEqual(DateTimeOffset.Parse("2026-07-25T00:01:00Z"), result.Tick.ComponentQuotes[0].QuoteTimestamp,
             "stream quote timestamp must flow into the terminal tick");
@@ -2113,6 +2115,82 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception("weekly rollover must publish the appended candle to the chart");
         }
+    }
+
+    private static void LiveCandleCloseTracksCompleteSyntheticQuoteMidpoint()
+    {
+        var candleTime = DateTimeOffset.Parse("2026-07-28T00:00:00Z");
+        var basket = new SyntheticBasket { Symbol = "SYN-ONGOING", BasketPrice = 88m };
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "LIVE-A", Bid = 79m, Offer = 81m, Price = 80m },
+            50m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 0.5m,
+            SyntheticBaselinePrice = 80m,
+            LastAppliedPrice = 80m,
+        });
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "LIVE-B", Bid = 102m, Offer = 102m, Price = 102m },
+            50m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 0.5m,
+            SyntheticBaselinePrice = 102m,
+            LastAppliedPrice = 102m,
+        });
+        basket.Candles.Add(new OhlcPoint(candleTime, 88m, 89m, 87m, 88m));
+
+        var result = SyntheticTerminalLiveUpdate.Apply(
+            basket,
+            new QuoteUpdate("LIVE-A", 80m, 82m, 81m, candleTime.AddHours(12)),
+            timeframe: "Daily");
+
+        AssertNear(91m, basket.BidPrice ?? 0m, "synthetic bid must include every current component quote");
+        AssertNear(92m, basket.AskPrice ?? 0m, "synthetic ask must include every current component quote");
+        AssertNear(91.5m, basket.Candles[^1].Close,
+            "ongoing candle close must track the midpoint of the complete synthetic bid and ask");
+        AssertNear(91.5m, basket.Candles[^1].High, "ongoing candle high must include the live synthetic midpoint");
+        if (!result.CandleChanged || result.Tick?.Candle is null)
+        {
+            throw new Exception("a complete synthetic quote must publish the constructed ongoing candle");
+        }
+    }
+
+    private static void MarketSnapshotsConstructOngoingCandleBeforeFirstStreamTick()
+    {
+        var priorDay = DateTimeOffset.Parse("2026-07-27T00:00:00Z");
+        var currentDay = DateTimeOffset.Parse("2026-07-28T10:00:00Z");
+        var basket = new SyntheticBasket { Symbol = "SYN-SNAPSHOT-BAR", BasketPrice = 88m };
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "SNAP-A", Bid = 80m, Offer = 82m, Price = 81m },
+            50m, 0m, 0m)
+        {
+            FormulaMultiplier = 0.5m,
+            SyntheticBaselinePrice = 81m,
+            LastAppliedPrice = 81m,
+        });
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument { Epic = "SNAP-B", Bid = 102m, Offer = 102m, Price = 102m },
+            50m, 0m, 0m)
+        {
+            FormulaMultiplier = 0.5m,
+            SyntheticBaselinePrice = 102m,
+            LastAppliedPrice = 102m,
+        });
+        basket.Candles.Add(new OhlcPoint(priorDay, 87m, 89m, 86m, 88m));
+        SyntheticQuoteCalculator.Refresh(basket);
+
+        var changed = SyntheticLiveUpdate.ApplyCurrentSyntheticQuote(basket, currentDay, "Daily");
+
+        if (!changed) throw new Exception("complete market snapshots must construct an ongoing candle without waiting for a tick");
+        AssertEqual(2, basket.Candles.Count, "snapshot quote must append the current daily candle");
+        AssertEqual(DateTimeOffset.Parse("2026-07-28T00:00:00Z"), basket.Candles[^1].Time,
+            "snapshot candle must use the selected timeframe bucket");
+        AssertNear(88m, basket.Candles[^1].Open, "snapshot candle must open at the prior close");
+        AssertNear(91.5m, basket.Candles[^1].Close, "snapshot candle must close at the complete synthetic midpoint");
     }
 
     private static void IncrementalAndNativeFreshnessUseIndependentUtcNow()

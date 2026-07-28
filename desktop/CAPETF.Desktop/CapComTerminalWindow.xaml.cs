@@ -583,6 +583,7 @@ public partial class CapComTerminalWindow : Window
         }
 
         SyntheticQuoteCalculator.Refresh(basket);
+        SyntheticLiveUpdate.ApplyCurrentSyntheticQuote(basket, DateTimeOffset.UtcNow, SelectedResolution());
     }
 
     private static void ApplyMarketDetails(MarketInstrument target, MarketInstrument details)
