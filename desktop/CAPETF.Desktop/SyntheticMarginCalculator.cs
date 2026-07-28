@@ -13,9 +13,10 @@ public sealed record SyntheticMarginLegPreview(
 
 public sealed record SyntheticMarginSidePreview(
     string Side,
+    string AccountCurrency,
     bool IsAvailable,
     string UnavailableReason,
-    decimal TotalMargin,
+    decimal? TotalMargin,
     IReadOnlyList<SyntheticMarginLegPreview> Legs);
 
 public sealed record SyntheticMarginSummary(
@@ -38,7 +39,7 @@ public static class SyntheticMarginCalculator
         var executable = SyntheticOrderSizing.BuildExecutableOrderPreview(basket, side, basketNotional);
         if (conversionRate <= 0)
         {
-            return Unavailable(executable.Side, $"Margin conversion to {accountCurrency} is unavailable.");
+            return Unavailable(executable.Side, accountCurrency, $"Margin conversion to {accountCurrency} is unavailable.");
         }
 
         for (var index = 0; index < basket.Components.Count; index++)
@@ -47,7 +48,7 @@ public static class SyntheticMarginCalculator
             if (instrument.MarginFactor is null ||
                 !string.Equals(instrument.MarginFactorUnit, "PERCENTAGE", StringComparison.OrdinalIgnoreCase))
             {
-                return Unavailable(executable.Side, $"Margin factor for {instrument.Epic} is unavailable.");
+                return Unavailable(executable.Side, accountCurrency, $"Margin factor for {instrument.Epic} is unavailable.");
             }
         }
 
@@ -74,6 +75,7 @@ public static class SyntheticMarginCalculator
 
         return new SyntheticMarginSidePreview(
             executable.Side,
+            accountCurrency,
             true,
             "",
             legs.Sum(leg => leg.MarginAccountCurrency),
@@ -83,15 +85,29 @@ public static class SyntheticMarginCalculator
     public static SyntheticMarginSummary Combine(
         CapitalAccountSnapshot account,
         SyntheticMarginSidePreview buy,
-        SyntheticMarginSidePreview sell) =>
-        new(
+        SyntheticMarginSidePreview sell)
+    {
+        ValidateAccountCurrency(account, buy);
+        ValidateAccountCurrency(account, sell);
+
+        return new SyntheticMarginSummary(
             account.Currency,
             account.Available,
-            buy.IsAvailable ? account.Available - buy.TotalMargin : null,
-            sell.IsAvailable ? account.Available - sell.TotalMargin : null,
+            buy.IsAvailable && buy.TotalMargin is decimal buyMargin ? account.Available - buyMargin : null,
+            sell.IsAvailable && sell.TotalMargin is decimal sellMargin ? account.Available - sellMargin : null,
             buy,
             sell);
+    }
 
-    private static SyntheticMarginSidePreview Unavailable(string side, string reason) =>
-        new(side, false, reason, 0m, []);
+    private static SyntheticMarginSidePreview Unavailable(string side, string accountCurrency, string reason) =>
+        new(side, accountCurrency, false, reason, null, []);
+
+    private static void ValidateAccountCurrency(CapitalAccountSnapshot account, SyntheticMarginSidePreview preview)
+    {
+        if (!string.Equals(account.Currency, preview.AccountCurrency, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Margin preview account currency {preview.AccountCurrency} does not match active account currency {account.Currency}.");
+        }
+    }
 }

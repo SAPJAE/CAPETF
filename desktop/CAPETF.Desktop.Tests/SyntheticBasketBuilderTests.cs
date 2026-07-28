@@ -169,6 +169,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticMarginUsesLotSizeWhenSizingExecutableNotional();
         SyntheticMarginReportsUnsupportedMarginUnitsAsUnavailable();
         SyntheticMarginCombinesAccountAvailability();
+        SyntheticMarginRejectsAccountCurrencyMismatch();
         SavedSyntheticBasketStorePersistsFormulaDetails();
         SavedBasketRestorePreservesExactFormulaAndRejectsMissingEpics();
         SavedBasketLoadUsesFaithfulFormulaRestorer();
@@ -5397,13 +5398,13 @@ public static class SyntheticBasketBuilderTests
         AssertNear(202m, buy.Legs[0].NativeNotional, "BUY long uses rounded executable notional");
         AssertNear(40.4m, buy.Legs[0].NativeMargin, "percentage margin applies in native currency");
         AssertNear(44.44m, buy.Legs[0].MarginAccountCurrency, "native margin converts to account currency");
-        AssertNear(98.34m, buy.TotalMargin, "BUY total sums converted executable leg margins");
-        AssertNear(buy.Legs.Sum(x => x.MarginAccountCurrency), buy.TotalMargin, "BUY total sums leg margins");
+        AssertNear(98.34m, buy.TotalMargin ?? throw new Exception("available BUY preview must provide a total"), "BUY total sums converted executable leg margins");
+        AssertNear(buy.Legs.Sum(x => x.MarginAccountCurrency), buy.TotalMargin ?? throw new Exception("available BUY preview must provide a total"), "BUY total sums leg margins");
 
         AssertTrue(sell.IsAvailable, "percentage margin factors must produce an available SELL preview");
         AssertEqual("SELL", sell.Legs[0].Side, "positive SELL leg side");
         AssertEqual("BUY", sell.Legs[1].Side, "negative SELL leg reverses side");
-        AssertNear(85.635m, sell.TotalMargin, "SELL must use its own bid and offer execution prices");
+        AssertNear(85.635m, sell.TotalMargin ?? throw new Exception("available SELL preview must provide a total"), "SELL must use its own bid and offer execution prices");
     }
 
     private static void SyntheticMarginUsesLotSizeWhenSizingExecutableNotional()
@@ -5421,7 +5422,7 @@ public static class SyntheticBasketBuilderTests
         AssertNear(1.5m, preview.Legs[0].Quantity, "lot-aware sizing must round quantity up to the deal increment");
         AssertNear(180m, preview.Legs[0].NativeNotional, "lot-aware sizing must preserve executable notional");
         AssertNear(18m, preview.Legs[0].NativeMargin, "lot-aware native margin");
-        AssertNear(36m, preview.TotalMargin, "lot-aware margin converts to account currency");
+        AssertNear(36m, preview.TotalMargin ?? throw new Exception("available lot-aware preview must provide a total"), "lot-aware margin converts to account currency");
     }
 
     private static void SyntheticMarginReportsUnsupportedMarginUnitsAsUnavailable()
@@ -5436,8 +5437,18 @@ public static class SyntheticBasketBuilderTests
         var preview = SyntheticMarginCalculator.CalculateSide(basket, "BUY", 100m, "USD", 1m);
 
         AssertFalse(preview.IsAvailable, "unsupported margin factor units must not produce a guessed margin");
+        if (preview.TotalMargin is not null) throw new Exception("unavailable margin preview must not expose a numeric total");
         AssertTrue(preview.UnavailableReason.Contains("UNSUPPORTED", StringComparison.Ordinal),
             "unsupported margin result must name the affected epic");
+
+        var summary = SyntheticMarginCalculator.Combine(
+            new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+            preview,
+            preview);
+        if (summary.Buy.TotalMargin is not null || summary.AfterBuy is not null)
+        {
+            throw new Exception("summary must preserve an unavailable margin as absent rather than zero");
+        }
     }
 
     private static void SyntheticMarginCombinesAccountAvailability()
@@ -5448,7 +5459,7 @@ public static class SyntheticBasketBuilderTests
             Epic = "ACCOUNT", Currency = "USD", Bid = 100m, Offer = 100m,
             MarginFactor = 20m, MarginFactorUnit = "PERCENTAGE",
         }, 100m, 0m, 0m));
-        var buy = SyntheticMarginCalculator.CalculateSide(basket, "BUY", 300m, "USD", 1m);
+        var buy = SyntheticMarginCalculator.CalculateSide(basket, "BUY", 300m, "usd", 1m);
         var sell = SyntheticMarginCalculator.CalculateSide(basket, "SELL", 200m, "USD", 1m);
         var account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch);
 
@@ -5457,6 +5468,32 @@ public static class SyntheticBasketBuilderTests
         AssertNear(440m, summary.AfterBuy ?? throw new Exception("available BUY preview must provide AfterBuy"), "AfterBuy must subtract BUY total margin from available funds");
         AssertNear(460m, summary.AfterSell ?? throw new Exception("available SELL preview must provide AfterSell"), "AfterSell must subtract SELL total margin from available funds");
         AssertEqual("USD", summary.AccountCurrency, "summary uses the active account currency");
+    }
+
+    private static void SyntheticMarginRejectsAccountCurrencyMismatch()
+    {
+        var basket = new SyntheticBasket { Symbol = "SYN-CURRENCY" };
+        basket.Components.Add(new SyntheticComponent(new MarketInstrument
+        {
+            Epic = "CURRENCY", Currency = "USD", Bid = 100m, Offer = 100m,
+            MarginFactor = 20m, MarginFactorUnit = "PERCENTAGE",
+        }, 100m, 0m, 0m));
+        var buy = SyntheticMarginCalculator.CalculateSide(basket, "BUY", 100m, "USD", 1m);
+        var sell = SyntheticMarginCalculator.CalculateSide(basket, "SELL", 100m, "EUR", 1m);
+        var account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch);
+
+        try
+        {
+            SyntheticMarginCalculator.Combine(account, buy, sell);
+        }
+        catch (InvalidOperationException ex)
+        {
+            AssertTrue(ex.Message.Contains("currency", StringComparison.OrdinalIgnoreCase),
+                "currency mismatch must identify the rejected account currency");
+            return;
+        }
+
+        throw new Exception("Combine must reject a BUY or SELL preview in a different account currency");
     }
 
     private static void OutOfOrderStreamingQuoteDoesNotMutateComponentState()
