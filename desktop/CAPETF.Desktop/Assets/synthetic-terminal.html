@@ -452,6 +452,60 @@
       gap: 8px;
     }
 
+    #margin-summary {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #margin-summary > div {
+      min-width: 0;
+    }
+
+    #margin-summary span {
+      display: block;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+      line-height: 1.2;
+      text-transform: uppercase;
+    }
+
+    #margin-summary strong {
+      display: block;
+      min-width: 0;
+      margin-top: 2px;
+      color: #f8fafc;
+      font-size: 11px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+
+    #margin-summary.stale strong {
+      color: #fcd34d;
+    }
+
+    #margin-summary strong.negative {
+      color: #fca5a5;
+    }
+
+    #margin-legs {
+      display: grid;
+      gap: 3px;
+      font-size: 11px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .margin-leg-side {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
     #quantity-row,
     #order-buttons {
       display: grid;
@@ -659,6 +713,14 @@
               <span class="muted">Basket notional</span>
               <input id="quantity" type="number" value="300" min="1" step="100">
             </div>
+            <div id="margin-summary" aria-live="polite" data-state="unavailable">
+              <div><span>Buy margin</span><strong id="buy-margin">Unavailable</strong></div>
+              <div><span>Sell margin</span><strong id="sell-margin">Unavailable</strong></div>
+              <div><span>Available</span><strong id="available-margin">Unavailable</strong></div>
+              <div><span>After Buy</span><strong id="after-buy-margin">Unavailable</strong></div>
+              <div><span>After Sell</span><strong id="after-sell-margin">Unavailable</strong></div>
+            </div>
+            <div id="margin-legs" class="muted">Margin details unavailable.</div>
             <div id="order-buttons">
               <button type="button" id="buy-preview">Buy</button>
               <button type="button" id="sell-preview">Sell</button>
@@ -684,6 +746,7 @@
     const sideRail = document.getElementById('side-rail');
     const componentSplitter = document.getElementById('component-splitter');
     const terminal = document.getElementById('terminal');
+    const quantity = document.getElementById('quantity');
     const intervalButtons = Array.from(document.querySelectorAll('.interval'));
     const modeButtons = Array.from(document.querySelectorAll('.mode'));
     const maButtons = Array.from(document.querySelectorAll('.ma'));
@@ -728,6 +791,7 @@
     let terminalTickFrame = null;
     let terminalPayloadGeneration = 0;
     let activeTerminalIdentity = '';
+    let marginPreviewTimer = null;
     const SYNTHETIC_PRICE_FLOOR = -10;
     const RAIL_WIDTH_KEY = 'capcom-terminal-rail-width';
     const RAIL_MIN_WIDTH = 260;
@@ -750,6 +814,77 @@
       if (Math.abs(numeric) >= 1000) return numeric.toFixed(2);
       if (Math.abs(numeric) >= 10) return numeric.toFixed(4);
       return numeric.toFixed(5);
+    }
+
+    function marginValue(value, currency) {
+      if (value === null || value === undefined || value === '') return 'Unavailable';
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return 'Unavailable';
+      return `${currency || 'n/a'} ${numeric.toFixed(2)}`;
+    }
+
+    function isMarginNumber(value) {
+      return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+    }
+
+    function setMarginValue(id, value, currency) {
+      const element = document.getElementById(id);
+      const numeric = Number(value);
+      element.textContent = marginValue(value, currency);
+      element.classList.toggle('negative', isMarginNumber(value) && numeric < 0);
+    }
+
+    function setMarginPreviewStale(stale) {
+      const summary = document.getElementById('margin-summary');
+      summary.classList.toggle('stale', stale);
+      summary.dataset.state = stale ? 'stale' : 'ready';
+    }
+
+    function addMarginLegRows(container, preview, accountCurrency) {
+      const side = getField(preview, 'Side', 'side', '');
+      const available = getField(preview, 'IsAvailable', 'isAvailable', false);
+      const heading = document.createElement('div');
+      heading.className = 'margin-leg-side';
+      heading.textContent = side || 'Margin';
+      container.appendChild(heading);
+
+      if (!available) {
+        const unavailable = document.createElement('div');
+        unavailable.textContent = getField(preview, 'UnavailableReason', 'unavailableReason', 'Unavailable');
+        container.appendChild(unavailable);
+        return;
+      }
+
+      const legs = getField(preview, 'Legs', 'legs', []);
+      legs.forEach(leg => {
+        const row = document.createElement('div');
+        const legSide = getField(leg, 'Side', 'side', '');
+        const epic = getField(leg, 'Epic', 'epic', '');
+        const quantity = getField(leg, 'Quantity', 'quantity', null);
+        const nativeCurrency = getField(leg, 'NativeCurrency', 'nativeCurrency', accountCurrency);
+        const nativeMargin = getField(leg, 'NativeMargin', 'nativeMargin', null);
+        const accountMargin = getField(leg, 'MarginAccountCurrency', 'marginAccountCurrency', null);
+        row.textContent = `${legSide} ${formatMultiplier(quantity)} x ${epic}: ${marginValue(nativeMargin, nativeCurrency)} (${marginValue(accountMargin, accountCurrency)})`;
+        container.appendChild(row);
+      });
+    }
+
+    function renderMarginLegs(summary, accountCurrency) {
+      const container = document.getElementById('margin-legs');
+      container.replaceChildren();
+      addMarginLegRows(container, getField(summary, 'Buy', 'buy', {}), accountCurrency);
+      addMarginLegRows(container, getField(summary, 'Sell', 'sell', {}), accountCurrency);
+    }
+
+    function scheduleMarginPreview() {
+      window.clearTimeout(marginPreviewTimer);
+      setMarginPreviewStale(true);
+      marginPreviewTimer = window.setTimeout(() => {
+        marginPreviewTimer = null;
+        if (window.chrome && window.chrome.webview) {
+          window.chrome.webview.postMessage({ type: 'previewMargins', basketNotional: Number(quantity.value) });
+        }
+      }, 200);
     }
 
     function normalizeCandle(candle) {
@@ -1235,6 +1370,7 @@
       if (terminalTickFrame !== null) cancelAnimationFrame(terminalTickFrame);
       terminalTickFrame = null;
       apply(nextPayload, false);
+      scheduleMarginPreview();
     };
 
     function flushTerminalTick() {
@@ -1283,6 +1419,7 @@
 
       renderMetadata();
       renderPriceLines();
+      scheduleMarginPreview();
       document.getElementById('stream-state').textContent = 'stream tick';
     }
 
@@ -1412,6 +1549,43 @@
       }
     };
 
+    window.setTerminalMarginPreview = function(summary) {
+      const error = getField(summary, 'Error', 'error', '');
+      const summaryElement = document.getElementById('margin-summary');
+      const legs = document.getElementById('margin-legs');
+      if (error) {
+        for (const id of ['buy-margin', 'sell-margin', 'available-margin', 'after-buy-margin', 'after-sell-margin']) {
+          setMarginValue(id, null, '');
+        }
+        summaryElement.classList.toggle('stale', true);
+        summaryElement.dataset.state = 'unavailable';
+        legs.textContent = error;
+        return;
+      }
+
+      const currency = getField(summary, 'AccountCurrency', 'accountCurrency', '');
+      const buy = getField(summary, 'Buy', 'buy', {});
+      const sell = getField(summary, 'Sell', 'sell', {});
+      const buyMargin = getField(buy, 'TotalMargin', 'totalMargin', null);
+      const sellMargin = getField(sell, 'TotalMargin', 'totalMargin', null);
+      const available = getField(summary, 'Available', 'available', null);
+      const afterBuy = getField(summary, 'AfterBuy', 'afterBuy', null);
+      const afterSell = getField(summary, 'AfterSell', 'afterSell', null);
+      const unavailable = !getField(buy, 'IsAvailable', 'isAvailable', false) ||
+        !getField(sell, 'IsAvailable', 'isAvailable', false) ||
+        !isMarginNumber(afterBuy) ||
+        !isMarginNumber(afterSell);
+
+      setMarginValue('buy-margin', buyMargin, currency);
+      setMarginValue('sell-margin', sellMargin, currency);
+      setMarginValue('available-margin', available, currency);
+      setMarginValue('after-buy-margin', afterBuy, currency);
+      setMarginValue('after-sell-margin', afterSell, currency);
+      summaryElement.classList.toggle('stale', unavailable);
+      summaryElement.dataset.state = unavailable ? 'unavailable' : 'ready';
+      renderMarginLegs(summary, currency);
+    };
+
     window.setTerminalOrderPreview = function(preview) {
       const error = getField(preview, 'Error', 'error', '');
       if (error) {
@@ -1467,8 +1641,9 @@
     lineStyleButtons.forEach(button => button.addEventListener('click', () => applySelectedStyle({ lineStyle: button.dataset.lineStyle })));
     document.getElementById('fit-chart').addEventListener('click', window.fitTerminalChart);
     document.getElementById('components-toggle').addEventListener('click', window.toggleTerminalComponents);
-    document.getElementById('buy-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('buy', document.getElementById('quantity').value));
-    document.getElementById('sell-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('sell', document.getElementById('quantity').value));
+    quantity.addEventListener('input', () => scheduleMarginPreview());
+    document.getElementById('buy-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('buy', quantity.value));
+    document.getElementById('sell-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('sell', quantity.value));
     componentSplitter.addEventListener('pointerdown', beginRailResize);
     componentSplitter.addEventListener('pointermove', resizeRail);
     componentSplitter.addEventListener('pointerup', endRailResize);

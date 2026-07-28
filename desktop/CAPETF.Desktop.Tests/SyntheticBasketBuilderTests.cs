@@ -121,6 +121,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlExposesDecisionChartControls();
         SyntheticTerminalHtmlExposesV2TerminalControls();
         TerminalOrderPreviewUsesProductionSizingBridge();
+        SyntheticTerminalMarginPreviewRendersAndRefreshes();
         CapComTerminalUsesClearActionLabelsAndSymbolDropdown();
         SeedSearchOptionsIncludePalantirByNameAndSymbolAcrossBlocks();
         SeededSyntheticBuildsDoNotUseGenericHistoryFallback();
@@ -3737,6 +3738,45 @@ public static class SyntheticBasketBuilderTests
             {
                 throw new Exception($"dashboard terminal order preview host bridge missing {required}");
             }
+        }
+    }
+
+    private static void SyntheticTerminalMarginPreviewRendersAndRefreshes()
+    {
+        var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
+        foreach (var required in new[]
+        {
+            "id=\"margin-summary\"",
+            "aria-live=\"polite\"",
+            "id=\"buy-margin\"",
+            "id=\"sell-margin\"",
+            "id=\"available-margin\"",
+            "id=\"after-buy-margin\"",
+            "id=\"after-sell-margin\"",
+            "id=\"margin-legs\"",
+            "window.setTerminalMarginPreview",
+            "Unavailable",
+            "value === null",
+            "AccountCurrency",
+            "AfterBuy",
+            "AfterSell",
+            "classList.toggle('negative'",
+            "classList.toggle('stale'",
+            "type: 'previewMargins'",
+            "setTimeout",
+            "quantity.addEventListener('input'",
+        })
+        {
+            if (!html.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal margin preview HTML missing {required}");
+            }
+        }
+
+        var requestCount = html.Split("scheduleMarginPreview();", StringSplitOptions.None).Length - 1;
+        if (requestCount < 2)
+        {
+            throw new Exception("terminal margin preview must refresh after basket load, notional changes, and live ticks");
         }
     }
 
