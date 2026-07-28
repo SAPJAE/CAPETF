@@ -238,9 +238,11 @@ internal sealed class SyntheticMarginPreviewService
         string toCurrency,
         CancellationToken cancellationToken)
     {
-        if (string.Equals(fromCurrency, toCurrency, StringComparison.OrdinalIgnoreCase)) return 1m;
+        var fromIdentity = ConversionCurrencyIdentity(fromCurrency);
+        var toIdentity = ConversionCurrencyIdentity(toCurrency);
+        if (string.Equals(fromIdentity, toIdentity, StringComparison.OrdinalIgnoreCase)) return 1m;
 
-        var cacheKey = $"{fromCurrency}/{toCurrency}";
+        var cacheKey = $"{fromIdentity}/{toIdentity}";
         var now = _utcNow();
         lock (_cacheLock)
         {
@@ -252,16 +254,16 @@ internal sealed class SyntheticMarginPreviewService
                 if (now - cached.RetrievedAt < duration)
                 {
                     if (cached.Rate is > 0) return cached.Rate.Value;
-                    throw ConversionUnavailable(fromCurrency, toCurrency);
+                    throw ConversionUnavailable(fromIdentity, toIdentity);
                 }
             }
         }
 
-        var direct = await FindMidpointAsync(fromCurrency, toCurrency, cancellationToken);
+        var direct = await FindMidpointAsync(fromIdentity, toIdentity, cancellationToken);
         var rate = direct;
         if (rate is null)
         {
-            var inverse = await FindMidpointAsync(toCurrency, fromCurrency, cancellationToken);
+            var inverse = await FindMidpointAsync(toIdentity, fromIdentity, cancellationToken);
             if (inverse is > 0) rate = 1m / inverse.Value;
         }
 
@@ -271,7 +273,7 @@ internal sealed class SyntheticMarginPreviewService
             {
                 _conversionCache[cacheKey] = new CachedConversion(null, _utcNow());
             }
-            throw ConversionUnavailable(fromCurrency, toCurrency);
+            throw ConversionUnavailable(fromIdentity, toIdentity);
         }
 
         lock (_cacheLock)
@@ -340,6 +342,19 @@ internal sealed class SyntheticMarginPreviewService
 
     private static string NormalizePairIdentity(string value) =>
         new(value.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
+
+    private static string ConversionCurrencyIdentity(string currency)
+    {
+        var identity = currency.Trim();
+        if (identity.Length == 4 &&
+            char.ToUpperInvariant(identity[3]) == 'D' &&
+            identity[..3].All(char.IsLetter))
+        {
+            identity = identity[..3];
+        }
+
+        return identity.ToUpperInvariant();
+    }
 
     private static InvalidOperationException ConversionUnavailable(string fromCurrency, string toCurrency) =>
         new($"Margin conversion {fromCurrency}/{toCurrency} is unavailable from Capital.com.");

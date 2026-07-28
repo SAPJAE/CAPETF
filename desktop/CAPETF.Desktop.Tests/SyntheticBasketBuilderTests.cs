@@ -25,6 +25,8 @@ public static class SyntheticBasketBuilderTests
         SyntheticMarginPreviewEnrichesBlankBasketCurrency();
         SyntheticMarginPreviewRetainsExpiredAccountSnapshotAsStale();
         SyntheticMarginPreviewCachesUnavailableConversionBriefly();
+        SyntheticMarginPreviewTreatsDemoAliasAsSameCurrency();
+        SyntheticMarginPreviewUsesNormalizedDemoAliasForFxLookup();
         SyntheticMarginRejectsNullFactorAndNonpositiveConversion();
         SyntheticMarginUsesDefaultLotSizeForNullAndZero();
         CapComTerminalResetsMarginContextAndRejectsInvalidNotional();
@@ -5940,6 +5942,64 @@ public static class SyntheticBasketBuilderTests
             "same-currency SELL margin must use a conversion rate of one");
         AssertEqual(1, source.AccountRequestCount, "active account snapshots must be cached for repeated previews");
         AssertEqual(0, source.SearchQueries.Count, "same-currency previews must not search for a conversion market");
+    }
+
+    private static void SyntheticMarginPreviewTreatsDemoAliasAsSameCurrency()
+    {
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("demo", "USDd", 500m, DateTimeOffset.UnixEpoch),
+        };
+
+        var summary = new SyntheticMarginPreviewService(source)
+            .BuildAsync(CreateMarginPreviewBasket("USD"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+
+        AssertNear(20m, summary.Buy.TotalMargin ?? throw new Exception("USD/USDd margin must be available"),
+            "USD and Capital demo alias USDd must use a conversion rate of one");
+        AssertEqual(0, source.SearchQueries.Count,
+            "USD to USDd must not search for a conversion market");
+        AssertEqual("USDd", summary.AccountCurrency,
+            "the summary must preserve the original Capital demo account currency label");
+        AssertEqual("USDd", summary.Buy.AccountCurrency,
+            "margin-side currency must preserve the original Capital demo account currency for Combine validation");
+    }
+
+    private static void SyntheticMarginPreviewUsesNormalizedDemoAliasForFxLookup()
+    {
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("demo", "USDd", 500m, DateTimeOffset.UnixEpoch),
+        };
+        source.SearchResults["EUR/USD"] =
+        [
+            new MarketInstrument
+            {
+                Epic = "FX-EURUSD",
+                Symbol = "EUR/USD",
+                Name = "Euro / US Dollar",
+                Type = "CURRENCIES",
+            },
+        ];
+        source.MarketDetails["FX-EURUSD"] = new MarketInstrument
+        {
+            Epic = "FX-EURUSD",
+            Bid = 1.09m,
+            Offer = 1.11m,
+        };
+
+        var summary = new SyntheticMarginPreviewService(source)
+            .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+
+        AssertNear(22m, summary.Buy.TotalMargin ?? throw new Exception("EUR/USDd margin must be available"),
+            "EUR to USDd must use the normalized EUR/USD midpoint");
+        AssertEqual(1, source.SearchQueries.Count,
+            "a direct normalized demo-currency conversion must issue one market search");
+        AssertEqual("EUR/USD", source.SearchQueries[0],
+            "EUR to USDd must query the Capital EUR/USD market identity");
+        AssertEqual("USDd", summary.AccountCurrency,
+            "FX normalization must not alter the displayed account currency");
+        AssertEqual("USDd", summary.Buy.Legs[0].AccountCurrency,
+            "converted legs must retain the original account currency label");
     }
 
     private static void SyntheticMarginPreviewEnrichesBlankBasketCurrency()
