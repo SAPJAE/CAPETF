@@ -25,7 +25,9 @@ public sealed record SyntheticMarginSummary(
     decimal? AfterBuy,
     decimal? AfterSell,
     SyntheticMarginSidePreview Buy,
-    SyntheticMarginSidePreview Sell);
+    SyntheticMarginSidePreview Sell,
+    bool IsAccountStale = false,
+    string AccountError = "");
 
 public static class SyntheticMarginCalculator
 {
@@ -85,7 +87,9 @@ public static class SyntheticMarginCalculator
     public static SyntheticMarginSummary Combine(
         CapitalAccountSnapshot account,
         SyntheticMarginSidePreview buy,
-        SyntheticMarginSidePreview sell)
+        SyntheticMarginSidePreview sell,
+        bool isAccountStale = false,
+        string accountError = "")
     {
         ValidateAccountCurrency(account, buy);
         ValidateAccountCurrency(account, sell);
@@ -96,7 +100,9 @@ public static class SyntheticMarginCalculator
             buy.IsAvailable && buy.TotalMargin is decimal buyMargin ? account.Available - buyMargin : null,
             sell.IsAvailable && sell.TotalMargin is decimal sellMargin ? account.Available - sellMargin : null,
             buy,
-            sell);
+            sell,
+            isAccountStale,
+            accountError);
     }
 
     private static SyntheticMarginSidePreview Unavailable(string side, string accountCurrency, string reason) =>

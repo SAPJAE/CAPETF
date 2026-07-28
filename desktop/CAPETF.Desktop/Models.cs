@@ -54,7 +54,7 @@ public sealed class MarketInstrument : INotifyPropertyChanged
     public string Name { get; init; } = "";
     public string Symbol { get; init; } = "";
     public string Type { get; init; } = "";
-    public string Currency { get; init; } = "";
+    public string Currency { get; set; } = "";
     public string Country { get; init; } = "";
     public string Sector { get; init; } = "";
     public string Region { get; init; } = "";

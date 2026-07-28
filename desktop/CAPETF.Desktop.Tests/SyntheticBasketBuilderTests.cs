@@ -22,6 +22,13 @@ public static class SyntheticBasketBuilderTests
         IncompleteOhlcRowsAreExcluded();
         MarketDetailsParseMarginMetadata();
         AccountsParseActiveAvailableFunds();
+        SyntheticMarginPreviewEnrichesBlankBasketCurrency();
+        SyntheticMarginPreviewRetainsExpiredAccountSnapshotAsStale();
+        SyntheticMarginPreviewCachesUnavailableConversionBriefly();
+        SyntheticMarginRejectsNullFactorAndNonpositiveConversion();
+        SyntheticMarginUsesDefaultLotSizeForNullAndZero();
+        CapComTerminalResetsMarginContextAndRejectsInvalidNotional();
+        SyntheticTerminalMarginRuntimeExercisesFinalReviewRegressions();
         AccountsRejectPreferredFallbackWithoutCurrentAccountId();
         AccountsRejectMissingAvailableFunds();
         AccountsRejectNonNumericAvailableFunds();
@@ -3808,6 +3815,250 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void CapComTerminalResetsMarginContextAndRejectsInvalidNotional()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "ResetMarginPreviewContextAsync(",
+            "clearBasket: true",
+            "await ResetMarginPreviewAfterLoginAsync()",
+            "_marginPreviewRefresh = null",
+            "window.resetTerminalMarginPreview",
+            "SyntheticMarginPreviewInput.TryValidate",
+            "target.Currency = details.Currency",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal final margin reset/input contract missing {required}");
+            }
+        }
+
+        foreach (var forbidden in new[]
+        {
+            "basketNotional > 0 ? basketNotional : 300m",
+            "if (basketNotional <= 0) basketNotional = 300m",
+        })
+        {
+            if (source.Contains(forbidden, StringComparison.Ordinal))
+            {
+                throw new Exception($"invalid visible notionals must never fall back to 300: {forbidden}");
+            }
+        }
+    }
+
+    private static void SyntheticTerminalMarginRuntimeExercisesFinalReviewRegressions()
+    {
+        var htmlPath = SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html");
+        const string script = """
+            const assert = require('node:assert/strict');
+            const fs = require('node:fs');
+            const vm = require('node:vm');
+
+            class FakeClassList {
+              constructor() { this.values = new Set(); }
+              add(...values) { values.forEach(value => this.values.add(value)); }
+              remove(...values) { values.forEach(value => this.values.delete(value)); }
+              contains(value) { return this.values.has(value); }
+              toggle(value, force) {
+                const enabled = force === undefined ? !this.values.has(value) : !!force;
+                if (enabled) this.values.add(value); else this.values.delete(value);
+                return enabled;
+              }
+            }
+
+            class FakeElement {
+              constructor(id = '') {
+                this.id = id;
+                this.dataset = {};
+                this.classList = new FakeClassList();
+                this.style = { display: '', setProperty() {} };
+                this.textContent = '';
+                this.innerHTML = '';
+                this.value = id === 'quantity' ? '300' : '';
+                this.disabled = false;
+                this.attributes = new Map();
+                this.children = [];
+              }
+              addEventListener() {}
+              removeEventListener() {}
+              setAttribute(name, value) { this.attributes.set(name, String(value)); }
+              getAttribute(name) { return this.attributes.get(name) || null; }
+              getBoundingClientRect() { return { left: 0, top: 0, right: 800, width: 800, height: 600 }; }
+              hasPointerCapture() { return false; }
+              setPointerCapture() {}
+              releasePointerCapture() {}
+              focus() { document.activeElement = this; }
+              appendChild(child) { this.children.push(child); return child; }
+              replaceChildren(...children) { this.children = [...children]; this.textContent = ''; }
+            }
+
+            const elements = new Map();
+            const element = id => {
+              if (!elements.has(id)) elements.set(id, new FakeElement(id));
+              return elements.get(id);
+            };
+            global.window = globalThis;
+            global.document = {
+              activeElement: null,
+              body: new FakeElement('body'),
+              documentElement: new FakeElement('html'),
+              createElement() { return new FakeElement(); },
+              getElementById: element,
+              querySelectorAll() { return []; }
+            };
+            global.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+            global.confirm = () => true;
+            global.addEventListener = () => {};
+            global.removeEventListener = () => {};
+            global.requestAnimationFrame = callback => { callback(); return 1; };
+            global.cancelAnimationFrame = () => {};
+
+            let nextTimer = 1;
+            const timers = new Map();
+            global.setTimeout = callback => {
+              const id = nextTimer++;
+              timers.set(id, callback);
+              return id;
+            };
+            global.clearTimeout = id => timers.delete(id);
+            function flushTimers() {
+              const queued = Array.from(timers.values());
+              timers.clear();
+              queued.forEach(callback => callback());
+            }
+
+            const messages = [];
+            global.chrome = { webview: { postMessage(message) { messages.push(message); } } };
+            function makeSeries() {
+              return {
+                setData() {}, update() {}, createPriceLine() { return {}; }, removePriceLine() {},
+                priceToCoordinate(value) { return Number(value); }, coordinateToPrice(value) { return Number(value); },
+                attachPrimitive() {}, detachPrimitive() {}
+              };
+            }
+            const timeScale = {
+              fitContent() {}, scrollToRealTime() {}, applyOptions() {}, scrollPosition() { return 0; },
+              scrollToPosition() {}, timeToCoordinate(value) { return Number(value); },
+              coordinateToTime(value) { return Number(value); }
+            };
+            global.LightweightCharts = {
+              CandlestickSeries: {}, LineSeries: {}, CrosshairMode: { Normal: 0 },
+              version() { return 'test'; },
+              createChart() {
+                return {
+                  addSeries() { return makeSeries(); }, timeScale() { return timeScale; },
+                  priceScale() { return { applyOptions() {} }; }, subscribeCrosshairMove() {}, resize() {}
+                };
+              }
+            };
+            const fakeDrawingManager = {
+              updateContext() {}, getRecords() { return []; }, setRecords() {}, setTool() { return true; },
+              cancel() {}, undo() {}, redo() {}, setMagnet() {}, setLocked() {}, setVisible() {},
+              setStyle() {}, clear() {}, getState() { return {}; }
+            };
+            global.CapComDrawings = {
+              createManager() { return fakeDrawingManager; },
+              createTextDialogController() { return { open() {}, close() {}, dispose() {} }; },
+              switchDrawingIdentity(manager, storage, oldIdentity, nextIdentity) { return nextIdentity; },
+              persistStoredRecords() { return true; }
+            };
+            global.lucide = { createIcons() {} };
+
+            const html = fs.readFileSync(process.argv[1], 'utf8');
+            const matches = Array.from(html.matchAll(/<script>([\s\S]*?)<\/script>/g));
+            assert.ok(matches.length > 0, 'terminal inline script must exist');
+            vm.runInThisContext(matches.at(-1)[1], { filename: process.argv[1] });
+
+            const buy = {
+              Side: 'BUY', IsAvailable: true, TotalMargin: 100,
+              Legs: [{
+                Side: 'SELL', Epic: 'HEDGE', ReferencePrice: 49.25, Quantity: 2,
+                NativeNotional: 98.5, NativeCurrency: 'EUR', NativeMargin: 19.7,
+                AccountCurrency: 'USD', MarginAccountCurrency: 21.67
+              }]
+            };
+            const sell = {
+              Side: 'SELL', IsAvailable: true, TotalMargin: 50,
+              Legs: [{
+                Side: 'BUY', Epic: 'HEDGE', ReferencePrice: 50.25, Quantity: 2,
+                NativeNotional: 100.5, NativeCurrency: 'EUR', NativeMargin: 20.1,
+                AccountCurrency: 'USD', MarginAccountCurrency: 22.11
+              }]
+            };
+            const ready = {
+              AccountCurrency: 'USD', Available: 500, AfterBuy: -5, AfterSell: 450,
+              IsAccountStale: false, AccountError: '', Buy: buy, Sell: sell
+            };
+
+            window.setTerminalMarginPreview(ready);
+            assert.equal(element('margin-summary').dataset.state, 'ready');
+            assert.equal(element('available-margin').textContent, 'USD 500.00');
+            assert.ok(element('after-buy-margin').classList.contains('negative'),
+              'negative remaining funds must retain warning styling');
+            const legText = element('margin-legs').children.map(child => child.textContent).join(' | ');
+            assert.match(legText, /SELL 2 x HEDGE @ EUR 49\.25/,
+              'leg rows must show effective side, quantity, and execution price');
+            assert.match(legText, /notional EUR 98\.50/,
+              'leg rows must show native notional');
+            assert.match(legText, /margin EUR 19\.70.*account USD 21\.67/,
+              'leg rows must show native and account-currency margin contribution');
+
+            window.setTerminalMarginPreview({
+              ...ready, IsAccountStale: true, AccountError: 'account refresh failed'
+            });
+            assert.equal(element('available-margin').textContent, 'USD 500.00',
+              'stale account rendering must retain the last successful availability');
+            assert.equal(element('margin-summary').dataset.state, 'stale');
+            assert.match(element('margin-status').textContent, /stale.*account refresh failed/i,
+              'stale account rendering must show a visible stale reason');
+
+            element('status').textContent = 'Quotes fresh';
+            window.setTerminalBusy(true, 'Refreshing margin preview');
+            assert.equal(element('status').textContent, 'Refreshing margin preview');
+            window.setTerminalBusy(false);
+            assert.equal(element('status').textContent, 'Quotes fresh',
+              'releasing busy ownership must clear the refreshing label');
+
+            window.setTerminalMarginPreview({ ...ready, Buy: { ...buy, TotalMargin: null } });
+            assert.equal(element('buy-margin').textContent, 'Unavailable');
+            assert.equal(element('margin-summary').dataset.state, 'unavailable');
+
+            messages.length = 0;
+            for (const invalid of ['', '0', '-10']) {
+              element('quantity').value = invalid;
+              scheduleMarginPreview();
+              flushTimers();
+              assert.equal(messages.length, 0, `invalid notional ${invalid || 'blank'} must not reach the host`);
+              assert.equal(element('margin-summary').dataset.state, 'unavailable');
+              assert.match(element('margin-status').textContent, /greater than 0/i);
+            }
+
+            element('quantity').value = '100';
+            scheduleMarginPreview();
+            element('quantity').value = '250';
+            scheduleMarginPreview();
+            flushTimers();
+            assert.equal(messages.length, 1, 'a burst of valid notional changes must debounce to one request');
+            assert.equal(messages[0].basketNotional, 250);
+
+            messages.length = 0;
+            element('quantity').value = '300';
+            window.setTerminalData({
+              Symbol: 'basket-a', DrawingIdentity: 'basket-a', Candles: [], Components: []
+            });
+            window.clearTerminal();
+            flushTimers();
+            assert.equal(messages.length, 0,
+              'clearing the terminal must cancel its scheduled margin request');
+            assert.equal(element('margin-summary').dataset.state, 'unavailable');
+            assert.match(element('margin-status').textContent, /build.*basket/i);
+            """;
+
+        RunNodeDrawingContract(htmlPath, script, "terminal margin final-review DOM");
+    }
+
     private static void DesktopDefaultSearchDoesNotFilterStocksByEtf()
     {
         var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "MainWindow.xaml"));
@@ -5508,6 +5759,62 @@ public static class SyntheticBasketBuilderTests
         AssertNear(36m, preview.TotalMargin ?? throw new Exception("available lot-aware preview must provide a total"), "lot-aware margin converts to account currency");
     }
 
+    private static void SyntheticMarginRejectsNullFactorAndNonpositiveConversion()
+    {
+        var missingFactorBasket = CreateMarginPreviewBasket("USD");
+        missingFactorBasket.Components[0].Instrument.MarginFactor = null;
+        var missingFactor = SyntheticMarginCalculator.CalculateSide(
+            missingFactorBasket,
+            "BUY",
+            100m,
+            "USD",
+            1m);
+
+        AssertFalse(missingFactor.IsAvailable, "a null margin factor must make the side unavailable");
+        AssertTrue(missingFactor.UnavailableReason.Contains("LEG", StringComparison.Ordinal),
+            "a null margin factor must identify the affected epic");
+        if (missingFactor.TotalMargin is not null)
+        {
+            throw new Exception("a null margin factor must not expose a numeric total");
+        }
+
+        foreach (var conversionRate in new[] { 0m, -1m })
+        {
+            var unavailable = SyntheticMarginCalculator.CalculateSide(
+                CreateMarginPreviewBasket("EUR"),
+                "BUY",
+                100m,
+                "USD",
+                conversionRate);
+            AssertFalse(unavailable.IsAvailable,
+                $"conversion rate {conversionRate} must make the side unavailable");
+            AssertTrue(unavailable.UnavailableReason.Contains("conversion", StringComparison.OrdinalIgnoreCase),
+                $"conversion rate {conversionRate} must report a conversion error");
+        }
+    }
+
+    private static void SyntheticMarginUsesDefaultLotSizeForNullAndZero()
+    {
+        foreach (var lotSize in new decimal?[] { null, 0m })
+        {
+            var basket = CreateMarginPreviewBasket("USD");
+            var instrument = basket.Components[0].Instrument;
+            instrument.Bid = 25m;
+            instrument.Offer = 25m;
+            instrument.LotSize = lotSize;
+
+            var preview = SyntheticMarginCalculator.CalculateSide(basket, "BUY", 100m, "USD", 1m);
+
+            AssertTrue(preview.IsAvailable, $"lot size {lotSize?.ToString() ?? "null"} must use the default lot");
+            AssertNear(4m, preview.Legs[0].Quantity,
+                $"lot size {lotSize?.ToString() ?? "null"} must size with an effective lot of one");
+            AssertNear(100m, preview.Legs[0].NativeNotional,
+                $"lot size {lotSize?.ToString() ?? "null"} must preserve executable notional");
+            AssertNear(20m, preview.TotalMargin ?? throw new Exception("default-lot margin must be available"),
+                $"lot size {lotSize?.ToString() ?? "null"} must use the same default in margin arithmetic");
+        }
+    }
+
     private static void SyntheticMarginReportsUnsupportedMarginUnitsAsUnavailable()
     {
         var basket = new SyntheticBasket { Symbol = "SYN-UNAVAILABLE" };
@@ -5597,6 +5904,105 @@ public static class SyntheticBasketBuilderTests
             "same-currency SELL margin must use a conversion rate of one");
         AssertEqual(1, source.AccountRequestCount, "active account snapshots must be cached for repeated previews");
         AssertEqual(0, source.SearchQueries.Count, "same-currency previews must not search for a conversion market");
+    }
+
+    private static void SyntheticMarginPreviewEnrichesBlankBasketCurrency()
+    {
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+        };
+        source.MarketDetails["LEG"] = new MarketInstrument
+        {
+            Epic = "LEG",
+            Currency = "USD",
+            LotSize = 1m,
+            MinDealSize = 1m,
+            MinSizeIncrement = 1m,
+            MarginFactor = 20m,
+            MarginFactorUnit = "PERCENTAGE",
+        };
+        var basket = CreateMarginPreviewBasket("");
+
+        var summary = new SyntheticMarginPreviewService(source)
+            .BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+
+        AssertEqual("USD", basket.Components[0].Instrument.Currency,
+            "market details must enrich a blank API-fallback basket currency");
+        AssertTrue(summary.Buy.IsAvailable,
+            "a basket enriched from market details must produce an available margin preview");
+        AssertEqual(1, source.MarketDetailRequestCount("LEG"),
+            "blank currency must trigger one market-details enrichment request");
+    }
+
+    private static void SyntheticMarginPreviewRetainsExpiredAccountSnapshotAsStale()
+    {
+        var now = DateTimeOffset.Parse("2026-07-28T12:00:00Z");
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, now),
+        };
+        var service = new SyntheticMarginPreviewService(source, () => now);
+        var basket = CreateMarginPreviewBasket("USD");
+        var fresh = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        AssertNear(500m, fresh.Available, "initial successful account availability");
+
+        now = now.AddSeconds(11);
+        source.AccountHandler = _ => Task.FromException<CapitalAccountSnapshot>(
+            new InvalidOperationException("account refresh failed"));
+
+        var stale = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        var serialized = JsonSerializer.Serialize(stale);
+
+        AssertNear(500m, stale.Available,
+            "an account refresh failure must retain the last successful availability");
+        AssertTrue(serialized.Contains("\"IsAccountStale\":true", StringComparison.Ordinal),
+            "retained account availability must be explicitly marked stale");
+        AssertTrue(serialized.Contains("account refresh failed", StringComparison.Ordinal),
+            "a stale account summary must carry the refresh error");
+        AssertEqual(2, source.AccountRequestCount,
+            "an expired account snapshot must attempt exactly one refresh before stale fallback");
+    }
+
+    private static void SyntheticMarginPreviewCachesUnavailableConversionBriefly()
+    {
+        var now = DateTimeOffset.Parse("2026-07-28T12:00:00Z");
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, now),
+        };
+        var service = new SyntheticMarginPreviewService(source, () => now);
+        var basket = CreateMarginPreviewBasket("EUR");
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+                throw new Exception("an unavailable conversion must remain explicit");
+            }
+            catch (InvalidOperationException ex) when (ex.Message ==
+                "Margin conversion EUR/USD is unavailable from Capital.com.")
+            {
+            }
+        }
+
+        AssertEqual(2, source.SearchQueries.Count,
+            "a cached FX failure must suppress repeat direct and inverse searches during the short TTL");
+
+        now = now.AddSeconds(6);
+        try
+        {
+            service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+            throw new Exception("an unavailable conversion must remain explicit after cache expiry");
+        }
+        catch (InvalidOperationException ex) when (ex.Message ==
+            "Margin conversion EUR/USD is unavailable from Capital.com.")
+        {
+        }
+
+        AssertEqual(4, source.SearchQueries.Count,
+            "an unavailable FX lookup must retry after its bounded failure TTL expires");
     }
 
     private static void SyntheticMarginPreviewUsesDirectMidpointAndRefreshesMissingMetadata()
@@ -5896,12 +6302,13 @@ public static class SyntheticBasketBuilderTests
     {
         var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
         var loginCount = source.Split("await _api.LoginAsync", StringSplitOptions.None).Length - 1;
-        var resetCount = source.Split("ResetMarginPreviewAfterLogin();", StringSplitOptions.None).Length - 1;
+        var resetCount = source.Split("await ResetMarginPreviewAfterLoginAsync();", StringSplitOptions.None).Length - 1;
 
         AssertEqual(2, loginCount, "window login contract must cover explicit connect and ensure-connected login");
         AssertEqual(loginCount, resetCount, "every successful window login must immediately reset margin-preview state");
-        AssertTrue(source.Contains("_marginPreviewRefresh?.Cancel();", StringComparison.Ordinal),
-            "a successful login must cancel an in-flight preview from the prior session");
+        AssertTrue(source.Contains("CancelMarginPreviewRequest();", StringComparison.Ordinal) &&
+                   source.Contains("_marginPreviewRefresh = null", StringComparison.Ordinal),
+            "a successful login must relinquish and cancel an in-flight preview from the prior session");
         AssertTrue(source.Contains("_marginPreview.InvalidateCaches();", StringComparison.Ordinal),
             "a successful login must invalidate all margin-preview caches");
     }
@@ -6625,6 +7032,7 @@ public static class SyntheticBasketBuilderTests
             new(StringComparer.OrdinalIgnoreCase);
         public List<string> SearchQueries { get; } = [];
         public int AccountRequestCount { get; private set; }
+        public Func<CancellationToken, Task<CapitalAccountSnapshot>>? AccountHandler { get; set; }
         public Func<string, CancellationToken, Task<MarketInstrument?>>? MarketDetailsHandler { get; init; }
         private Dictionary<string, int> MarketDetailRequestCounts { get; } =
             new(StringComparer.OrdinalIgnoreCase);
@@ -6633,6 +7041,7 @@ public static class SyntheticBasketBuilderTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             AccountRequestCount++;
+            if (AccountHandler is not null) return AccountHandler(cancellationToken);
             return Task.FromResult(Account);
         }
 

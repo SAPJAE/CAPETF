@@ -24,10 +24,30 @@ internal static class SyntheticMarginPreviewPublication
         ReferenceEquals(currentBasket, requestBasket);
 }
 
+internal static class SyntheticMarginPreviewInput
+{
+    public const string InvalidReason = "Enter a basket notional greater than 0.";
+
+    public static bool TryValidate(decimal? value, out decimal basketNotional, out string error)
+    {
+        if (value is > 0)
+        {
+            basketNotional = value.Value;
+            error = "";
+            return true;
+        }
+
+        basketNotional = 0m;
+        error = InvalidReason;
+        return false;
+    }
+}
+
 internal sealed class SyntheticMarginPreviewService
 {
     private static readonly TimeSpan AccountCacheDuration = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ConversionCacheDuration = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ConversionFailureCacheDuration = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan MetadataAttemptCacheDuration = TimeSpan.FromSeconds(30);
 
     private readonly ISyntheticMarginDataSource _source;
@@ -68,7 +88,8 @@ internal sealed class SyntheticMarginPreviewService
         cancellationToken.ThrowIfCancellationRequested();
 
         await RefreshMissingMarginMetadataAsync(basket, cancellationToken);
-        var account = await GetAccountAsync(cancellationToken);
+        var accountResult = await GetAccountAsync(cancellationToken);
+        var account = accountResult.Account;
         if (string.IsNullOrWhiteSpace(account.Currency))
         {
             throw new InvalidOperationException("Capital.com active account currency is unavailable.");
@@ -91,7 +112,12 @@ internal sealed class SyntheticMarginPreviewService
             basketNotional,
             account.Currency,
             conversionRate);
-        return SyntheticMarginCalculator.Combine(account, buy, sell);
+        return SyntheticMarginCalculator.Combine(
+            account,
+            buy,
+            sell,
+            accountResult.IsStale,
+            accountResult.Error);
     }
 
     private async Task RefreshMissingMarginMetadataAsync(
@@ -108,6 +134,11 @@ internal sealed class SyntheticMarginPreviewService
             cancellationToken.ThrowIfCancellationRequested();
             if (details is null) continue;
 
+            if (string.IsNullOrWhiteSpace(instrument.Currency) &&
+                !string.IsNullOrWhiteSpace(details.Currency))
+            {
+                instrument.Currency = details.Currency.Trim();
+            }
             if (instrument.LotSize is not > 0 && details.LotSize is > 0) instrument.LotSize = details.LotSize;
             if (instrument.MinDealSize is not > 0 && details.MinDealSize is > 0) instrument.MinDealSize = details.MinDealSize;
             if (instrument.MinSizeIncrement is not > 0 && details.MinSizeIncrement is > 0)
@@ -167,25 +198,38 @@ internal sealed class SyntheticMarginPreviewService
         }
     }
 
-    private async Task<CapitalAccountSnapshot> GetAccountAsync(CancellationToken cancellationToken)
+    private async Task<AccountLookupResult> GetAccountAsync(CancellationToken cancellationToken)
     {
         var now = _utcNow();
+        CapitalAccountSnapshot? staleAccount;
         lock (_cacheLock)
         {
             if (_cachedAccount is not null && now - _accountCachedAt < AccountCacheDuration)
             {
-                return _cachedAccount;
+                return new AccountLookupResult(_cachedAccount, false, "");
             }
+            staleAccount = _cachedAccount;
         }
 
-        var account = await _source.GetActiveAccountAsync(cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
-        lock (_cacheLock)
+        try
         {
-            _cachedAccount = account;
-            _accountCachedAt = _utcNow();
+            var account = await _source.GetActiveAccountAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_cacheLock)
+            {
+                _cachedAccount = account;
+                _accountCachedAt = _utcNow();
+            }
+            return new AccountLookupResult(account, false, "");
         }
-        return account;
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (staleAccount is not null)
+        {
+            return new AccountLookupResult(staleAccount, true, ex.Message);
+        }
     }
 
     private async Task<decimal> GetConversionRateAsync(
@@ -199,10 +243,16 @@ internal sealed class SyntheticMarginPreviewService
         var now = _utcNow();
         lock (_cacheLock)
         {
-            if (_conversionCache.TryGetValue(cacheKey, out var cached) &&
-                now - cached.RetrievedAt < ConversionCacheDuration)
+            if (_conversionCache.TryGetValue(cacheKey, out var cached))
             {
-                return cached.Rate;
+                var duration = cached.Rate is > 0
+                    ? ConversionCacheDuration
+                    : ConversionFailureCacheDuration;
+                if (now - cached.RetrievedAt < duration)
+                {
+                    if (cached.Rate is > 0) return cached.Rate.Value;
+                    throw ConversionUnavailable(fromCurrency, toCurrency);
+                }
             }
         }
 
@@ -216,8 +266,11 @@ internal sealed class SyntheticMarginPreviewService
 
         if (rate is not > 0)
         {
-            throw new InvalidOperationException(
-                $"Margin conversion {fromCurrency}/{toCurrency} is unavailable from Capital.com.");
+            lock (_cacheLock)
+            {
+                _conversionCache[cacheKey] = new CachedConversion(null, _utcNow());
+            }
+            throw ConversionUnavailable(fromCurrency, toCurrency);
         }
 
         lock (_cacheLock)
@@ -249,6 +302,7 @@ internal sealed class SyntheticMarginPreviewService
     }
 
     private static bool NeedsMarginMetadata(MarketInstrument instrument) =>
+        string.IsNullOrWhiteSpace(instrument.Currency) ||
         instrument.LotSize is not > 0 ||
         instrument.MinDealSize is not > 0 ||
         instrument.MinSizeIncrement is not > 0 ||
@@ -286,7 +340,11 @@ internal sealed class SyntheticMarginPreviewService
     private static string NormalizePairIdentity(string value) =>
         new(value.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
 
-    private sealed record CachedConversion(decimal Rate, DateTimeOffset RetrievedAt);
+    private static InvalidOperationException ConversionUnavailable(string fromCurrency, string toCurrency) =>
+        new($"Margin conversion {fromCurrency}/{toCurrency} is unavailable from Capital.com.");
+
+    private sealed record CachedConversion(decimal? Rate, DateTimeOffset RetrievedAt);
+    private sealed record AccountLookupResult(CapitalAccountSnapshot Account, bool IsStale, string Error);
     private sealed class CachedMetadataAttempt(Task<MarketInstrument?> details)
     {
         public Task<MarketInstrument?> Details { get; } = details;

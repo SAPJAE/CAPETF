@@ -498,6 +498,12 @@
       overflow-wrap: anywhere;
     }
 
+    #margin-status {
+      min-height: 14px;
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
     .margin-leg-side {
       margin-top: 2px;
       color: var(--muted);
@@ -720,6 +726,7 @@
               <div><span>After Buy</span><strong id="after-buy-margin">Unavailable</strong></div>
               <div><span>After Sell</span><strong id="after-sell-margin">Unavailable</strong></div>
             </div>
+            <div id="margin-status" class="muted">Margin details unavailable.</div>
             <div id="margin-legs" class="muted">Margin details unavailable.</div>
             <div id="order-buttons">
               <button type="button" id="buy-preview">Buy</button>
@@ -792,6 +799,9 @@
     let terminalPayloadGeneration = 0;
     let activeTerminalIdentity = '';
     let marginPreviewTimer = null;
+    let terminalBusyLabel = '';
+    let terminalStatusBeforeBusy = '';
+    const INVALID_MARGIN_NOTIONAL = 'Enter a basket notional greater than 0.';
     const SYNTHETIC_PRICE_FLOOR = -10;
     const RAIL_WIDTH_KEY = 'capcom-terminal-rail-width';
     const RAIL_MIN_WIDTH = 260;
@@ -840,6 +850,27 @@
       summary.dataset.state = stale ? 'stale' : 'ready';
     }
 
+    function parseBasketNotional(value) {
+      const raw = String(value ?? '').trim();
+      const numeric = Number(raw);
+      return raw && Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    }
+
+    function resetMarginPreview(reason) {
+      window.clearTimeout(marginPreviewTimer);
+      marginPreviewTimer = null;
+      for (const id of ['buy-margin', 'sell-margin', 'available-margin', 'after-buy-margin', 'after-sell-margin']) {
+        setMarginValue(id, null, '');
+      }
+      const summary = document.getElementById('margin-summary');
+      summary.classList.toggle('stale', true);
+      summary.dataset.state = 'unavailable';
+      document.getElementById('margin-status').textContent = reason || 'Margin details unavailable.';
+      const legs = document.getElementById('margin-legs');
+      legs.replaceChildren();
+      legs.textContent = reason || 'Margin details unavailable.';
+    }
+
     function addMarginLegRows(container, preview, accountCurrency) {
       const side = getField(preview, 'Side', 'side', '');
       const available = getField(preview, 'IsAvailable', 'isAvailable', false);
@@ -861,10 +892,14 @@
         const legSide = getField(leg, 'Side', 'side', '');
         const epic = getField(leg, 'Epic', 'epic', '');
         const quantity = getField(leg, 'Quantity', 'quantity', null);
+        const referencePrice = getField(leg, 'ReferencePrice', 'referencePrice', null);
+        const nativeNotional = getField(leg, 'NativeNotional', 'nativeNotional', null);
         const nativeCurrency = getField(leg, 'NativeCurrency', 'nativeCurrency', accountCurrency);
         const nativeMargin = getField(leg, 'NativeMargin', 'nativeMargin', null);
         const accountMargin = getField(leg, 'MarginAccountCurrency', 'marginAccountCurrency', null);
-        row.textContent = `${legSide} ${formatMultiplier(quantity)} x ${epic}: ${marginValue(nativeMargin, nativeCurrency)} (${marginValue(accountMargin, accountCurrency)})`;
+        row.textContent = `${legSide} ${formatMultiplier(quantity)} x ${epic} @ ${marginValue(referencePrice, nativeCurrency)} | ` +
+          `notional ${marginValue(nativeNotional, nativeCurrency)} | margin ${marginValue(nativeMargin, nativeCurrency)} | ` +
+          `account ${marginValue(accountMargin, accountCurrency)}`;
         container.appendChild(row);
       });
     }
@@ -878,11 +913,16 @@
 
     function scheduleMarginPreview() {
       window.clearTimeout(marginPreviewTimer);
+      const basketNotional = parseBasketNotional(quantity.value);
+      if (basketNotional === null) {
+        resetMarginPreview(INVALID_MARGIN_NOTIONAL);
+        return;
+      }
       setMarginPreviewStale(true);
       marginPreviewTimer = window.setTimeout(() => {
         marginPreviewTimer = null;
         if (window.chrome && window.chrome.webview) {
-          window.chrome.webview.postMessage({ type: 'previewMargins', basketNotional: Number(quantity.value) });
+          window.chrome.webview.postMessage({ type: 'previewMargins', basketNotional });
         }
       }, 200);
     }
@@ -1446,13 +1486,25 @@
 
     window.setTerminalBusy = function(busy, label) {
       const active = !!busy;
+      const status = document.getElementById('status');
       terminal.setAttribute('aria-busy', String(active));
-      if (active) setStatus(label || 'Working');
+      if (active) {
+        if (!terminalBusyLabel) terminalStatusBeforeBusy = status.textContent;
+        terminalBusyLabel = label || 'Working';
+        setStatus(terminalBusyLabel);
+      } else {
+        if (terminalBusyLabel && status.textContent === terminalBusyLabel) setStatus(terminalStatusBeforeBusy);
+        terminalBusyLabel = '';
+        terminalStatusBeforeBusy = '';
+      }
     };
 
     window.clearTerminal = function() {
       window.setTerminalData({ Candles: [], Components: [] });
+      resetMarginPreview('Build a synthetic basket to preview margin.');
     };
+
+    window.resetTerminalMarginPreview = resetMarginPreview;
 
     window.resizeTerminal = function() {
       if (!chart) return;
@@ -1542,8 +1594,14 @@
     };
 
     window.placeSyntheticPreviewOrder = function(side, basketNotional) {
+      const validatedNotional = parseBasketNotional(basketNotional);
+      if (validatedNotional === null) {
+        resetMarginPreview(INVALID_MARGIN_NOTIONAL);
+        document.getElementById('order-preview').textContent = INVALID_MARGIN_NOTIONAL;
+        return;
+      }
       if (window.chrome && window.chrome.webview) {
-        window.chrome.webview.postMessage({ type: 'previewOrder', side: String(side).toUpperCase(), basketNotional: Number(basketNotional) });
+        window.chrome.webview.postMessage({ type: 'previewOrder', side: String(side).toUpperCase(), basketNotional: validatedNotional });
       } else {
         document.getElementById('order-preview').textContent = 'Desktop order preview host unavailable.';
       }
@@ -1552,14 +1610,8 @@
     window.setTerminalMarginPreview = function(summary) {
       const error = getField(summary, 'Error', 'error', '');
       const summaryElement = document.getElementById('margin-summary');
-      const legs = document.getElementById('margin-legs');
       if (error) {
-        for (const id of ['buy-margin', 'sell-margin', 'available-margin', 'after-buy-margin', 'after-sell-margin']) {
-          setMarginValue(id, null, '');
-        }
-        summaryElement.classList.toggle('stale', true);
-        summaryElement.dataset.state = 'unavailable';
-        legs.textContent = error;
+        resetMarginPreview(error);
         return;
       }
 
@@ -1571,6 +1623,8 @@
       const available = getField(summary, 'Available', 'available', null);
       const afterBuy = getField(summary, 'AfterBuy', 'afterBuy', null);
       const afterSell = getField(summary, 'AfterSell', 'afterSell', null);
+      const accountStale = !!getField(summary, 'IsAccountStale', 'isAccountStale', false);
+      const accountError = getField(summary, 'AccountError', 'accountError', '');
       const unavailable = !getField(buy, 'IsAvailable', 'isAvailable', false) ||
         !getField(sell, 'IsAvailable', 'isAvailable', false) ||
         !isMarginNumber(buyMargin) ||
@@ -1584,8 +1638,13 @@
       setMarginValue('available-margin', available, currency);
       setMarginValue('after-buy-margin', afterBuy, currency);
       setMarginValue('after-sell-margin', afterSell, currency);
-      summaryElement.classList.toggle('stale', unavailable);
-      summaryElement.dataset.state = unavailable ? 'unavailable' : 'ready';
+      summaryElement.classList.toggle('stale', unavailable || accountStale);
+      summaryElement.dataset.state = unavailable ? 'unavailable' : accountStale ? 'stale' : 'ready';
+      document.getElementById('margin-status').textContent = unavailable
+        ? 'One or more margin values are unavailable.'
+        : accountStale
+          ? `Available funds are stale${accountError ? `: ${accountError}` : '.'}`
+          : '';
       renderMarginLegs(summary, currency);
     };
 

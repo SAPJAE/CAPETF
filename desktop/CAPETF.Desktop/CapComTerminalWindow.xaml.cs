@@ -75,7 +75,7 @@ public partial class CapComTerminalWindow : Window
         {
             ConnectionText.Text = $"connecting to {SavedCredentialLabel(saved)}...";
             await _api.LoginAsync(saved, cancellationToken);
-            ResetMarginPreviewAfterLogin();
+            await ResetMarginPreviewAfterLoginAsync();
             cancellationToken.ThrowIfCancellationRequested();
             ConnectionText.Text = $"connected to {SavedCredentialLabel(saved)}";
             StatusText.Text = $"Connected to {SavedCredentialLabel(saved)}. Loading universe...";
@@ -321,6 +321,7 @@ public partial class CapComTerminalWindow : Window
             .ToList();
         if (resolvedInstruments.Count != saved.Components.Count || resolvedInstruments.Any(instrument => instrument is null))
         {
+            await ClearTerminalChartAsync();
             StatusText.Text = $"Saved basket {saved.Name} could not be loaded because some leg symbols are missing from the universe.";
             return;
         }
@@ -604,6 +605,10 @@ public partial class CapComTerminalWindow : Window
             target.LastTickAt = details.LastTickAt;
         }
 
+        if (string.IsNullOrWhiteSpace(target.Currency) && !string.IsNullOrWhiteSpace(details.Currency))
+        {
+            target.Currency = details.Currency.Trim();
+        }
         if (details.LotSize is > 0) target.LotSize = details.LotSize;
         if (details.MinDealSize is > 0) target.MinDealSize = details.MinDealSize;
         if (details.MinSizeIncrement is > 0) target.MinSizeIncrement = details.MinSizeIncrement;
@@ -692,15 +697,17 @@ public partial class CapComTerminalWindow : Window
         var saved = _credentialStore.Load();
         if (saved is null) throw new InvalidOperationException("No saved Capital.com keys found.");
         await _api.LoginAsync(saved, cancellationToken);
-        ResetMarginPreviewAfterLogin();
+        await ResetMarginPreviewAfterLoginAsync();
         cancellationToken.ThrowIfCancellationRequested();
         ConnectionText.Text = "connected";
     }
 
-    private void ResetMarginPreviewAfterLogin()
+    private Task ResetMarginPreviewAfterLoginAsync()
     {
-        _marginPreviewRefresh?.Cancel();
         _marginPreview.InvalidateCaches();
+        return ResetMarginPreviewContextAsync(
+            clearBasket: false,
+            reason: "Margin preview reset after login. Awaiting refresh.");
     }
 
     private async Task<bool> RunOperationAsync(string operationName, Func<CancellationToken, Task> action, int? total = null)
@@ -1070,8 +1077,9 @@ public partial class CapComTerminalWindow : Window
     private void ScheduleMarginPreview(decimal basketNotional)
     {
         if (_basket is null || _windowLifetime.IsClosing) return;
-        _marginPreviewNotional = basketNotional > 0 ? basketNotional : 300m;
-        _marginPreviewRefresh?.Cancel();
+        if (!SyntheticMarginPreviewInput.TryValidate(basketNotional, out var validatedNotional, out _)) return;
+        _marginPreviewNotional = validatedNotional;
+        CancelMarginPreviewRequest();
         var request = CancellationTokenSource.CreateLinkedTokenSource(_windowLifetime.Token);
         _marginPreviewRefresh = request;
         _ = RefreshMarginPreviewAsync(_basket, _marginPreviewNotional, request);
@@ -1119,8 +1127,29 @@ public partial class CapComTerminalWindow : Window
     private static string SavedCredentialLabel(ApiCredentials credentials) =>
         credentials.UseDemo ? "Capital.com demo" : "Capital.com live";
 
+    private void CancelMarginPreviewRequest()
+    {
+        var request = _marginPreviewRefresh;
+        _marginPreviewRefresh = null;
+        request?.Cancel();
+    }
+
+    private async Task ResetMarginPreviewContextAsync(bool clearBasket, string reason, bool releaseBusy = false)
+    {
+        CancelMarginPreviewRequest();
+        if (clearBasket) _basket = null;
+        if (_windowLifetime.IsClosing) return;
+        if (releaseBusy) await SetTerminalBusyAsync(false);
+        var json = JsonSerializer.Serialize(reason);
+        await InvokeTerminalScriptAsync(
+            $"window.resetTerminalMarginPreview && window.resetTerminalMarginPreview({json});");
+    }
+
     private async Task ClearTerminalChartAsync()
     {
+        await ResetMarginPreviewContextAsync(
+            clearBasket: true,
+            reason: "Build a synthetic basket to preview margin.");
         _pendingPayload = null;
         SymbolText.Text = "No synthetic symbol";
         ChartMetaText.Text = "No synthetic basket could be built for the current seed and block.";
@@ -1214,7 +1243,7 @@ public partial class CapComTerminalWindow : Window
         await InvokeTerminalScriptAsync("window.fitTerminalChart && window.fitTerminalChart();");
     }
 
-    private void TerminalWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    private async void TerminalWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         if (_windowLifetime.IsClosing) return;
         try
@@ -1224,11 +1253,22 @@ public partial class CapComTerminalWindow : Window
             if (!root.TryGetProperty("type", out var type)) return;
             if (type.GetString() == "previewMargins")
             {
-                var requestedNotional = root.TryGetProperty("basketNotional", out var marginNotional) &&
-                                        marginNotional.TryGetDecimal(out var parsedMarginNotional)
+                decimal? requestedNotional = root.TryGetProperty("basketNotional", out var marginNotional) &&
+                                             marginNotional.TryGetDecimal(out var parsedMarginNotional)
                     ? parsedMarginNotional
-                    : 0m;
-                ScheduleMarginPreview(requestedNotional);
+                    : null;
+                if (!SyntheticMarginPreviewInput.TryValidate(
+                        requestedNotional,
+                        out var validatedNotional,
+                        out var inputError))
+                {
+                    await ResetMarginPreviewContextAsync(
+                        clearBasket: false,
+                        reason: inputError,
+                        releaseBusy: true);
+                    return;
+                }
+                ScheduleMarginPreview(validatedNotional);
                 return;
             }
             if (type.GetString() != "previewOrder") return;
@@ -1252,9 +1292,18 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
-        _ = decimal.TryParse(QuantityBox.Text, out var enteredNotional);
-        var basketNotional = requestedBasketNotional is > 0 ? requestedBasketNotional.Value : enteredNotional;
-        if (basketNotional <= 0) basketNotional = 300m;
+        decimal? inputNotional = requestedBasketNotional;
+        if (inputNotional is null && decimal.TryParse(QuantityBox.Text, out var enteredNotional))
+        {
+            inputNotional = enteredNotional;
+        }
+        if (!SyntheticMarginPreviewInput.TryValidate(inputNotional, out var basketNotional, out var inputError))
+        {
+            OrderPreviewText.Text = inputError;
+            var errorJson = JsonSerializer.Serialize(new { Error = inputError });
+            _ = InvokeTerminalScriptAsync($"window.setTerminalOrderPreview && window.setTerminalOrderPreview({errorJson});");
+            return;
+        }
         try
         {
             var preview = SyntheticOrderSizing.BuildExecutableOrderPreview(_basket, side, basketNotional);
@@ -1277,7 +1326,7 @@ public partial class CapComTerminalWindow : Window
     {
         base.OnClosing(e);
         if (e.Cancel) return;
-        _marginPreviewRefresh?.Cancel();
+        CancelMarginPreviewRequest();
         _windowLifetime.BeginClosing();
     }
 
