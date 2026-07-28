@@ -308,6 +308,11 @@ public sealed class CapitalApiClient : IDisposable
             throw new InvalidOperationException("Capital.com did not return any accounts.");
         }
 
+        if (string.IsNullOrWhiteSpace(activeAccountId))
+        {
+            throw new InvalidOperationException("Capital.com current account ID was missing.");
+        }
+
         JsonElement? selected = null;
         foreach (var account in accounts.EnumerateArray())
         {
@@ -318,26 +323,9 @@ public sealed class CapitalApiClient : IDisposable
             }
         }
 
-        if (selected is null && !string.IsNullOrWhiteSpace(activeAccountId))
+        if (selected is null)
         {
             throw new InvalidOperationException($"Capital.com did not return active account '{activeAccountId}'.");
-        }
-
-        if (selected is null)
-        {
-            foreach (var account in accounts.EnumerateArray())
-            {
-                if (account.TryGetProperty("preferred", out var preferred) && preferred.ValueKind == JsonValueKind.True)
-                {
-                    selected = account;
-                    break;
-                }
-            }
-        }
-
-        if (selected is null)
-        {
-            throw new InvalidOperationException($"Capital.com did not return active account '{activeAccountId}' or a preferred account.");
         }
 
         var accountValue = selected.Value;

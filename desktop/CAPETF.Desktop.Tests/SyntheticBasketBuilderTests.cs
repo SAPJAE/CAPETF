@@ -22,7 +22,7 @@ public static class SyntheticBasketBuilderTests
         IncompleteOhlcRowsAreExcluded();
         MarketDetailsParseMarginMetadata();
         AccountsParseActiveAvailableFunds();
-        AccountsRejectPreferredFallbackWhenCurrentAccountIsMissing();
+        AccountsRejectPreferredFallbackWithoutCurrentAccountId();
         AccountsRejectMissingAvailableFunds();
         AccountsRejectNonNumericAvailableFunds();
         CapitalPricePathSupportsDatedHistoryWindows();
@@ -247,7 +247,7 @@ public static class SyntheticBasketBuilderTests
         AssertNear(1250.75m, result.Available, "available funds");
     }
 
-    private static void AccountsRejectPreferredFallbackWhenCurrentAccountIsMissing()
+    private static void AccountsRejectPreferredFallbackWithoutCurrentAccountId()
     {
         const string json = """
         { "accounts": [
@@ -258,13 +258,13 @@ public static class SyntheticBasketBuilderTests
 
         try
         {
-            CapitalApiClient.ParseActiveAccount(json, "missing", DateTimeOffset.UnixEpoch);
-            throw new Exception("a missing non-empty current account must not fall back to a different preferred account");
+            CapitalApiClient.ParseActiveAccount(json, "", DateTimeOffset.UnixEpoch);
+            throw new Exception("a blank current account ID must not fall back to a preferred account");
         }
         catch (InvalidOperationException ex)
         {
-            AssertTrue(ex.Message.Contains("missing", StringComparison.Ordinal),
-                "missing current account failure must identify the requested account");
+            AssertTrue(ex.Message.Contains("current account", StringComparison.OrdinalIgnoreCase),
+                "blank current account failure must identify the missing current account");
         }
     }
 
