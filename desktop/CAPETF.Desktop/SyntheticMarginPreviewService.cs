@@ -15,11 +15,12 @@ internal sealed class CapitalApiSyntheticMarginDataSource(CapitalApiClient api) 
 internal static class SyntheticMarginPreviewPublication
 {
     public static bool IsCurrent(
+        CancellationToken requestToken,
         CancellationTokenSource request,
         CancellationTokenSource? currentRequest,
         SyntheticBasket requestBasket,
         SyntheticBasket? currentBasket) =>
-        !request.IsCancellationRequested &&
+        !requestToken.IsCancellationRequested &&
         ReferenceEquals(currentRequest, request) &&
         ReferenceEquals(currentBasket, requestBasket);
 }

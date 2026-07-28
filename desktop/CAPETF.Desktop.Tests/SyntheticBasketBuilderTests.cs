@@ -28,6 +28,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticMarginRejectsNullFactorAndNonpositiveConversion();
         SyntheticMarginUsesDefaultLotSizeForNullAndZero();
         CapComTerminalResetsMarginContextAndRejectsInvalidNotional();
+        InvalidMarginInputCancelsHostPublicationOwnership();
         SyntheticTerminalMarginRuntimeExercisesFinalReviewRegressions();
         AccountsRejectPreferredFallbackWithoutCurrentAccountId();
         AccountsRejectMissingAvailableFunds();
@@ -3848,6 +3849,38 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void InvalidMarginInputCancelsHostPublicationOwnership()
+    {
+        var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
+        AssertTrue(html.Contains("type: 'cancelMarginPreview'", StringComparison.Ordinal),
+            "invalid browser notionals must explicitly cancel the host margin preview");
+
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        AssertTrue(source.Contains("type.GetString() == \"cancelMarginPreview\"", StringComparison.Ordinal),
+            "the WPF host must handle the browser margin-cancel message");
+        var cancelStart = source.IndexOf("private void CancelMarginPreviewRequest()", StringComparison.Ordinal);
+        var cancelEnd = source.IndexOf("private async Task ResetMarginPreviewContextAsync", cancelStart, StringComparison.Ordinal);
+        if (cancelStart < 0 || cancelEnd <= cancelStart)
+        {
+            throw new Exception("the margin request cancellation helper must remain a focused block");
+        }
+        var cancelBlock = source[cancelStart..cancelEnd];
+        foreach (var required in new[] { "_marginPreviewRefresh = null", "request.Cancel();", "request.Dispose();" })
+        {
+            AssertTrue(cancelBlock.Contains(required, StringComparison.Ordinal),
+                $"host margin cancellation must relinquish, cancel, and dispose ownership: {required}");
+        }
+
+        var basket = CreateMarginPreviewBasket("USD");
+        using var request = new CancellationTokenSource();
+        var requestToken = request.Token;
+        request.Cancel();
+        request.Dispose();
+        AssertFalse(
+            SyntheticMarginPreviewPublication.IsCurrent(requestToken, request, request, basket, basket),
+            "a canceled and disposed request owner must never publish a late margin result");
+    }
+
     private static void SyntheticTerminalMarginRuntimeExercisesFinalReviewRegressions()
     {
         var htmlPath = SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html");
@@ -4026,15 +4059,18 @@ public static class SyntheticBasketBuilderTests
             assert.equal(element('margin-summary').dataset.state, 'unavailable');
 
             messages.length = 0;
-            for (const invalid of ['', '0', '-10']) {
+            for (const invalid of ['', 'not-a-number', '0', '-10']) {
+              messages.length = 0;
               element('quantity').value = invalid;
               scheduleMarginPreview();
               flushTimers();
-              assert.equal(messages.length, 0, `invalid notional ${invalid || 'blank'} must not reach the host`);
+              assert.equal(messages.length, 1, `invalid notional ${invalid || 'blank'} must send one host cancellation`);
+              assert.equal(messages[0].type, 'cancelMarginPreview');
               assert.equal(element('margin-summary').dataset.state, 'unavailable');
               assert.match(element('margin-status').textContent, /greater than 0/i);
             }
 
+            messages.length = 0;
             element('quantity').value = '100';
             scheduleMarginPreview();
             element('quantity').value = '250';
@@ -6131,19 +6167,20 @@ public static class SyntheticBasketBuilderTests
         using var replacement = new CancellationTokenSource();
 
         AssertFalse(
-            SyntheticMarginPreviewPublication.IsCurrent(first, replacement, requestBasket, requestBasket),
+            SyntheticMarginPreviewPublication.IsCurrent(first.Token, first, replacement, requestBasket, requestBasket),
             "a non-cancellation failure must not publish after a replacement request owns the window");
 
+        var firstToken = first.Token;
         first.Cancel();
         AssertFalse(
-            SyntheticMarginPreviewPublication.IsCurrent(first, first, requestBasket, requestBasket),
+            SyntheticMarginPreviewPublication.IsCurrent(firstToken, first, first, requestBasket, requestBasket),
             "a canceled request must not publish a non-cancellation failure");
 
         AssertFalse(
-            SyntheticMarginPreviewPublication.IsCurrent(replacement, replacement, requestBasket, replacementBasket),
+            SyntheticMarginPreviewPublication.IsCurrent(replacement.Token, replacement, replacement, requestBasket, replacementBasket),
             "a request must not publish after the active basket identity changes");
         AssertTrue(
-            SyntheticMarginPreviewPublication.IsCurrent(replacement, replacement, requestBasket, requestBasket),
+            SyntheticMarginPreviewPublication.IsCurrent(replacement.Token, replacement, replacement, requestBasket, requestBasket),
             "only the uncanceled owner for the same basket may publish a margin result");
     }
 

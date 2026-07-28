@@ -1081,32 +1081,34 @@ public partial class CapComTerminalWindow : Window
         _marginPreviewNotional = validatedNotional;
         CancelMarginPreviewRequest();
         var request = CancellationTokenSource.CreateLinkedTokenSource(_windowLifetime.Token);
+        var requestToken = request.Token;
         _marginPreviewRefresh = request;
-        _ = RefreshMarginPreviewAsync(_basket, _marginPreviewNotional, request);
+        _ = RefreshMarginPreviewAsync(_basket, _marginPreviewNotional, request, requestToken);
     }
 
     private async Task RefreshMarginPreviewAsync(
         SyntheticBasket basket,
         decimal basketNotional,
-        CancellationTokenSource request)
+        CancellationTokenSource request,
+        CancellationToken requestToken)
     {
         try
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(500), request.Token);
+            await Task.Delay(TimeSpan.FromMilliseconds(500), requestToken);
             await SetTerminalBusyAsync(true, "Refreshing margin preview");
-            var summary = await _marginPreview.BuildAsync(basket, basketNotional, request.Token);
-            request.Token.ThrowIfCancellationRequested();
-            if (!SyntheticMarginPreviewPublication.IsCurrent(request, _marginPreviewRefresh, basket, _basket)) return;
+            var summary = await _marginPreview.BuildAsync(basket, basketNotional, requestToken);
+            requestToken.ThrowIfCancellationRequested();
+            if (!SyntheticMarginPreviewPublication.IsCurrent(requestToken, request, _marginPreviewRefresh, basket, _basket)) return;
             var json = JsonSerializer.Serialize(summary);
             await InvokeTerminalScriptAsync(
                 $"window.setTerminalMarginPreview && window.setTerminalMarginPreview({json});");
         }
-        catch (OperationCanceledException) when (request.IsCancellationRequested)
+        catch (OperationCanceledException) when (requestToken.IsCancellationRequested)
         {
         }
         catch (Exception ex)
         {
-            if (!SyntheticMarginPreviewPublication.IsCurrent(request, _marginPreviewRefresh, basket, _basket)) return;
+            if (!SyntheticMarginPreviewPublication.IsCurrent(requestToken, request, _marginPreviewRefresh, basket, _basket)) return;
             var json = JsonSerializer.Serialize(new { Error = ex.Message });
             await InvokeTerminalScriptAsync(
                 $"window.setTerminalMarginPreview && window.setTerminalMarginPreview({json});");
@@ -1116,9 +1118,9 @@ public partial class CapComTerminalWindow : Window
             if (ReferenceEquals(_marginPreviewRefresh, request))
             {
                 _marginPreviewRefresh = null;
+                request.Dispose();
                 if (!_windowLifetime.IsClosing) await SetTerminalBusyAsync(false);
             }
-            request.Dispose();
         }
     }
 
@@ -1131,7 +1133,15 @@ public partial class CapComTerminalWindow : Window
     {
         var request = _marginPreviewRefresh;
         _marginPreviewRefresh = null;
-        request?.Cancel();
+        if (request is null) return;
+        try
+        {
+            request.Cancel();
+        }
+        finally
+        {
+            request.Dispose();
+        }
     }
 
     private async Task ResetMarginPreviewContextAsync(bool clearBasket, string reason, bool releaseBusy = false)
@@ -1251,6 +1261,14 @@ public partial class CapComTerminalWindow : Window
             using var message = JsonDocument.Parse(e.WebMessageAsJson);
             var root = message.RootElement;
             if (!root.TryGetProperty("type", out var type)) return;
+            if (type.GetString() == "cancelMarginPreview")
+            {
+                await ResetMarginPreviewContextAsync(
+                    clearBasket: false,
+                    reason: SyntheticMarginPreviewInput.InvalidReason,
+                    releaseBusy: true);
+                return;
+            }
             if (type.GetString() == "previewMargins")
             {
                 decimal? requestedNotional = root.TryGetProperty("basketNotional", out var marginNotional) &&

@@ -871,6 +871,13 @@
       legs.textContent = reason || 'Margin details unavailable.';
     }
 
+    function cancelMarginPreview(reason) {
+      if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage({ type: 'cancelMarginPreview' });
+      }
+      resetMarginPreview(reason);
+    }
+
     function addMarginLegRows(container, preview, accountCurrency) {
       const side = getField(preview, 'Side', 'side', '');
       const available = getField(preview, 'IsAvailable', 'isAvailable', false);
@@ -915,7 +922,7 @@
       window.clearTimeout(marginPreviewTimer);
       const basketNotional = parseBasketNotional(quantity.value);
       if (basketNotional === null) {
-        resetMarginPreview(INVALID_MARGIN_NOTIONAL);
+        cancelMarginPreview(INVALID_MARGIN_NOTIONAL);
         return;
       }
       setMarginPreviewStale(true);
@@ -1596,7 +1603,7 @@
     window.placeSyntheticPreviewOrder = function(side, basketNotional) {
       const validatedNotional = parseBasketNotional(basketNotional);
       if (validatedNotional === null) {
-        resetMarginPreview(INVALID_MARGIN_NOTIONAL);
+        cancelMarginPreview(INVALID_MARGIN_NOTIONAL);
         document.getElementById('order-preview').textContent = INVALID_MARGIN_NOTIONAL;
         return;
       }
