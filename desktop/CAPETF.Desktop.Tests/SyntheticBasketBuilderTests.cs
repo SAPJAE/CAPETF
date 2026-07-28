@@ -170,6 +170,11 @@ public static class SyntheticBasketBuilderTests
         SyntheticMarginReportsUnsupportedMarginUnitsAsUnavailable();
         SyntheticMarginCombinesAccountAvailability();
         SyntheticMarginRejectsAccountCurrencyMismatch();
+        SyntheticMarginPreviewUsesSameCurrencyAndCachesAccount();
+        SyntheticMarginPreviewUsesDirectMidpointAndRefreshesMissingMetadata();
+        SyntheticMarginPreviewUsesReciprocalInverseQuote();
+        SyntheticMarginPreviewRejectsMissingConversion();
+        CapComTerminalRefreshesMarginPreviewContract();
         SavedSyntheticBasketStorePersistsFormulaDetails();
         SavedBasketRestorePreservesExactFormulaAndRejectsMissingEpics();
         SavedBasketLoadUsesFaithfulFormulaRestorer();
@@ -5496,6 +5501,162 @@ public static class SyntheticBasketBuilderTests
         throw new Exception("Combine must reject a BUY or SELL preview in a different account currency");
     }
 
+    private static void SyntheticMarginPreviewUsesSameCurrencyAndCachesAccount()
+    {
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+        };
+        var service = new SyntheticMarginPreviewService(source);
+        var basket = CreateMarginPreviewBasket("USD");
+
+        var first = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        var second = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+
+        AssertNear(20m, first.Buy.TotalMargin ?? throw new Exception("same-currency BUY margin must be available"),
+            "same-currency margin must use a conversion rate of one");
+        AssertNear(20m, second.Sell.TotalMargin ?? throw new Exception("same-currency SELL margin must be available"),
+            "same-currency SELL margin must use a conversion rate of one");
+        AssertEqual(1, source.AccountRequestCount, "active account snapshots must be cached for repeated previews");
+        AssertEqual(0, source.SearchQueries.Count, "same-currency previews must not search for a conversion market");
+    }
+
+    private static void SyntheticMarginPreviewUsesDirectMidpointAndRefreshesMissingMetadata()
+    {
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+        };
+        source.SearchResults["EUR/USD"] =
+        [
+            new MarketInstrument
+            {
+                Epic = "FX-EURUSD",
+                Symbol = "EUR/USD",
+                Name = "Euro / US Dollar",
+                Type = "CURRENCIES",
+            },
+        ];
+        source.MarketDetails["FX-EURUSD"] = new MarketInstrument
+        {
+            Epic = "FX-EURUSD",
+            Bid = 1.09m,
+            Offer = 1.11m,
+        };
+        source.MarketDetails["LEG"] = new MarketInstrument
+        {
+            Epic = "LEG",
+            LotSize = 1m,
+            MinDealSize = 1m,
+            MinSizeIncrement = 1m,
+            MarginFactor = 20m,
+            MarginFactorUnit = "PERCENTAGE",
+        };
+        var basket = CreateMarginPreviewBasket("EUR", includeMarginMetadata: false);
+
+        var summary = new SyntheticMarginPreviewService(source)
+            .BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+
+        AssertNear(22m, summary.Buy.TotalMargin ?? throw new Exception("direct-conversion BUY margin must be available"),
+            "EUR/USD bid 1.09 and offer 1.11 must use midpoint 1.10");
+        AssertNear(20m, basket.Components[0].Instrument.MarginFactor ?? 0m,
+            "missing leg margin metadata must be refreshed before calculation");
+        AssertNear(1m, basket.Components[0].Instrument.MinSizeIncrement ?? 0m,
+            "missing leg dealing rules must be refreshed before calculation");
+    }
+
+    private static void SyntheticMarginPreviewUsesReciprocalInverseQuote()
+    {
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+        };
+        source.SearchResults["USD/EUR"] =
+        [
+            new MarketInstrument
+            {
+                Epic = "FX-USDEUR",
+                Symbol = "USD/EUR",
+                Name = "US Dollar / Euro",
+                Type = "CURRENCIES",
+            },
+        ];
+        source.MarketDetails["FX-USDEUR"] = new MarketInstrument
+        {
+            Epic = "FX-USDEUR",
+            Bid = 0.90m,
+            Offer = 0.92m,
+        };
+
+        var summary = new SyntheticMarginPreviewService(source)
+            .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+
+        AssertNear(20m / 0.91m, summary.Buy.TotalMargin ?? throw new Exception("inverse-conversion BUY margin must be available"),
+            "an inverse USD/EUR quote must use the reciprocal midpoint");
+    }
+
+    private static void SyntheticMarginPreviewRejectsMissingConversion()
+    {
+        var source = new FakeSyntheticMarginDataSource
+        {
+            Account = new CapitalAccountSnapshot("active", "USD", 500m, DateTimeOffset.UnixEpoch),
+        };
+
+        try
+        {
+            new SyntheticMarginPreviewService(source)
+                .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+        }
+        catch (InvalidOperationException ex)
+        {
+            AssertEqual("Margin conversion EUR/USD is unavailable from Capital.com.", ex.Message,
+                "missing direct and inverse conversion quotes must fail explicitly");
+            return;
+        }
+
+        throw new Exception("missing conversion markets must not produce a guessed margin preview");
+    }
+
+    private static void CapComTerminalRefreshesMarginPreviewContract()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "previewMargins",
+            "SyntheticMarginPreviewService",
+            ".BuildAsync(",
+            "SetTerminalBusyAsync(true",
+            "SetTerminalBusyAsync(false",
+            "window.setTerminalMarginPreview",
+            "Task.Delay(TimeSpan.FromMilliseconds(500)",
+            "Cancel()",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"cap.com Terminal margin-preview orchestration missing {required}");
+            }
+        }
+    }
+
+    private static SyntheticBasket CreateMarginPreviewBasket(string currency, bool includeMarginMetadata = true)
+    {
+        var basket = new SyntheticBasket { Symbol = "SYN-MARGIN-PREVIEW" };
+        basket.Components.Add(new SyntheticComponent(new MarketInstrument
+        {
+            Epic = "LEG",
+            Currency = currency,
+            Bid = 100m,
+            Offer = 100m,
+            LotSize = includeMarginMetadata ? 1m : null,
+            MinDealSize = includeMarginMetadata ? 1m : null,
+            MinSizeIncrement = includeMarginMetadata ? 1m : null,
+            MarginFactor = includeMarginMetadata ? 20m : null,
+            MarginFactorUnit = includeMarginMetadata ? "PERCENTAGE" : "",
+        }, 100m, 0m, 0m));
+        return basket;
+    }
+
     private static void OutOfOrderStreamingQuoteDoesNotMutateComponentState()
     {
         var sourceTime = DateTimeOffset.Parse("2026-07-27T14:00:00Z");
@@ -6047,6 +6208,39 @@ public static class SyntheticBasketBuilderTests
             response.Headers.Add("CST", "cst-token");
             response.Headers.Add("X-SECURITY-TOKEN", "security-token");
             return Task.FromResult(response);
+        }
+    }
+
+    private sealed class FakeSyntheticMarginDataSource : ISyntheticMarginDataSource
+    {
+        public CapitalAccountSnapshot Account { get; init; } =
+            new("active", "USD", 0m, DateTimeOffset.UnixEpoch);
+        public Dictionary<string, MarketInstrument> MarketDetails { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, IReadOnlyList<MarketInstrument>> SearchResults { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+        public List<string> SearchQueries { get; } = [];
+        public int AccountRequestCount { get; private set; }
+
+        public Task<CapitalAccountSnapshot> GetActiveAccountAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            AccountRequestCount++;
+            return Task.FromResult(Account);
+        }
+
+        public Task<MarketInstrument?> GetMarketDetailsAsync(string epic, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            MarketDetails.TryGetValue(epic, out var details);
+            return Task.FromResult(details);
+        }
+
+        public Task<IReadOnlyList<MarketInstrument>> SearchMarketsAsync(string query, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            SearchQueries.Add(query);
+            return Task.FromResult(SearchResults.TryGetValue(query, out var markets) ? markets : []);
         }
     }
 

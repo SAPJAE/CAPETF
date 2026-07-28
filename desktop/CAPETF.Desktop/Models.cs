@@ -18,6 +18,13 @@ public sealed record CapitalAccountSnapshot(
     decimal Available,
     DateTimeOffset RetrievedAt);
 
+internal interface ISyntheticMarginDataSource
+{
+    Task<CapitalAccountSnapshot> GetActiveAccountAsync(CancellationToken cancellationToken);
+    Task<MarketInstrument?> GetMarketDetailsAsync(string epic, CancellationToken cancellationToken);
+    Task<IReadOnlyList<MarketInstrument>> SearchMarketsAsync(string query, CancellationToken cancellationToken);
+}
+
 public sealed class CapitalSession
 {
     public string Cst { get; init; } = "";

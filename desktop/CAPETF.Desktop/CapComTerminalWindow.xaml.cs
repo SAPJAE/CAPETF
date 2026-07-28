@@ -15,6 +15,7 @@ public partial class CapComTerminalWindow : Window
     private readonly SavedBasketDeletionCoordinator _savedBasketDeletion;
     private readonly CapitalApiClient _api = new();
     private readonly SyntheticHistoryService _history;
+    private readonly SyntheticMarginPreviewService _marginPreview;
     private readonly TerminalOperationState _operationState = new();
     private readonly WindowLifetime _windowLifetime = new();
     private readonly List<MarketInstrument> _instruments = [];
@@ -34,6 +35,8 @@ public partial class CapComTerminalWindow : Window
     private SyntheticTerminalPayload? _pendingPayload;
     private bool _chartReady;
     private bool _streamReconnectScheduled;
+    private CancellationTokenSource? _marginPreviewRefresh;
+    private decimal _marginPreviewNotional = 300m;
 
     public CapComTerminalWindow()
     {
@@ -41,6 +44,7 @@ public partial class CapComTerminalWindow : Window
         _savedBasketDeletion = new SavedBasketDeletionCoordinator(_savedBasketStore);
         OperationProgressPanel.DataContext = _operationState;
         _history = new SyntheticHistoryService(_api);
+        _marginPreview = new SyntheticMarginPreviewService(new CapitalApiSyntheticMarginDataSource(_api));
         StrategyBox.ItemsSource = SyntheticStrategyCatalog.All;
         StrategyBox.DisplayMemberPath = nameof(SyntheticStrategy.Label);
         StrategyBox.SelectedValuePath = nameof(SyntheticStrategy.Kind);
@@ -602,6 +606,8 @@ public partial class CapComTerminalWindow : Window
         if (details.LotSize is > 0) target.LotSize = details.LotSize;
         if (details.MinDealSize is > 0) target.MinDealSize = details.MinDealSize;
         if (details.MinSizeIncrement is > 0) target.MinSizeIncrement = details.MinSizeIncrement;
+        if (details.MarginFactor is not null) target.MarginFactor = details.MarginFactor;
+        if (!string.IsNullOrWhiteSpace(details.MarginFactorUnit)) target.MarginFactorUnit = details.MarginFactorUnit;
         if (!string.IsNullOrWhiteSpace(details.Status)) target.Status = details.Status;
     }
 
@@ -674,6 +680,7 @@ public partial class CapComTerminalWindow : Window
             ChartMetaText.Text = $"{_pendingPayload?.CurrencyLabel ?? ""} | bid {FormatQuote(_basket.BidPrice)} | ask {FormatQuote(_basket.AskPrice)}";
             var quoteStatus = SyntheticTerminalChartPayload.BasketQuoteStatus(_basket, observedAt);
             StatusText.Text = $"{_basket.Symbol}: bid {FormatQuote(_basket.BidPrice)}, ask {FormatQuote(_basket.AskPrice)}, {quoteStatus}, tick {update.Time.ToLocalTime():HH:mm:ss}.";
+            ScheduleMarginPreview(_marginPreviewNotional);
         });
     }
 
@@ -1026,6 +1033,7 @@ public partial class CapComTerminalWindow : Window
 
         await SendTerminalPayloadAsync(payload);
         await SetTerminalChartModeAsync();
+        ScheduleMarginPreview(_marginPreviewNotional);
         await SetTerminalIntervalAsync();
     }
 
@@ -1049,6 +1057,52 @@ public partial class CapComTerminalWindow : Window
     {
         var label = JsonSerializer.Serialize(operationName ?? string.Empty);
         return InvokeTerminalScriptAsync($"window.setTerminalBusy && window.setTerminalBusy({busy.ToString().ToLowerInvariant()}, {label});");
+    }
+
+    private void ScheduleMarginPreview(decimal basketNotional)
+    {
+        if (_basket is null || _windowLifetime.IsClosing) return;
+        _marginPreviewNotional = basketNotional > 0 ? basketNotional : 300m;
+        _marginPreviewRefresh?.Cancel();
+        var request = CancellationTokenSource.CreateLinkedTokenSource(_windowLifetime.Token);
+        _marginPreviewRefresh = request;
+        _ = RefreshMarginPreviewAsync(_basket, _marginPreviewNotional, request);
+    }
+
+    private async Task RefreshMarginPreviewAsync(
+        SyntheticBasket basket,
+        decimal basketNotional,
+        CancellationTokenSource request)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500), request.Token);
+            await SetTerminalBusyAsync(true, "Refreshing margin preview");
+            var summary = await _marginPreview.BuildAsync(basket, basketNotional, request.Token);
+            request.Token.ThrowIfCancellationRequested();
+            if (!ReferenceEquals(_basket, basket)) return;
+            var json = JsonSerializer.Serialize(summary);
+            await InvokeTerminalScriptAsync(
+                $"window.setTerminalMarginPreview && window.setTerminalMarginPreview({json});");
+        }
+        catch (OperationCanceledException) when (request.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            var json = JsonSerializer.Serialize(new { Error = ex.Message });
+            await InvokeTerminalScriptAsync(
+                $"window.setTerminalMarginPreview && window.setTerminalMarginPreview({json});");
+        }
+        finally
+        {
+            if (ReferenceEquals(_marginPreviewRefresh, request))
+            {
+                _marginPreviewRefresh = null;
+                if (!_windowLifetime.IsClosing) await SetTerminalBusyAsync(false);
+            }
+            request.Dispose();
+        }
     }
 
     private static string FormatQuote(decimal? value) => value?.ToString("0.#####") ?? "n/a";
@@ -1158,7 +1212,17 @@ public partial class CapComTerminalWindow : Window
         {
             using var message = JsonDocument.Parse(e.WebMessageAsJson);
             var root = message.RootElement;
-            if (!root.TryGetProperty("type", out var type) || type.GetString() != "previewOrder") return;
+            if (!root.TryGetProperty("type", out var type)) return;
+            if (type.GetString() == "previewMargins")
+            {
+                var requestedNotional = root.TryGetProperty("basketNotional", out var marginNotional) &&
+                                        marginNotional.TryGetDecimal(out var parsedMarginNotional)
+                    ? parsedMarginNotional
+                    : 0m;
+                ScheduleMarginPreview(requestedNotional);
+                return;
+            }
+            if (type.GetString() != "previewOrder") return;
             var side = root.TryGetProperty("side", out var sideValue) ? sideValue.GetString() ?? "BUY" : "BUY";
             var basketNotional = root.TryGetProperty("basketNotional", out var notionalValue) && notionalValue.TryGetDecimal(out var parsed)
                 ? parsed
@@ -1204,6 +1268,7 @@ public partial class CapComTerminalWindow : Window
     {
         base.OnClosing(e);
         if (e.Cancel) return;
+        _marginPreviewRefresh?.Cancel();
         _windowLifetime.BeginClosing();
     }
 
