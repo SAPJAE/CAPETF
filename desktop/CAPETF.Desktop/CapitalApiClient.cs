@@ -318,6 +318,11 @@ public sealed class CapitalApiClient : IDisposable
             }
         }
 
+        if (selected is null && !string.IsNullOrWhiteSpace(activeAccountId))
+        {
+            throw new InvalidOperationException($"Capital.com did not return active account '{activeAccountId}'.");
+        }
+
         if (selected is null)
         {
             foreach (var account in accounts.EnumerateArray())
@@ -336,9 +341,13 @@ public sealed class CapitalApiClient : IDisposable
         }
 
         var accountValue = selected.Value;
-        var balance = accountValue.TryGetProperty("balance", out var balanceValue) && balanceValue.ValueKind == JsonValueKind.Object
-            ? ReadDecimal(balanceValue, "available") ?? 0m
-            : 0m;
+        if (!accountValue.TryGetProperty("balance", out var balanceValue) || balanceValue.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidOperationException("Capital.com account balance.available was missing.");
+        }
+
+        var balance = ReadDecimal(balanceValue, "available")
+            ?? throw new InvalidOperationException("Capital.com account balance.available was not numeric.");
         return new CapitalAccountSnapshot(
             ReadString(accountValue, "accountId") ?? "",
             ReadString(accountValue, "currency") ?? ReadString(accountValue, "currencyIsoCode") ?? "",

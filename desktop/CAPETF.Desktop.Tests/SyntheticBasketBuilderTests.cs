@@ -22,6 +22,9 @@ public static class SyntheticBasketBuilderTests
         IncompleteOhlcRowsAreExcluded();
         MarketDetailsParseMarginMetadata();
         AccountsParseActiveAvailableFunds();
+        AccountsRejectPreferredFallbackWhenCurrentAccountIsMissing();
+        AccountsRejectMissingAvailableFunds();
+        AccountsRejectNonNumericAvailableFunds();
         CapitalPricePathSupportsDatedHistoryWindows();
         CapitalHistoryPagingWindowsMatchCapitalResolutions();
         CapitalHistoryPagingRetainsSuccessfulRowsAtTerminalBoundary();
@@ -242,6 +245,69 @@ public static class SyntheticBasketBuilderTests
         AssertEqual("active", result.AccountId, "active account");
         AssertEqual("USD", result.Currency, "account currency");
         AssertNear(1250.75m, result.Available, "available funds");
+    }
+
+    private static void AccountsRejectPreferredFallbackWhenCurrentAccountIsMissing()
+    {
+        const string json = """
+        { "accounts": [
+          { "accountId": "preferred", "preferred": true, "currency": "GBP",
+            "balance": { "available": 50 } }
+        ] }
+        """;
+
+        try
+        {
+            CapitalApiClient.ParseActiveAccount(json, "missing", DateTimeOffset.UnixEpoch);
+            throw new Exception("a missing non-empty current account must not fall back to a different preferred account");
+        }
+        catch (InvalidOperationException ex)
+        {
+            AssertTrue(ex.Message.Contains("missing", StringComparison.Ordinal),
+                "missing current account failure must identify the requested account");
+        }
+    }
+
+    private static void AccountsRejectMissingAvailableFunds()
+    {
+        const string json = """
+        { "accounts": [
+          { "accountId": "active", "preferred": false, "currency": "USD",
+            "balance": {} }
+        ] }
+        """;
+
+        try
+        {
+            CapitalApiClient.ParseActiveAccount(json, "active", DateTimeOffset.UnixEpoch);
+            throw new Exception("missing balance.available must not become zero available funds");
+        }
+        catch (InvalidOperationException ex)
+        {
+            AssertTrue(ex.Message.Contains("available", StringComparison.OrdinalIgnoreCase),
+                "missing balance failure must identify available funds");
+        }
+    }
+
+    private static void AccountsRejectNonNumericAvailableFunds()
+    {
+        const string json = """
+        { "accounts": [
+          { "accountId": "active", "preferred": false, "currency": "USD",
+            "balance": { "available": "unknown" } }
+        ] }
+        """;
+
+        try
+        {
+            CapitalApiClient.ParseActiveAccount(json, "active", DateTimeOffset.UnixEpoch);
+            throw new Exception("non-numeric balance.available must not become zero available funds");
+        }
+        catch (InvalidOperationException ex)
+        {
+            AssertTrue(ex.Message.Contains("available", StringComparison.OrdinalIgnoreCase),
+                "non-numeric balance failure must identify available funds");
+        }
     }
 
     private static void CapitalPricePathSupportsDatedHistoryWindows()
