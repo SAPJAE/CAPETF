@@ -1573,6 +1573,9 @@
       const afterSell = getField(summary, 'AfterSell', 'afterSell', null);
       const unavailable = !getField(buy, 'IsAvailable', 'isAvailable', false) ||
         !getField(sell, 'IsAvailable', 'isAvailable', false) ||
+        !isMarginNumber(buyMargin) ||
+        !isMarginNumber(sellMargin) ||
+        !isMarginNumber(available) ||
         !isMarginNumber(afterBuy) ||
         !isMarginNumber(afterSell);
 

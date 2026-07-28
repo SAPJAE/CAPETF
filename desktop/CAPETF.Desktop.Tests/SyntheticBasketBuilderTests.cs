@@ -122,6 +122,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticTerminalHtmlExposesV2TerminalControls();
         TerminalOrderPreviewUsesProductionSizingBridge();
         SyntheticTerminalMarginPreviewRendersAndRefreshes();
+        SyntheticTerminalMarginPreviewMarksAnyMissingDisplayedTotalUnavailable();
         CapComTerminalUsesClearActionLabelsAndSymbolDropdown();
         SeedSearchOptionsIncludePalantirByNameAndSymbolAcrossBlocks();
         SeededSyntheticBuildsDoNotUseGenericHistoryFallback();
@@ -3777,6 +3778,33 @@ public static class SyntheticBasketBuilderTests
         if (requestCount < 2)
         {
             throw new Exception("terminal margin preview must refresh after basket load, notional changes, and live ticks");
+        }
+    }
+
+    private static void SyntheticTerminalMarginPreviewMarksAnyMissingDisplayedTotalUnavailable()
+    {
+        var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
+        var predicateStart = html.IndexOf("const unavailable =", StringComparison.Ordinal);
+        var predicateEnd = html.IndexOf("setMarginValue('buy-margin'", predicateStart, StringComparison.Ordinal);
+        if (predicateStart < 0 || predicateEnd <= predicateStart)
+        {
+            throw new Exception("terminal margin preview unavailable predicate must remain available for regression coverage");
+        }
+
+        var predicate = html[predicateStart..predicateEnd];
+        foreach (var required in new[]
+        {
+            "!isMarginNumber(buyMargin)",
+            "!isMarginNumber(sellMargin)",
+            "!isMarginNumber(available)",
+            "!isMarginNumber(afterBuy)",
+            "!isMarginNumber(afterSell)",
+        })
+        {
+            if (!predicate.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"missing terminal margin total must set the summary unavailable: {required}");
+            }
         }
     }
 
