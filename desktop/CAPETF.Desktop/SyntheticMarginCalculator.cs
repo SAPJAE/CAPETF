@@ -1,0 +1,97 @@
+namespace CAPETF.Desktop;
+
+public sealed record SyntheticMarginLegPreview(
+    string Side,
+    string Epic,
+    decimal ReferencePrice,
+    decimal Quantity,
+    decimal NativeNotional,
+    string NativeCurrency,
+    decimal NativeMargin,
+    string AccountCurrency,
+    decimal MarginAccountCurrency);
+
+public sealed record SyntheticMarginSidePreview(
+    string Side,
+    bool IsAvailable,
+    string UnavailableReason,
+    decimal TotalMargin,
+    IReadOnlyList<SyntheticMarginLegPreview> Legs);
+
+public sealed record SyntheticMarginSummary(
+    string AccountCurrency,
+    decimal Available,
+    decimal? AfterBuy,
+    decimal? AfterSell,
+    SyntheticMarginSidePreview Buy,
+    SyntheticMarginSidePreview Sell);
+
+public static class SyntheticMarginCalculator
+{
+    public static SyntheticMarginSidePreview CalculateSide(
+        SyntheticBasket basket,
+        string side,
+        decimal basketNotional,
+        string accountCurrency,
+        decimal conversionRate)
+    {
+        var executable = SyntheticOrderSizing.BuildExecutableOrderPreview(basket, side, basketNotional);
+        if (conversionRate <= 0)
+        {
+            return Unavailable(executable.Side, $"Margin conversion to {accountCurrency} is unavailable.");
+        }
+
+        for (var index = 0; index < basket.Components.Count; index++)
+        {
+            var instrument = basket.Components[index].Instrument;
+            if (instrument.MarginFactor is null ||
+                !string.Equals(instrument.MarginFactorUnit, "PERCENTAGE", StringComparison.OrdinalIgnoreCase))
+            {
+                return Unavailable(executable.Side, $"Margin factor for {instrument.Epic} is unavailable.");
+            }
+        }
+
+        var legs = new List<SyntheticMarginLegPreview>(executable.Legs.Count);
+        for (var index = 0; index < executable.Legs.Count; index++)
+        {
+            var leg = executable.Legs[index];
+            var instrument = basket.Components[index].Instrument;
+            var lotSize = instrument.LotSize is > 0 ? instrument.LotSize.Value : 1m;
+            var nativeNotional = leg.Quantity * leg.ReferencePrice * lotSize;
+            var nativeMargin = nativeNotional * instrument.MarginFactor!.Value / 100m;
+            var accountMargin = nativeMargin * conversionRate;
+            legs.Add(new SyntheticMarginLegPreview(
+                leg.Side,
+                leg.Epic,
+                leg.ReferencePrice,
+                leg.Quantity,
+                nativeNotional,
+                instrument.Currency,
+                nativeMargin,
+                accountCurrency,
+                accountMargin));
+        }
+
+        return new SyntheticMarginSidePreview(
+            executable.Side,
+            true,
+            "",
+            legs.Sum(leg => leg.MarginAccountCurrency),
+            legs);
+    }
+
+    public static SyntheticMarginSummary Combine(
+        CapitalAccountSnapshot account,
+        SyntheticMarginSidePreview buy,
+        SyntheticMarginSidePreview sell) =>
+        new(
+            account.Currency,
+            account.Available,
+            buy.IsAvailable ? account.Available - buy.TotalMargin : null,
+            sell.IsAvailable ? account.Available - sell.TotalMargin : null,
+            buy,
+            sell);
+
+    private static SyntheticMarginSidePreview Unavailable(string side, string reason) =>
+        new(side, false, reason, 0m, []);
+}

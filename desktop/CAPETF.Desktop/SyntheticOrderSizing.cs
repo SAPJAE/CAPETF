@@ -40,8 +40,9 @@ public static class SyntheticOrderSizing
         if (referencePrice <= 0) throw new ArgumentOutOfRangeException(nameof(referencePrice));
 
         var targetLegNotional = basketNotional * component.Weight / 100m;
-        var quantity = RoundUpToDealRules(component, targetLegNotional / referencePrice);
-        var notional = quantity * referencePrice;
+        var lotSize = EffectiveLotSize(component.Instrument);
+        var quantity = RoundUpToDealRules(component, targetLegNotional / (referencePrice * lotSize));
+        var notional = quantity * referencePrice * lotSize;
         var weightPct = notional / basketNotional * 100m;
         return new ExecutableLegPreview(quantity, notional, weightPct);
     }
@@ -108,6 +109,9 @@ public static class SyntheticOrderSizing
     }
 
     private static decimal? PositiveOrNull(decimal? value) => value is > 0 ? value : null;
+
+    private static decimal EffectiveLotSize(MarketInstrument instrument) =>
+        instrument.LotSize is > 0 ? instrument.LotSize.Value : 1m;
 
     private static string Opposite(string side) => side == "BUY" ? "SELL" : "BUY";
 }
