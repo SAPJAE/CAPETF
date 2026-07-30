@@ -100,7 +100,8 @@ public sealed record SyntheticExecutionLegRecord(
     DateTimeOffset? SubmittedUtc,
     DateTimeOffset? ConfirmedUtc,
     DateTimeOffset? ClosedUtc,
-    DateTimeOffset UpdatedUtc);
+    DateTimeOffset UpdatedUtc,
+    decimal? CurrentUnrealizedProfitLoss = null);
 
 public sealed record SyntheticExecutionRecord(
     string ExecutionId,

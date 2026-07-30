@@ -1,6 +1,7 @@
 using CAPETF.Desktop;
 using System.Net;
 using System.Net.Http;
+using System.IO;
 using System.Text;
 using System.Text.Json;
 
@@ -45,6 +46,126 @@ public static class SyntheticTradingTests
         OpenPositionsParseRequiredFields();
         DemoClosePositionUsesDeleteWithoutRetry();
         DemoCloseRedirectDoesNotReachRedirectTarget();
+        ExecutionStoreRoundTripsVersionedRecordsAndDealIdentity();
+        ExecutionStoreUpsertsAtomicallyWithoutCredentials();
+        ExecutionStoreQuarantinesMalformedFiles();
+        ReconciliationMatchesOpenPositionsByDealIdAndUpdatesUpl();
+        ReconciliationMarksMissingOpenPositionsClosed();
+        ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
+    }
+
+    private static void ExecutionStoreRoundTripsVersionedRecordsAndDealIdentity()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "executions.json");
+        var store = new SyntheticExecutionStore(path);
+        var record = CreatePersistedExecutionRecord();
+
+        store.SaveAsync([record], default).GetAwaiter().GetResult();
+        var restored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "round-trip must restore one execution");
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+
+        AssertEqual(1, document.RootElement.GetProperty("schemaVersion").GetInt32(), "store schema version");
+        AssertEqual(record.ExecutionId, restored.ExecutionId, "versioned JSON execution identity");
+        AssertEqual(record.Legs[0], restored.Legs[0], "versioned JSON leg round-trip");
+        AssertEqual("deal-123", restored.Legs[0].DealId, "deal identity survives restart");
+    }
+
+    private static void ExecutionStoreUpsertsAtomicallyWithoutCredentials()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "executions.json");
+        var store = new SyntheticExecutionStore(path);
+        var original = CreatePersistedExecutionRecord();
+        var revised = original with
+        {
+            UpdatedUtc = original.UpdatedUtc.AddMinutes(1),
+            Legs = [original.Legs[0] with { Message = "Capital reconciliation observed an open position." }],
+        };
+
+        store.SaveAsync([original], default).GetAwaiter().GetResult();
+        store.UpsertAsync(revised, default).GetAwaiter().GetResult();
+        var restored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "upsert must replace the existing execution");
+        var persisted = File.ReadAllText(path);
+
+        AssertEqual(revised.ExecutionId, restored.ExecutionId, "upsert must retain execution identity");
+        AssertEqual(revised.UpdatedUtc, restored.UpdatedUtc, "upsert must retain latest record timestamp");
+        AssertEqual(revised.Legs[0].Message, restored.Legs[0].Message, "upsert must retain latest audit message");
+        AssertFalse(File.Exists(path + ".tmp"), "atomic save must replace the temporary file");
+        AssertFalse(persisted.Contains("securityToken", StringComparison.OrdinalIgnoreCase), "security tokens must not persist");
+        AssertFalse(persisted.Contains("password", StringComparison.OrdinalIgnoreCase), "credentials must not persist");
+    }
+
+    private static void ExecutionStoreQuarantinesMalformedFiles()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "executions.json");
+        File.WriteAllText(path, "{ definitely-not-json");
+        var store = new SyntheticExecutionStore(path);
+
+        var restored = store.LoadAsync(default).GetAwaiter().GetResult();
+
+        AssertEqual(0, restored.Count, "malformed persistence must not create execution records");
+        AssertFalse(File.Exists(path), "malformed persistence must be moved away from the active path");
+        AssertEqual(1, Directory.GetFiles(directory.Path, "executions.json.corrupt-*").Length, "malformed file must be quarantined with a UTC suffix");
+    }
+
+    private static void ReconciliationMatchesOpenPositionsByDealIdAndUpdatesUpl()
+    {
+        var record = CreatePersistedExecutionRecord() with
+        {
+            State = SyntheticExecutionState.NeedsAttention,
+            Legs = [CreatePersistedExecutionRecord().Legs[0] with
+            {
+                State = SyntheticExecutionLegState.Unknown,
+                Message = "Submission outcome was unknown.",
+            }],
+        };
+        var position = new CapitalOpenPosition("deal-123", "AAPL", "BUY", 3m, 99m, 17.25m, "USD", "TRADEABLE");
+        var now = DateTimeOffset.Parse("2026-07-30T13:00:00Z");
+
+        var reconciled = new SyntheticPositionReconciler().Reconcile(record, [position], now);
+
+        AssertEqual(SyntheticExecutionLegState.Open, reconciled.Legs[0].State, "matching deal ID positively reconciles an unknown leg");
+        AssertEqual(17.25m, reconciled.Legs[0].CurrentUnrealizedProfitLoss, "Capital is the source of current UPL");
+        AssertEqual("deal-123", reconciled.Legs[0].DealId, "reconciliation preserves tracked deal identity");
+        AssertEqual("ticket-123", reconciled.TicketId, "reconciliation preserves ticket identity");
+        AssertEqual("Submission outcome was unknown.", reconciled.Legs[0].Message, "reconciliation preserves audit messages");
+        AssertEqual(101.25m, reconciled.Legs[0].FillLevel, "reconciliation preserves immutable fill detail");
+    }
+
+    private static void ReconciliationMarksMissingOpenPositionsClosed()
+    {
+        var record = CreatePersistedExecutionRecord();
+        var now = DateTimeOffset.Parse("2026-07-30T13:00:00Z");
+
+        var reconciled = new SyntheticPositionReconciler().Reconcile(record, [], now);
+
+        AssertEqual(SyntheticExecutionLegState.Closed, reconciled.Legs[0].State, "missing Capital position closes a known open leg");
+        AssertEqual(SyntheticExecutionState.Closed, reconciled.State, "all missing known positions close the execution");
+        AssertEqual(now, reconciled.Legs[0].ClosedUtc, "reconciliation records when the closure was observed");
+        AssertEqual(null, reconciled.Legs[0].CurrentUnrealizedProfitLoss, "closed positions have no current UPL");
+    }
+
+    private static void ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched()
+    {
+        var original = CreatePersistedExecutionRecord() with
+        {
+            State = SyntheticExecutionState.NeedsAttention,
+            Legs = [CreatePersistedExecutionRecord().Legs[0] with
+            {
+                State = SyntheticExecutionLegState.Unknown,
+                DealId = "",
+                Message = "No permanent deal ID was received.",
+            }],
+        };
+        var unrelatedPosition = new CapitalOpenPosition("deal-other", "AAPL", "BUY", 3m, 99m, 17.25m, "USD", "TRADEABLE");
+
+        var reconciled = new SyntheticPositionReconciler().Reconcile(original, [unrelatedPosition], DateTimeOffset.Parse("2026-07-30T13:00:00Z"));
+
+        AssertEqual(SyntheticExecutionLegState.Unknown, reconciled.Legs[0].State, "unmatched unknown outcomes must remain unknown");
+        AssertEqual(SyntheticExecutionState.NeedsAttention, reconciled.State, "unresolved execution must remain visible for review");
+        AssertEqual("No permanent deal ID was received.", reconciled.Legs[0].Message, "unresolved audit message must remain intact");
     }
 
     private static void PreflightRejectsNonDemoSessions()
@@ -602,6 +723,42 @@ public static class SyntheticTradingTests
             epics.Select(epic => new SyntheticExecutionLeg(epic, "BUY", 1m, 100m, 1m, 100m, 20m, "USD")).ToArray());
     }
 
+    private static SyntheticExecutionRecord CreatePersistedExecutionRecord()
+    {
+        var created = DateTimeOffset.Parse("2026-07-30T12:00:00Z");
+        var updated = created.AddMinutes(5);
+        return new SyntheticExecutionRecord(
+            "execution-123",
+            "ticket-123",
+            "basket-123",
+            "BUY",
+            300m,
+            60m,
+            "USD",
+            created,
+            updated,
+            SyntheticExecutionState.Open,
+            [new SyntheticExecutionLegRecord(
+                "AAPL",
+                "BUY",
+                1m,
+                100m,
+                3m,
+                300m,
+                60m,
+                "USD",
+                SyntheticExecutionLegState.Open,
+                "open-reference-123",
+                "deal-123",
+                "",
+                101.25m,
+                "Capital accepted the position.",
+                created,
+                created.AddMinutes(1),
+                null,
+                updated)]);
+    }
+
     private static ScriptedTradingGateway AcceptedExecutionGateway(params string[] epics)
     {
         var gateway = new ScriptedTradingGateway();
@@ -871,6 +1028,28 @@ public static class SyntheticTradingTests
         if (!EqualityComparer<T>.Default.Equals(expected, actual))
         {
             throw new Exception($"{message}: expected {expected}, actual {actual}");
+        }
+    }
+
+    private static T AssertSingle<T>(IReadOnlyList<T> values, string message)
+    {
+        AssertEqual(1, values.Count, message);
+        return values[0];
+    }
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public TemporaryDirectory()
+        {
+            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"capetf-tests-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Path)) Directory.Delete(Path, recursive: true);
         }
     }
 
