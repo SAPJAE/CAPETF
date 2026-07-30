@@ -190,7 +190,9 @@ public sealed class SyntheticExecutionStore
                 || string.IsNullOrWhiteSpace(execution.MarginCurrency)
                 || execution.CreatedUtc == default
                 || execution.UpdatedUtc == default
+                || execution.UpdatedUtc < execution.CreatedUtc
                 || !Enum.IsDefined(execution.State)
+                || execution.State is SyntheticExecutionState.Preflighting or SyntheticExecutionState.Ready
                 || execution.Legs is null
                 || execution.Legs.Count == 0
                 || !executionIds.Add(execution.ExecutionId))
@@ -200,27 +202,144 @@ public sealed class SyntheticExecutionStore
 
             foreach (var leg in execution.Legs)
             {
-                if (leg is null
-                    || string.IsNullOrWhiteSpace(leg.Epic)
-                    || !IsTradingDirection(leg.Direction)
-                    || leg.Multiplier == 0m
-                    || leg.ReferencePrice <= 0m
-                    || leg.Quantity <= 0m
-                    || leg.Notional <= 0m
-                    || leg.EstimatedMargin < 0m
-                    || string.IsNullOrWhiteSpace(leg.MarginCurrency)
-                    || !Enum.IsDefined(leg.State)
-                    || leg.UpdatedUtc == default
-                    || (leg.SubmittedUtc is { } submittedUtc && submittedUtc == default)
-                    || (leg.ConfirmedUtc is { } confirmedUtc && confirmedUtc == default)
-                    || (leg.ClosedUtc is { } closedUtc && closedUtc == default)
-                    || (leg.State is SyntheticExecutionLegState.Open or SyntheticExecutionLegState.Closing or SyntheticExecutionLegState.Closed
-                        && string.IsNullOrWhiteSpace(leg.DealId))
-                    || (!string.IsNullOrWhiteSpace(leg.DealId) && !trackedDealIds.Add(leg.DealId)))
-                {
-                    throw new JsonException("Synthetic execution persistence contains an invalid execution leg.");
-                }
+                ValidateLeg(execution, leg, trackedDealIds);
             }
+
+            ValidateExecutionState(execution.State, execution.Legs);
+        }
+    }
+
+    private static void ValidateLeg(
+        SyntheticExecutionRecord execution,
+        SyntheticExecutionLegRecord? leg,
+        ISet<string> trackedDealIds)
+    {
+        if (leg is null
+            || string.IsNullOrWhiteSpace(leg.Epic)
+            || !IsTradingDirection(leg.Direction)
+            || leg.Multiplier == 0m
+            || leg.ReferencePrice <= 0m
+            || leg.Quantity <= 0m
+            || leg.Notional <= 0m
+            || leg.EstimatedMargin < 0m
+            || string.IsNullOrWhiteSpace(leg.MarginCurrency)
+            || !Enum.IsDefined(leg.State)
+            || leg.UpdatedUtc == default
+            || leg.UpdatedUtc < execution.CreatedUtc
+            || leg.UpdatedUtc > execution.UpdatedUtc
+            || (leg.SubmittedUtc is { } submittedUtc && (submittedUtc == default || submittedUtc < execution.CreatedUtc || submittedUtc > leg.UpdatedUtc))
+            || (leg.ConfirmedUtc is { } confirmedUtc && (confirmedUtc == default || leg.SubmittedUtc is not { } submitted || confirmedUtc < submitted || confirmedUtc > leg.UpdatedUtc))
+            || (leg.ClosedUtc is { } closedUtc && (closedUtc == default || leg.ConfirmedUtc is not { } confirmed || closedUtc < confirmed || closedUtc > leg.UpdatedUtc))
+            || (!string.IsNullOrWhiteSpace(leg.DealId) && !trackedDealIds.Add(leg.DealId)))
+        {
+            throw new JsonException("Synthetic execution persistence contains an invalid execution leg.");
+        }
+
+        var hasOpenIdentity = !string.IsNullOrWhiteSpace(leg.DealReference)
+            && !string.IsNullOrWhiteSpace(leg.DealId)
+            && leg.SubmittedUtc is not null
+            && leg.ConfirmedUtc is not null;
+        var hasNoDealIdentity = string.IsNullOrWhiteSpace(leg.DealReference)
+            && string.IsNullOrWhiteSpace(leg.DealId)
+            && string.IsNullOrWhiteSpace(leg.CloseDealReference)
+            && leg.ConfirmedUtc is null
+            && leg.ClosedUtc is null
+            && leg.FillLevel is null;
+        var validState = leg.State switch
+        {
+            SyntheticExecutionLegState.Pending => leg.SubmittedUtc is null && hasNoDealIdentity && leg.CurrentUnrealizedProfitLoss is null,
+            SyntheticExecutionLegState.Submitted => leg.SubmittedUtc is not null && hasNoDealIdentity && leg.CurrentUnrealizedProfitLoss is null,
+            SyntheticExecutionLegState.Confirming => leg.SubmittedUtc is not null
+                && !string.IsNullOrWhiteSpace(leg.DealReference)
+                && string.IsNullOrWhiteSpace(leg.DealId)
+                && string.IsNullOrWhiteSpace(leg.CloseDealReference)
+                && leg.ConfirmedUtc is null
+                && leg.ClosedUtc is null
+                && leg.FillLevel is null
+                && leg.CurrentUnrealizedProfitLoss is null,
+            SyntheticExecutionLegState.Open => hasOpenIdentity
+                && leg.ClosedUtc is null,
+            SyntheticExecutionLegState.Rejected => leg.SubmittedUtc is not null
+                && string.IsNullOrWhiteSpace(leg.DealId)
+                && string.IsNullOrWhiteSpace(leg.CloseDealReference)
+                && leg.ConfirmedUtc is null
+                && leg.ClosedUtc is null
+                && leg.FillLevel is null
+                && leg.CurrentUnrealizedProfitLoss is null,
+            SyntheticExecutionLegState.Unknown => leg.SubmittedUtc is not null
+                && leg.ClosedUtc is null
+                && (string.IsNullOrWhiteSpace(leg.DealId)
+                    ? leg.ConfirmedUtc is null
+                        && leg.FillLevel is null
+                        && string.IsNullOrWhiteSpace(leg.CloseDealReference)
+                        && leg.CurrentUnrealizedProfitLoss is null
+                    : hasOpenIdentity),
+            SyntheticExecutionLegState.Closing => hasOpenIdentity
+                && leg.ClosedUtc is null,
+            SyntheticExecutionLegState.Closed => hasOpenIdentity
+                && leg.ClosedUtc is not null,
+            _ => false,
+        };
+        if (!validState)
+        {
+            throw new JsonException("Synthetic execution persistence contains inconsistent execution leg state.");
+        }
+    }
+
+    private static void ValidateExecutionState(
+        SyntheticExecutionState state,
+        IReadOnlyList<SyntheticExecutionLegRecord> legs)
+    {
+        var has = (SyntheticExecutionLegState legState) => legs.Any(leg => leg.State == legState);
+        bool Only(params SyntheticExecutionLegState[] allowed) => legs.All(leg => allowed.Contains(leg.State));
+        var validState = state switch
+        {
+            SyntheticExecutionState.Submitting => Only(
+                SyntheticExecutionLegState.Pending,
+                SyntheticExecutionLegState.Submitted,
+                SyntheticExecutionLegState.Confirming),
+            SyntheticExecutionState.PartiallyOpen => has(SyntheticExecutionLegState.Open) && Only(
+                SyntheticExecutionLegState.Pending,
+                SyntheticExecutionLegState.Submitted,
+                SyntheticExecutionLegState.Confirming,
+                SyntheticExecutionLegState.Open),
+            SyntheticExecutionState.Open => legs.All(leg => leg.State == SyntheticExecutionLegState.Open),
+            SyntheticExecutionState.NeedsAttention => Only(
+                SyntheticExecutionLegState.Pending,
+                SyntheticExecutionLegState.Rejected,
+                SyntheticExecutionLegState.Open,
+                SyntheticExecutionLegState.Unknown)
+                && !legs.All(leg => leg.State == SyntheticExecutionLegState.Open)
+                && !legs.All(leg => leg.State == SyntheticExecutionLegState.Rejected),
+            SyntheticExecutionState.Closing => Only(
+                SyntheticExecutionLegState.Pending,
+                SyntheticExecutionLegState.Rejected,
+                SyntheticExecutionLegState.Open,
+                SyntheticExecutionLegState.Unknown,
+                SyntheticExecutionLegState.Closing,
+                SyntheticExecutionLegState.Closed),
+            SyntheticExecutionState.PartiallyClosed => has(SyntheticExecutionLegState.Closed)
+                && (has(SyntheticExecutionLegState.Open)
+                    || has(SyntheticExecutionLegState.Unknown)
+                    || has(SyntheticExecutionLegState.Closing))
+                && Only(
+                    SyntheticExecutionLegState.Pending,
+                    SyntheticExecutionLegState.Rejected,
+                    SyntheticExecutionLegState.Open,
+                    SyntheticExecutionLegState.Unknown,
+                    SyntheticExecutionLegState.Closing,
+                    SyntheticExecutionLegState.Closed),
+            SyntheticExecutionState.Closed => Only(
+                SyntheticExecutionLegState.Pending,
+                SyntheticExecutionLegState.Rejected,
+                SyntheticExecutionLegState.Closed),
+            SyntheticExecutionState.Rejected => has(SyntheticExecutionLegState.Rejected)
+                && Only(SyntheticExecutionLegState.Pending, SyntheticExecutionLegState.Rejected),
+            _ => false,
+        };
+        if (!validState)
+        {
+            throw new JsonException("Synthetic execution persistence contains inconsistent execution state.");
         }
     }
 

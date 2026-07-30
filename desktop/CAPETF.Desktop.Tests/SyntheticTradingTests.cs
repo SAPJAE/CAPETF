@@ -54,6 +54,13 @@ public static class SyntheticTradingTests
         ExecutionStoreQuarantinesInvalidLegs();
         ExecutionStoreQuarantinesLegsWithMissingDirection();
         ExecutionStoreQuarantinesDuplicateTrackedDealIds();
+        ExecutionStoreQuarantinesClosedLegWithoutClosedTimestamp();
+        ExecutionStoreQuarantinesOpenExecutionWithoutOpenLegs();
+        ExecutionStoreQuarantinesInconsistentLegStateFields();
+        ExecutionStoreQuarantinesInconsistentExecutionStateMix();
+        ExecutionStoreQuarantinesNegativeTemporalOrdering();
+        ExecutionStoreAcceptsStateMachineProgressSnapshots();
+        ExecutionStoreAcceptsClosedPartialExecutionState();
         ReconciliationMatchesOpenPositionsByDealIdAndUpdatesUpl();
         ReconciliationMarksMissingOpenPositionsClosed();
         ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
@@ -255,6 +262,170 @@ public static class SyntheticTradingTests
         AssertEqual(0, restored.Count, "duplicate tracked deal IDs must not load");
         AssertFalse(File.Exists(path), "duplicate tracked deal IDs must be quarantined");
         AssertEqual(1, Directory.GetFiles(directory.Path, "executions.json.corrupt-*").Length, "duplicate deal ID file must be quarantined");
+    }
+
+    private static void ExecutionStoreQuarantinesClosedLegWithoutClosedTimestamp()
+    {
+        var record = CreatePersistedExecutionRecord() with
+        {
+            State = SyntheticExecutionState.Closed,
+            Legs = [CreatePersistedExecutionRecord().Legs[0] with
+            {
+                State = SyntheticExecutionLegState.Closed,
+                ClosedUtc = null,
+            }],
+        };
+
+        AssertStorePayloadIsQuarantined(record, "closed legs require a closure timestamp");
+    }
+
+    private static void ExecutionStoreQuarantinesOpenExecutionWithoutOpenLegs()
+    {
+        var pending = CreatePersistedExecutionRecord().Legs[0] with
+        {
+            State = SyntheticExecutionLegState.Pending,
+            DealReference = "",
+            DealId = "",
+            FillLevel = null,
+            SubmittedUtc = null,
+            ConfirmedUtc = null,
+            ClosedUtc = null,
+        };
+        var record = CreatePersistedExecutionRecord() with { Legs = [pending] };
+
+        AssertStorePayloadIsQuarantined(record, "open executions require every leg to be open");
+    }
+
+    private static void ExecutionStoreQuarantinesInconsistentLegStateFields()
+    {
+        var confirmingWithoutReference = CreatePersistedExecutionRecord().Legs[0] with
+        {
+            State = SyntheticExecutionLegState.Confirming,
+            DealReference = "",
+            DealId = "",
+            FillLevel = null,
+            ConfirmedUtc = null,
+            ClosedUtc = null,
+        };
+        var record = CreatePersistedExecutionRecord() with
+        {
+            State = SyntheticExecutionState.Submitting,
+            Legs = [confirmingWithoutReference],
+        };
+
+        AssertStorePayloadIsQuarantined(record, "confirming legs require their submission identity");
+    }
+
+    private static void ExecutionStoreQuarantinesInconsistentExecutionStateMix()
+    {
+        var closed = CreatePersistedExecutionRecord().Legs[0] with
+        {
+            State = SyntheticExecutionLegState.Closed,
+            ClosedUtc = DateTimeOffset.Parse("2026-07-30T12:02:00Z"),
+        };
+        var record = CreatePersistedExecutionRecord() with
+        {
+            State = SyntheticExecutionState.PartiallyClosed,
+            Legs = [closed],
+        };
+
+        AssertStorePayloadIsQuarantined(record, "partially closed executions require both closed and unresolved legs");
+    }
+
+    private static void ExecutionStoreQuarantinesNegativeTemporalOrdering()
+    {
+        var record = CreatePersistedExecutionRecord() with
+        {
+            Legs = [CreatePersistedExecutionRecord().Legs[0] with
+            {
+                ConfirmedUtc = DateTimeOffset.Parse("2026-07-30T11:59:00Z"),
+            }],
+        };
+
+        AssertStorePayloadIsQuarantined(record, "confirmation timestamps cannot precede submission");
+    }
+
+    private static void AssertStorePayloadIsQuarantined(SyntheticExecutionRecord record, string message)
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "executions.json");
+        var document = new
+        {
+            schemaVersion = 1,
+            executions = new[] { record },
+        };
+        File.WriteAllText(path, JsonSerializer.Serialize(document, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        }));
+        var store = new SyntheticExecutionStore(path);
+
+        var restored = store.LoadAsync(default).GetAwaiter().GetResult();
+
+        AssertEqual(0, restored.Count, message);
+        AssertFalse(File.Exists(path), message);
+        AssertEqual(1, Directory.GetFiles(directory.Path, "executions.json.corrupt-*").Length, message);
+    }
+
+    private static void ExecutionStoreAcceptsStateMachineProgressSnapshots()
+    {
+        using var directory = new TemporaryDirectory();
+        var gateway = AcceptedExecutionGateway("AAPL", "MSFT");
+        var service = CreateExecutionService(gateway);
+        var openingSnapshots = new List<SyntheticExecutionRecord>();
+        var open = service.ExecuteAsync(
+            CreateExecutionTicket("AAPL", "MSFT"),
+            Capture(openingSnapshots),
+            default).GetAwaiter().GetResult();
+        gateway.ClearCalls();
+        gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_aapl")));
+        gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_msft")));
+        gateway.ConfirmResults["c_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(ClosedConfirmation("c_aapl", "d_aapl"))]);
+        gateway.ConfirmResults["c_msft"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(ClosedConfirmation("c_msft", "d_msft"))]);
+        var closingSnapshots = new List<SyntheticExecutionRecord>();
+        var reconciledOpen = open with
+        {
+            Legs = open.Legs.Select(leg => leg with { CurrentUnrealizedProfitLoss = 17.25m }).ToArray(),
+        };
+        service.CloseAsync(reconciledOpen, Capture(closingSnapshots), default).GetAwaiter().GetResult();
+
+        foreach (var snapshot in openingSnapshots.Concat(closingSnapshots).Select((record, index) => (record, index)))
+        {
+            var store = new SyntheticExecutionStore(Path.Combine(directory.Path, $"snapshot-{snapshot.index}.json"));
+            store.SaveAsync([snapshot.record], default).GetAwaiter().GetResult();
+            var restored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "state machine snapshot must round-trip");
+            AssertEqual(snapshot.record.State, restored.State, "state machine snapshot state");
+        }
+    }
+
+    private static void ExecutionStoreAcceptsClosedPartialExecutionState()
+    {
+        using var directory = new TemporaryDirectory();
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_aapl")));
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_msft")));
+        gateway.ConfirmResults["o_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(AcceptedConfirmation("o_aapl", "d_aapl"))]);
+        gateway.ConfirmResults["o_msft"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(RejectedConfirmation("o_msft", "INSUFFICIENT_FUNDS"))]);
+        var service = CreateExecutionService(gateway);
+        var partial = service.ExecuteAsync(CreateExecutionTicket("AAPL", "MSFT", "NVDA"), IgnoreProgress, default).GetAwaiter().GetResult();
+        gateway.ClearCalls();
+        gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_aapl")));
+        gateway.ConfirmResults["c_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(ClosedConfirmation("c_aapl", "d_aapl"))]);
+        var closed = service.CloseAsync(partial, IgnoreProgress, default).GetAwaiter().GetResult();
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "partial-closed.json"));
+
+        store.SaveAsync([closed], default).GetAwaiter().GetResult();
+        var restored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "closed partial execution must round-trip");
+
+        AssertEqual(SyntheticExecutionState.Closed, restored.State, "partial execution closes after its only tracked position closes");
+        AssertEqual(SyntheticExecutionLegState.Closed, restored.Legs[0].State, "opened leg is closed");
+        AssertEqual(SyntheticExecutionLegState.Rejected, restored.Legs[1].State, "rejected leg remains terminal");
+        AssertEqual(SyntheticExecutionLegState.Pending, restored.Legs[2].State, "unsent leg remains pending");
     }
 
     private static void ReconciliationMatchesOpenPositionsByDealIdAndUpdatesUpl()
