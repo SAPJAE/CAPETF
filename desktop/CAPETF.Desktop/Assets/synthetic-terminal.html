@@ -411,25 +411,234 @@
       min-height: 0;
       border-left: 1px solid var(--line);
       background: var(--panel);
-      overflow: hidden;
+      overflow-y: auto;
+      scrollbar-color: #334155 transparent;
     }
 
     #side-rail.hidden {
       display: none;
     }
 
-    .panel {
+    #rail-summary {
+      position: sticky;
+      z-index: 5;
+      top: 0;
+      display: grid;
+      gap: 8px;
       padding: 10px;
+      border-bottom: 1px solid #31415b;
+      background: rgba(9, 17, 31, .98);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, .24);
+    }
+
+    #trading-mode-row,
+    #readiness-row,
+    #quantity-row,
+    #trade-actions,
+    #workspace-actions {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    #trading-mode-row,
+    #readiness-row {
+      justify-content: space-between;
+    }
+
+    #trading-mode {
+      flex: 0 0 auto;
+      padding: 3px 7px;
+      border: 1px solid #16a34a;
+      border-radius: 3px;
+      background: #0c2a1a;
+      color: #86efac;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .08em;
+    }
+
+    #trading-mode.disabled {
+      border-color: #b45309;
+      background: #2a1908;
+      color: #fcd34d;
+    }
+
+    #trading-account,
+    #trade-readiness-detail {
+      min-width: 0;
+      color: var(--muted);
+      font-size: 10px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .status-chip {
+      flex: 0 0 auto;
+      padding: 2px 6px;
+      border: 1px solid #475569;
+      border-radius: 3px;
+      color: #cbd5e1;
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .status-chip.ready,
+    .state-open,
+    .state-closed {
+      border-color: #15803d;
+      color: #86efac;
+    }
+
+    .status-chip.busy,
+    .state-submitting,
+    .state-closing {
+      border-color: #2563eb;
+      color: #93c5fd;
+    }
+
+    .status-chip.warning,
+    .state-partially-open,
+    .state-partially-closed {
+      border-color: #b45309;
+      color: #fcd34d;
+    }
+
+    .status-chip.danger,
+    .state-needs-attention,
+    .state-rejected,
+    .state-unknown {
+      border-color: #dc2626;
+      color: #fca5a5;
+      font-weight: 800;
+    }
+
+    #quantity-row label {
+      flex: 1 1 auto;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    #quantity {
+      width: 140px;
+      min-width: 0;
+      padding: 0 8px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #trade-actions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    #place-buy-basket {
+      border-color: var(--green);
+      background: #14532d;
+    }
+
+    #place-sell-basket {
+      border-color: var(--red);
+      background: #7f1d1d;
+    }
+
+    #workspace-actions {
+      justify-content: flex-end;
+    }
+
+    .rail-section {
+      margin: 0;
       border-bottom: 1px solid var(--line);
     }
 
-    .panel-title {
-      margin-bottom: 7px;
-      color: var(--muted);
+    .rail-section > summary {
+      position: relative;
+      min-height: 32px;
+      padding: 9px 30px 7px 10px;
+      color: #cbd5e1;
+      cursor: pointer;
       font-size: 11px;
       font-weight: 700;
-      letter-spacing: .08em;
+      letter-spacing: .06em;
+      list-style: none;
       text-transform: uppercase;
+      user-select: none;
+    }
+
+    .rail-section > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .rail-section > summary::after {
+      position: absolute;
+      top: 8px;
+      right: 11px;
+      content: "+";
+      color: var(--muted);
+      font-size: 15px;
+      font-weight: 400;
+    }
+
+    .rail-section[open] > summary::after {
+      content: "-";
+    }
+
+    .section-body {
+      padding: 0 10px 10px;
+      color: #cbd5e1;
+      font-size: 11px;
+    }
+
+    .empty-copy {
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .execution-row,
+    .position-row,
+    .audit-row,
+    .preflight-row {
+      padding: 8px 0;
+      border-top: 1px solid #182235;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    .row-heading,
+    .row-meta,
+    .row-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .row-heading strong {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .row-meta {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .row-actions {
+      justify-content: flex-end;
+      margin-top: 6px;
+    }
+
+    .compact-button {
+      height: 24px;
+      padding: 0 7px;
+      font-size: 10px;
     }
 
     #formula {
@@ -442,7 +651,9 @@
     }
 
     #selection-basis,
-    #order-preview {
+    #order-preview,
+    #preflight-summary,
+    #execution-summary {
       overflow-wrap: anywhere;
       line-height: 1.4;
     }
@@ -512,34 +723,8 @@
       text-transform: uppercase;
     }
 
-    #quantity-row,
-    #order-buttons {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      align-items: center;
-    }
-
-    #quantity {
-      width: 100%;
-      padding: 0 8px;
-    }
-
-    #buy-preview {
-      background: #14532d;
-      border-color: var(--green);
-    }
-
-    #sell-preview {
-      background: #7f1d1d;
-      border-color: var(--red);
-    }
-
     #components {
-      flex: 1 1 auto;
       min-height: 0;
-      overflow: auto;
-      padding: 0 10px 10px;
     }
 
     .component {
@@ -564,6 +749,102 @@
 
     .negative {
       color: #fca5a5;
+    }
+
+    #trade-confirmation {
+      width: min(660px, calc(100vw - 40px));
+      max-height: calc(100vh - 56px);
+      padding: 0;
+      border: 1px solid #40516e;
+      border-radius: 4px;
+      background: #0a1322;
+      color: var(--ink);
+      box-shadow: 0 22px 70px rgba(0, 0, 0, .68);
+    }
+
+    #trade-confirmation::backdrop {
+      background: rgba(1, 5, 13, .78);
+    }
+
+    #confirmation-form {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      max-height: calc(100vh - 58px);
+    }
+
+    #confirmation-header,
+    #confirmation-footer {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    #confirmation-header h2 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    #confirmation-header p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    #confirmation-legs {
+      min-height: 0;
+      padding: 4px 14px;
+      overflow-y: auto;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .confirmation-leg {
+      display: grid;
+      grid-template-columns: 58px minmax(80px, 1fr) minmax(80px, auto) minmax(100px, auto);
+      gap: 10px;
+      align-items: center;
+      padding: 9px 0;
+      border-bottom: 1px solid #1b2940;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+    }
+
+    #confirmation-footer {
+      display: grid;
+      gap: 10px;
+      border-top: 1px solid var(--line);
+      border-bottom: 0;
+    }
+
+    #partial-execution-label {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      color: #dbe4f2;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    #partial-execution-ack {
+      flex: 0 0 auto;
+      width: 15px;
+      height: 15px;
+      margin: 1px 0 0;
+    }
+
+    #confirmation-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    #confirm-execution {
+      border-color: var(--green);
+      background: #14532d;
+    }
+
+    @media (max-width: 940px) {
+      :root { --rail-width: 360px; }
+      #margin-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
 
     #bottom {
@@ -628,6 +909,7 @@
         <span id="quote-prices"></span>
         <span id="candle-range"></span>
         <span id="vol-match">VOL MATCH n/a</span>
+        <span id="top-trading-mode" class="status-chip danger">TRADING DISABLED</span>
       </div>
       <div id="toolbar">
         <button type="button" data-interval="1W" class="interval active">1W</button>
@@ -708,17 +990,40 @@
 
       <div id="component-splitter" class="hidden" role="separator" aria-label="Resize components rail" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="620" aria-valuenow="420" tabindex="0"></div>
       <aside id="side-rail" class="hidden">
-        <section class="panel">
-          <div class="panel-title">SYNTHETIC FORMULA</div>
-          <div id="formula">Build a synthetic symbol.</div>
-        </section>
-        <section class="panel">
-          <div class="panel-title">ORDER PREVIEW</div>
+        <header id="rail-summary">
+          <div id="trading-mode-row">
+            <span id="trading-mode" class="disabled">TRADING DISABLED</span>
+            <span id="trading-account">Connect a demo account</span>
+          </div>
+          <div id="readiness-row">
+            <span id="trade-readiness" class="status-chip danger">Connection required</span>
+            <span id="trade-readiness-detail">Demo connection required</span>
+          </div>
+          <div id="quantity-row">
+            <label for="quantity">Basket notional</label>
+            <input id="quantity" type="number" value="300" min="1" step="100" inputmode="decimal">
+          </div>
+          <div id="trade-actions">
+            <button type="button" id="place-buy-basket" disabled>Place Buy Basket</button>
+            <button type="button" id="place-sell-basket" disabled>Place Sell Basket</button>
+          </div>
+          <div id="workspace-actions">
+            <button type="button" id="refresh-executions" class="compact-button" disabled title="Refresh positions and account state">Refresh</button>
+          </div>
+        </header>
+
+        <details class="rail-section" aria-label="SYNTHETIC FORMULA" open>
+          <summary>Formula</summary>
+          <div class="section-body">
+            <div id="formula">Build a synthetic symbol.</div>
+            <div id="components"></div>
+          </div>
+        </details>
+
+        <details class="rail-section" open>
+          <summary>Preflight</summary>
+          <div class="section-body">
           <div id="order-ticket">
-            <div id="quantity-row">
-              <span class="muted">Basket notional</span>
-              <input id="quantity" type="number" value="300" min="1" step="100">
-            </div>
             <div id="margin-summary" aria-live="polite" data-state="unavailable">
               <div><span>Buy margin</span><strong id="buy-margin">Unavailable</strong></div>
               <div><span>Sell margin</span><strong id="sell-margin">Unavailable</strong></div>
@@ -728,14 +1033,35 @@
             </div>
             <div id="margin-status" class="muted">Margin details unavailable.</div>
             <div id="margin-legs" class="muted">Margin details unavailable.</div>
-            <div id="order-buttons">
-              <button type="button" id="buy-preview">Buy</button>
-              <button type="button" id="sell-preview">Sell</button>
-            </div>
-            <div id="order-preview" class="muted">Preview only. No live orders are sent.</div>
+            <div id="preflight-summary" class="empty-copy">Choose Buy or Sell to run current market checks.</div>
+            <div id="preflight-failures"></div>
+            <div id="order-preview" class="muted"></div>
           </div>
-        </section>
-        <section id="components"></section>
+          </div>
+        </details>
+
+        <details class="rail-section" open>
+          <summary>Execution</summary>
+          <div class="section-body">
+            <div id="execution-state" class="status-chip">No execution</div>
+            <div id="execution-summary" class="empty-copy">Confirmed legs will appear here in sequence.</div>
+            <div id="execution-progress" aria-live="polite"></div>
+          </div>
+        </details>
+
+        <details class="rail-section" open>
+          <summary>Positions</summary>
+          <div id="position-list" class="section-body">
+            <div class="empty-copy">No saved synthetic positions.</div>
+          </div>
+        </details>
+
+        <details class="rail-section">
+          <summary>Audit</summary>
+          <div id="audit-list" class="section-body">
+            <div class="empty-copy">No execution events.</div>
+          </div>
+        </details>
       </aside>
     </main>
 
@@ -744,6 +1070,26 @@
       <span id="stream-state">stream idle</span>
       <span id="library-state">chart loading</span>
     </footer>
+
+    <dialog id="trade-confirmation" aria-labelledby="confirmation-title">
+      <form id="confirmation-form" method="dialog">
+        <header id="confirmation-header">
+          <h2 id="confirmation-title">Confirm demo basket</h2>
+          <p id="confirmation-summary"></p>
+        </header>
+        <div id="confirmation-legs"></div>
+        <footer id="confirmation-footer">
+          <label id="partial-execution-label">
+            <input id="partial-execution-ack" type="checkbox">
+            <span>I understand that accepted demo legs remain open if a later leg fails, and the basket may require attention.</span>
+          </label>
+          <div id="confirmation-actions">
+            <button type="button" id="cancel-execution">Cancel</button>
+            <button type="button" id="confirm-execution" disabled>Confirm Demo Order</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
   </div>
 
   <script>
@@ -772,6 +1118,18 @@
     const textAnnotationForm = document.getElementById('text-annotation-form');
     const textAnnotationInput = document.getElementById('text-annotation-input');
     const cancelTextAnnotationButton = document.getElementById('cancel-text-annotation');
+    const tradingModeBadge = document.getElementById('trading-mode');
+    const topTradingModeBadge = document.getElementById('top-trading-mode');
+    const tradeReadiness = document.getElementById('trade-readiness');
+    const tradeReadinessDetail = document.getElementById('trade-readiness-detail');
+    const placeBuyBasketButton = document.getElementById('place-buy-basket');
+    const placeSellBasketButton = document.getElementById('place-sell-basket');
+    const refreshExecutionsButton = document.getElementById('refresh-executions');
+    const tradeConfirmation = document.getElementById('trade-confirmation');
+    const confirmationForm = document.getElementById('confirmation-form');
+    const confirmationLegs = document.getElementById('confirmation-legs');
+    const partialExecutionAck = document.getElementById('partial-execution-ack');
+    const confirmExecutionButton = document.getElementById('confirm-execution');
 
     let chart = null;
     let candleSeries = null;
@@ -801,6 +1159,10 @@
     let marginPreviewTimer = null;
     let terminalBusyLabel = '';
     let terminalStatusBeforeBusy = '';
+    let terminalTradingMode = { isDemo: false, executionEnabled: false, accountId: '', accountCurrency: '' };
+    let terminalTradingOperation = '';
+    let pendingExecutionTicket = null;
+    let terminalExecutions = [];
     const INVALID_MARGIN_NOTIONAL = 'Enter a basket notional greater than 0.';
     const SYNTHETIC_PRICE_FLOOR = -10;
     const RAIL_WIDTH_KEY = 'capcom-terminal-rail-width';
@@ -854,6 +1216,270 @@
       const raw = String(value ?? '').trim();
       const numeric = Number(raw);
       return raw && Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    }
+
+    function postHostAction(message) {
+      if (!window.chrome || !window.chrome.webview) return false;
+      window.chrome.webview.postMessage(message);
+      return true;
+    }
+
+    function normalizedState(value, legState) {
+      const executionStates = ['Preflighting', 'Ready', 'Submitting', 'Partially open', 'Open', 'Needs attention', 'Closing', 'Partially closed', 'Closed', 'Rejected'];
+      const legStates = ['Pending', 'Submitted', 'Confirming', 'Open', 'Rejected', 'Unknown', 'Closing', 'Closed'];
+      if (Number.isInteger(Number(value)) && String(value).trim() !== '') {
+        return (legState ? legStates : executionStates)[Number(value)] || 'Unknown';
+      }
+      const text = String(value || 'Unknown')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/[_-]+/g, ' ')
+        .trim();
+      if (!text) return 'Unknown';
+      return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+    }
+
+    function stateClass(value) {
+      return `state-${String(value || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+    }
+
+    function setStatusChip(element, text, tone) {
+      element.textContent = text;
+      for (const value of ['ready', 'busy', 'warning', 'danger']) element.classList.remove(value);
+      if (tone) element.classList.add(tone);
+    }
+
+    function setTradeReadiness(label, detail, tone) {
+      setStatusChip(tradeReadiness, label, tone);
+      tradeReadinessDetail.textContent = detail || '';
+    }
+
+    function hasTradableBasket() {
+      const components = getField(payload, 'Components', 'components', []);
+      return components.length >= 3 && components.length <= 4;
+    }
+
+    function tradingIsBusy() {
+      return !!terminalBusyLabel || !!terminalTradingOperation;
+    }
+
+    function refreshTradingControls() {
+      const notionalValid = parseBasketNotional(quantity.value) !== null;
+      const connected = terminalTradingMode.isDemo && terminalTradingMode.executionEnabled;
+      const busy = tradingIsBusy();
+      const canPreflight = connected && hasTradableBasket() && notionalValid && !busy;
+      placeBuyBasketButton.disabled = !canPreflight;
+      placeSellBasketButton.disabled = !canPreflight;
+      refreshExecutionsButton.disabled = !connected || busy;
+      quantity.disabled = busy;
+      confirmExecutionButton.disabled = !connected || busy || !pendingExecutionTicket || !partialExecutionAck.checked;
+      for (const button of Array.from(document.querySelectorAll('[data-close-execution]'))) {
+        button.disabled = !connected || busy;
+      }
+
+      if (!connected) {
+        setTradeReadiness('Connection required', 'Connect an authenticated Capital.com demo account.', 'danger');
+      } else if (busy) {
+        setTradeReadiness('Working', terminalTradingOperation || terminalBusyLabel, 'busy');
+      } else if (!hasTradableBasket()) {
+        setTradeReadiness('Build required', 'Build a three or four leg synthetic basket.', 'warning');
+      } else if (!notionalValid) {
+        setTradeReadiness('Invalid size', INVALID_MARGIN_NOTIONAL, 'danger');
+      } else if (!pendingExecutionTicket) {
+        setTradeReadiness('Ready to check', 'Current quotes and executable sizes will be refreshed.', 'ready');
+      }
+    }
+
+    function classifyPreflightFailure(failures) {
+      const message = failures.map(failure => getField(failure, 'Reason', 'reason', '')).join(' ').toLowerCase();
+      if (message.includes('closed')) return 'Market closed';
+      if (message.includes('stale') || message.includes('quote')) return 'Stale quote';
+      if (message.includes('size') || message.includes('quantity')) return 'Invalid size';
+      if (message.includes('margin') || message.includes('fund')) return 'Insufficient margin';
+      if (message.includes('connect') || message.includes('demo') || message.includes('session')) return 'Connection required';
+      return 'Untradable';
+    }
+
+    function requestBasketPreflight(side) {
+      const basketNotional = parseBasketNotional(quantity.value);
+      if (basketNotional === null) {
+        setTradeReadiness('Invalid size', INVALID_MARGIN_NOTIONAL, 'danger');
+        refreshTradingControls();
+        return;
+      }
+      if (!terminalTradingMode.isDemo || !terminalTradingMode.executionEnabled || !hasTradableBasket() || tradingIsBusy()) {
+        refreshTradingControls();
+        return;
+      }
+      pendingExecutionTicket = null;
+      partialExecutionAck.checked = false;
+      terminalTradingOperation = `Preflighting ${side} basket`;
+      refreshTradingControls();
+      if (!postHostAction({ type: 'preflightBasket', side, basketNotional })) {
+        terminalTradingOperation = '';
+        refreshTradingControls();
+        setTradeReadiness('Connection required', 'Desktop trading host unavailable.', 'danger');
+      }
+    }
+
+    function closeTradeConfirmation() {
+      if (typeof tradeConfirmation.close === 'function') tradeConfirmation.close();
+      else if (typeof tradeConfirmation.removeAttribute === 'function') tradeConfirmation.removeAttribute('open');
+      else tradeConfirmation.open = false;
+    }
+
+    function showTradeConfirmation(ticket) {
+      pendingExecutionTicket = ticket;
+      partialExecutionAck.checked = false;
+      const side = getField(ticket, 'Side', 'side', '');
+      const notional = getField(ticket, 'RequestedNotional', 'requestedNotional', null);
+      const margin = getField(ticket, 'EstimatedMargin', 'estimatedMargin', null);
+      const currency = getField(ticket, 'MarginCurrency', 'marginCurrency', '');
+      const expiry = getField(ticket, 'ExpiresUtc', 'expiresUtc', '');
+      document.getElementById('confirmation-title').textContent = `Confirm ${side} demo basket`;
+      document.getElementById('confirmation-summary').textContent =
+        `${money(notional)} requested | estimated margin ${marginValue(margin, currency)} | ticket expires ${expiry || 'soon'}`;
+      confirmationLegs.replaceChildren();
+      for (const leg of getField(ticket, 'Legs', 'legs', [])) {
+        const row = document.createElement('div');
+        row.className = 'confirmation-leg';
+        const direction = getField(leg, 'Direction', 'direction', '');
+        const epic = getField(leg, 'Epic', 'epic', '');
+        const legQuantity = getField(leg, 'Quantity', 'quantity', null);
+        const referencePrice = getField(leg, 'ReferencePrice', 'referencePrice', null);
+        for (const value of [direction, epic, `Qty ${formatMultiplier(legQuantity)}`, `@ ${money(referencePrice)}`]) {
+          const cell = document.createElement('span');
+          cell.textContent = value;
+          row.appendChild(cell);
+        }
+        confirmationLegs.appendChild(row);
+      }
+      if (typeof tradeConfirmation.showModal === 'function') tradeConfirmation.showModal();
+      else tradeConfirmation.setAttribute('open', '');
+      refreshTradingControls();
+    }
+
+    function executionState(record) {
+      return normalizedState(getField(record, 'State', 'state', 'Unknown'), false);
+    }
+
+    function legState(record) {
+      return normalizedState(getField(record, 'State', 'state', 'Unknown'), true);
+    }
+
+    function renderExecutionProgress(record) {
+      const container = document.getElementById('execution-progress');
+      container.replaceChildren();
+      if (!record) {
+        document.getElementById('execution-state').textContent = 'No execution';
+        document.getElementById('execution-summary').textContent = 'Confirmed legs will appear here in sequence.';
+        return;
+      }
+      const state = executionState(record);
+      const stateElement = document.getElementById('execution-state');
+      stateElement.textContent = state;
+      stateElement.className = `status-chip ${stateClass(state)}`;
+      const executionId = getField(record, 'ExecutionId', 'executionId', '');
+      const side = getField(record, 'Side', 'side', '');
+      document.getElementById('execution-summary').textContent = `${side} | ${executionId}`;
+      for (const leg of getField(record, 'Legs', 'legs', [])) {
+        const row = document.createElement('div');
+        row.className = 'execution-row';
+        const stateText = legState(leg);
+        const message = getField(leg, 'Message', 'message', '');
+        row.textContent = `${getField(leg, 'Epic', 'epic', '')} | ${stateText}${message ? ` | ${message}` : ''}`;
+        if (stateText === 'Unknown') row.textContent += ' | Needs attention. Refresh positions before further action.';
+        container.appendChild(row);
+      }
+    }
+
+    function renderPositions(records) {
+      const container = document.getElementById('position-list');
+      container.replaceChildren();
+      if (!records.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-copy';
+        empty.textContent = 'No saved synthetic positions.';
+        container.appendChild(empty);
+        return;
+      }
+      for (const record of records) {
+        const recordState = executionState(record);
+        const executionId = getField(record, 'ExecutionId', 'executionId', '');
+        const basketId = getField(record, 'BasketId', 'basketId', '');
+        for (const leg of getField(record, 'Legs', 'legs', [])) {
+          const state = legState(leg);
+          const epic = getField(leg, 'Epic', 'epic', '');
+          const direction = getField(leg, 'Direction', 'direction', '');
+          const legQuantity = getField(leg, 'Quantity', 'quantity', null);
+          const dealReference = getField(leg, 'DealReference', 'dealReference', '');
+          const dealId = getField(leg, 'DealId', 'dealId', '');
+          const upl = getField(leg, 'CurrentUnrealizedProfitLoss', 'currentUnrealizedProfitLoss', null);
+          const row = document.createElement('div');
+          row.className = `position-row ${stateClass(state)}`;
+          row.textContent = `${epic} | ${direction} ${formatMultiplier(legQuantity)} | ${state}` +
+            `${dealReference ? ` | ref ${dealReference}` : ''}${dealId ? ` | deal ${dealId}` : ''}` +
+            `${upl === null || upl === undefined ? '' : ` | UPL ${Number(upl).toFixed(2)}`}`;
+          container.appendChild(row);
+        }
+        if (recordState !== 'Closed' && recordState !== 'Rejected') {
+          const actions = document.createElement('div');
+          actions.className = 'row-actions';
+          const closeButton = document.createElement('button');
+          closeButton.type = 'button';
+          closeButton.id = `close-${executionId}`;
+          closeButton.className = 'compact-button';
+          closeButton.dataset.closeExecution = executionId;
+          closeButton.textContent = 'Close Basket';
+          closeButton.addEventListener('click', () => requestCloseBasket(executionId));
+          actions.appendChild(closeButton);
+          container.appendChild(actions);
+        }
+        const marker = document.createElement('div');
+        marker.className = 'row-meta';
+        marker.textContent = `${basketId} | ${recordState}`;
+        container.appendChild(marker);
+      }
+    }
+
+    function renderAudit(records) {
+      const container = document.getElementById('audit-list');
+      container.replaceChildren();
+      let count = 0;
+      for (const record of records) {
+        const updated = getField(record, 'UpdatedUtc', 'updatedUtc', '');
+        const executionId = getField(record, 'ExecutionId', 'executionId', '');
+        const row = document.createElement('div');
+        row.className = 'audit-row';
+        row.textContent = `${updated || 'time unavailable'} | ${executionId} | ${executionState(record)}`;
+        container.appendChild(row);
+        count += 1;
+        for (const leg of getField(record, 'Legs', 'legs', [])) {
+          const message = getField(leg, 'Message', 'message', '');
+          if (!message) continue;
+          const legRow = document.createElement('div');
+          legRow.className = 'audit-row';
+          legRow.textContent = `${getField(leg, 'Epic', 'epic', '')} | ${legState(leg)} | ${message}`;
+          container.appendChild(legRow);
+          count += 1;
+        }
+      }
+      if (!count) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-copy';
+        empty.textContent = 'No execution events.';
+        container.appendChild(empty);
+      }
+    }
+
+    function requestCloseBasket(executionId) {
+      if (!executionId || !terminalTradingMode.isDemo || !terminalTradingMode.executionEnabled || tradingIsBusy()) return;
+      terminalTradingOperation = 'Closing synthetic basket';
+      refreshTradingControls();
+      if (!postHostAction({ type: 'closeBasket', executionId })) {
+        terminalTradingOperation = '';
+        refreshTradingControls();
+        setTradeReadiness('Connection required', 'Desktop trading host unavailable.', 'danger');
+      }
     }
 
     function resetMarginPreview(reason) {
@@ -1418,6 +2044,7 @@
       terminalTickFrame = null;
       apply(nextPayload, false);
       scheduleMarginPreview();
+      refreshTradingControls();
     };
 
     function flushTerminalTick() {
@@ -1504,11 +2131,106 @@
         terminalBusyLabel = '';
         terminalStatusBeforeBusy = '';
       }
+      refreshTradingControls();
+    };
+
+    window.setTerminalTradingMode = function(mode) {
+      terminalTradingMode = {
+        isDemo: !!getField(mode, 'IsDemo', 'isDemo', false),
+        executionEnabled: !!getField(mode, 'IsExecutionEnabled', 'isExecutionEnabled', false),
+        accountId: getField(mode, 'AccountId', 'accountId', ''),
+        accountCurrency: getField(mode, 'AccountCurrency', 'accountCurrency', '')
+      };
+      const enabled = terminalTradingMode.isDemo && terminalTradingMode.executionEnabled;
+      const label = getField(mode, 'Label', 'label', enabled ? 'DEMO TRADING' : 'TRADING DISABLED');
+      tradingModeBadge.textContent = label;
+      topTradingModeBadge.textContent = label;
+      tradingModeBadge.classList.toggle('disabled', !enabled);
+      topTradingModeBadge.classList.toggle('danger', !enabled);
+      topTradingModeBadge.classList.toggle('ready', enabled);
+      document.getElementById('trading-account').textContent = terminalTradingMode.accountId
+        ? `${terminalTradingMode.accountId} | ${terminalTradingMode.accountCurrency || 'account currency n/a'}`
+        : 'Connect a demo account';
+      if (!enabled) {
+        pendingExecutionTicket = null;
+        closeTradeConfirmation();
+      }
+      refreshTradingControls();
+    };
+
+    window.setTerminalPreflight = function(result) {
+      terminalTradingOperation = '';
+      const ready = !!getField(result, 'IsReady', 'isReady', false);
+      const ticket = getField(result, 'Ticket', 'ticket', null);
+      const failures = getField(result, 'Failures', 'failures', []);
+      const summary = document.getElementById('preflight-summary');
+      const failureList = document.getElementById('preflight-failures');
+      failureList.replaceChildren();
+
+      if (ready && ticket) {
+        const side = getField(ticket, 'Side', 'side', '');
+        const margin = getField(ticket, 'EstimatedMargin', 'estimatedMargin', null);
+        const currency = getField(ticket, 'MarginCurrency', 'marginCurrency', '');
+        summary.textContent = `${side} Ready | ${getField(ticket, 'Legs', 'legs', []).length} legs | estimated margin ${marginValue(margin, currency)}`;
+        setTradeReadiness('Ready', 'Review the host-frozen legs before confirming.', 'ready');
+        showTradeConfirmation(ticket);
+        return;
+      }
+
+      pendingExecutionTicket = null;
+      closeTradeConfirmation();
+      const label = classifyPreflightFailure(failures);
+      summary.textContent = failures.length ? `${label}. ${failures.length} check${failures.length === 1 ? '' : 's'} failed.` : `${label}.`;
+      for (const failure of failures) {
+        const row = document.createElement('div');
+        row.className = 'preflight-row';
+        const epic = getField(failure, 'Epic', 'epic', 'Basket');
+        const reason = getField(failure, 'Reason', 'reason', 'Unavailable');
+        row.textContent = `${epic || 'Basket'} | ${reason}`;
+        failureList.appendChild(row);
+      }
+      refreshTradingControls();
+      setTradeReadiness(label, failures.length ? getField(failures[0], 'Reason', 'reason', '') : 'Preflight failed.', 'danger');
+    };
+
+    window.setTerminalExecutionProgress = function(record) {
+      const error = getField(record, 'Error', 'error', '');
+      if (error) {
+        terminalTradingOperation = '';
+        setStatusChip(document.getElementById('execution-state'), 'Needs attention', 'danger');
+        document.getElementById('execution-summary').textContent = error;
+        refreshTradingControls();
+        return;
+      }
+      const executionId = getField(record, 'ExecutionId', 'executionId', '');
+      if (!executionId) return;
+      const index = terminalExecutions.findIndex(item => getField(item, 'ExecutionId', 'executionId', '') === executionId);
+      if (index >= 0) terminalExecutions[index] = record;
+      else terminalExecutions.unshift(record);
+      renderExecutionProgress(record);
+      renderPositions(terminalExecutions);
+      renderAudit(terminalExecutions);
+      refreshTradingControls();
+    };
+
+    window.setTerminalExecutions = function(records) {
+      terminalTradingOperation = '';
+      terminalExecutions = Array.isArray(records) ? records.slice() : [];
+      terminalExecutions.sort((left, right) => String(getField(right, 'UpdatedUtc', 'updatedUtc', ''))
+        .localeCompare(String(getField(left, 'UpdatedUtc', 'updatedUtc', ''))));
+      renderExecutionProgress(terminalExecutions[0] || null);
+      renderPositions(terminalExecutions);
+      renderAudit(terminalExecutions);
+      if (terminalExecutions.length && workspace.classList.contains('ticket-hidden')) setRailCollapsed(false);
+      refreshTradingControls();
     };
 
     window.clearTerminal = function() {
       window.setTerminalData({ Candles: [], Components: [] });
       resetMarginPreview('Build a synthetic basket to preview margin.');
+      pendingExecutionTicket = null;
+      closeTradeConfirmation();
+      refreshTradingControls();
     };
 
     window.resetTerminalMarginPreview = resetMarginPreview;
@@ -1710,9 +2432,49 @@
     lineStyleButtons.forEach(button => button.addEventListener('click', () => applySelectedStyle({ lineStyle: button.dataset.lineStyle })));
     document.getElementById('fit-chart').addEventListener('click', window.fitTerminalChart);
     document.getElementById('components-toggle').addEventListener('click', window.toggleTerminalComponents);
-    quantity.addEventListener('input', () => scheduleMarginPreview());
-    document.getElementById('buy-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('buy', quantity.value));
-    document.getElementById('sell-preview').addEventListener('click', () => window.placeSyntheticPreviewOrder('sell', quantity.value));
+    quantity.addEventListener('input', () => {
+      pendingExecutionTicket = null;
+      closeTradeConfirmation();
+      scheduleMarginPreview();
+      refreshTradingControls();
+    });
+    placeBuyBasketButton.addEventListener('click', () => requestBasketPreflight('BUY'));
+    placeSellBasketButton.addEventListener('click', () => requestBasketPreflight('SELL'));
+    refreshExecutionsButton.addEventListener('click', () => {
+      if (!terminalTradingMode.isDemo || !terminalTradingMode.executionEnabled || tradingIsBusy()) return;
+      terminalTradingOperation = 'Refreshing positions';
+      refreshTradingControls();
+      if (!postHostAction({ type: 'refreshExecutions' })) {
+        terminalTradingOperation = '';
+        refreshTradingControls();
+        setTradeReadiness('Connection required', 'Desktop trading host unavailable.', 'danger');
+      }
+    });
+    partialExecutionAck.addEventListener('change', refreshTradingControls);
+    document.getElementById('cancel-execution').addEventListener('click', () => {
+      pendingExecutionTicket = null;
+      partialExecutionAck.checked = false;
+      closeTradeConfirmation();
+      refreshTradingControls();
+    });
+    confirmExecutionButton.addEventListener('click', () => {
+      if (!terminalTradingMode.isDemo || !terminalTradingMode.executionEnabled ||
+          !pendingExecutionTicket || !partialExecutionAck.checked || tradingIsBusy()) return;
+      const ticketId = getField(pendingExecutionTicket, 'TicketId', 'ticketId', '');
+      if (!ticketId) return;
+      pendingExecutionTicket = null;
+      partialExecutionAck.checked = false;
+      closeTradeConfirmation();
+      terminalTradingOperation = 'Executing synthetic basket';
+      refreshTradingControls();
+      if (!postHostAction({ type: 'executeBasket', ticketId })) {
+        terminalTradingOperation = '';
+        setStatusChip(document.getElementById('execution-state'), 'Needs attention', 'danger');
+        document.getElementById('execution-summary').textContent = 'Desktop trading host unavailable.';
+        refreshTradingControls();
+      }
+    });
+    confirmationForm.addEventListener('submit', event => event.preventDefault());
     componentSplitter.addEventListener('pointerdown', beginRailResize);
     componentSplitter.addEventListener('pointermove', resizeRail);
     componentSplitter.addEventListener('pointerup', endRailResize);
@@ -1729,6 +2491,7 @@
 
     restoreRailWidth();
     ensureChart();
+    refreshTradingControls();
     if (window.lucide && typeof window.lucide.createIcons === 'function') {
       window.lucide.createIcons({ attrs: { 'aria-hidden': 'true', 'stroke-width': 1.8 } });
     }

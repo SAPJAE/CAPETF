@@ -2,6 +2,7 @@ using CAPETF.Desktop;
 using System.Net;
 using System.Net.Http;
 using System.IO;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
@@ -11,6 +12,8 @@ public static class SyntheticTradingTests
 {
     public static void RunAll()
     {
+        SyntheticTradingWorkspaceHasProfessionalDemoContract();
+        SyntheticTradingWorkspaceRuntimeUsesHostOwnedTicketsAndOperationLocks();
         TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs();
         TradingBrowserParserRejectsMalformedShapesWithoutThrowing();
         TradingBrowserHandlerTurnsMalformedAndSemanticFailuresIntoRejections();
@@ -85,6 +88,247 @@ public static class SyntheticTradingTests
         ReconciliationReopensClosedLegWithoutClosureMetadataAndPersistsIt();
         ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
         ReconciliationMapsRejectedOpenPendingToNeedsAttentionAndPersistsIt();
+    }
+
+    private static void SyntheticTradingWorkspaceHasProfessionalDemoContract()
+    {
+        var html = ReadRepositoryFile("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html");
+        foreach (var required in new[]
+        {
+            "DEMO TRADING",
+            "Place Buy Basket",
+            "Place Sell Basket",
+            "id=\"trade-readiness\"",
+            "id=\"trade-confirmation\"",
+            "id=\"confirmation-legs\"",
+            "id=\"partial-execution-ack\"",
+            "id=\"confirm-execution\"",
+            "id=\"refresh-executions\"",
+            "setTerminalPreflight",
+            "setTerminalExecutions",
+            "setTerminalExecutionProgress",
+            "setTerminalTradingMode",
+            "Needs attention",
+            "Close Basket",
+            "<summary>Formula</summary>",
+            "<summary>Preflight</summary>",
+            "<summary>Execution</summary>",
+            "<summary>Positions</summary>",
+            "<summary>Audit</summary>",
+            "overflow-y: auto",
+            "position: sticky",
+        })
+        {
+            AssertContains(html, required, $"professional trading workspace contract {required}");
+        }
+
+        AssertFalse(html.Contains("Preview only", StringComparison.OrdinalIgnoreCase),
+            "the executable demo workspace must not describe placement as preview-only");
+    }
+
+    private static void SyntheticTradingWorkspaceRuntimeUsesHostOwnedTicketsAndOperationLocks()
+    {
+        var htmlPath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..",
+            "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
+        const string script = """
+            const assert = require('node:assert/strict');
+            const fs = require('node:fs');
+            const vm = require('node:vm');
+
+            class FakeClassList {
+              constructor() { this.values = new Set(); }
+              add(...values) { values.forEach(value => this.values.add(value)); }
+              remove(...values) { values.forEach(value => this.values.delete(value)); }
+              contains(value) { return this.values.has(value); }
+              toggle(value, force) {
+                const enabled = force === undefined ? !this.values.has(value) : !!force;
+                if (enabled) this.values.add(value); else this.values.delete(value);
+                return enabled;
+              }
+            }
+
+            class FakeElement {
+              constructor(id = '') {
+                this._id = '';
+                this.id = id;
+                this.dataset = {};
+                this.classList = new FakeClassList();
+                this.style = { display: '', setProperty() {} };
+                this.textContent = '';
+                this.value = id === 'quantity' ? '300' : '';
+                this.checked = false;
+                this.disabled = false;
+                this.open = false;
+                this.attributes = new Map();
+                this.children = [];
+                this.listeners = new Map();
+              }
+              get id() { return this._id; }
+              set id(value) {
+                this._id = String(value || '');
+                if (this._id) elements.set(this._id, this);
+              }
+              addEventListener(name, callback) {
+                if (!this.listeners.has(name)) this.listeners.set(name, []);
+                this.listeners.get(name).push(callback);
+              }
+              removeEventListener() {}
+              dispatch(name, extra = {}) {
+                const event = { target: this, currentTarget: this, preventDefault() {}, ...extra };
+                for (const callback of this.listeners.get(name) || []) callback(event);
+              }
+              click() { this.dispatch('click'); }
+              setAttribute(name, value) { this.attributes.set(name, String(value)); }
+              getAttribute(name) { return this.attributes.get(name) || null; }
+              removeAttribute(name) { this.attributes.delete(name); }
+              showModal() { this.open = true; }
+              close() { this.open = false; }
+              getBoundingClientRect() { return { left: 0, top: 0, right: 800, width: 800, height: 600 }; }
+              hasPointerCapture() { return false; }
+              setPointerCapture() {}
+              releasePointerCapture() {}
+              focus() { document.activeElement = this; }
+              appendChild(child) { this.children.push(child); return child; }
+              replaceChildren(...children) { this.children = [...children]; this.textContent = ''; }
+            }
+
+            const elements = new Map();
+            const element = id => {
+              if (!elements.has(id)) elements.set(id, new FakeElement(id));
+              return elements.get(id);
+            };
+            global.window = globalThis;
+            global.document = {
+              activeElement: null,
+              body: new FakeElement('body'),
+              documentElement: new FakeElement('html'),
+              createElement() { return new FakeElement(); },
+              getElementById: element,
+              querySelectorAll() { return []; }
+            };
+            global.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+            global.confirm = () => true;
+            global.addEventListener = () => {};
+            global.removeEventListener = () => {};
+            global.requestAnimationFrame = callback => { callback(); return 1; };
+            global.cancelAnimationFrame = () => {};
+            global.setTimeout = () => 1;
+            global.clearTimeout = () => {};
+
+            const messages = [];
+            const allMessages = [];
+            global.chrome = { webview: { postMessage(message) { messages.push(message); allMessages.push(message); } } };
+            function makeSeries() {
+              return {
+                setData() {}, update() {}, createPriceLine() { return {}; }, removePriceLine() {},
+                priceToCoordinate(value) { return Number(value); }, coordinateToPrice(value) { return Number(value); },
+                attachPrimitive() {}, detachPrimitive() {}
+              };
+            }
+            const timeScale = {
+              fitContent() {}, scrollToRealTime() {}, applyOptions() {}, scrollPosition() { return 0; },
+              scrollToPosition() {}, timeToCoordinate(value) { return Number(value); }, coordinateToTime(value) { return Number(value); }
+            };
+            global.LightweightCharts = {
+              CandlestickSeries: {}, LineSeries: {}, CrosshairMode: { Normal: 0 }, version() { return 'test'; },
+              createChart() {
+                return {
+                  addSeries() { return makeSeries(); }, timeScale() { return timeScale; },
+                  priceScale() { return { applyOptions() {} }; }, subscribeCrosshairMove() {}, resize() {}
+                };
+              }
+            };
+            const fakeDrawingManager = {
+              updateContext() {}, getRecords() { return []; }, setRecords() {}, setTool() { return true; },
+              cancel() {}, undo() {}, redo() {}, setMagnet() {}, setLocked() {}, setVisible() {},
+              setStyle() {}, clear() {}, getState() { return {}; }
+            };
+            global.CapComDrawings = {
+              createManager() { return fakeDrawingManager; },
+              createTextDialogController() { return { open() {} }; },
+              switchDrawingIdentity(_manager, _storage, _oldIdentity, nextIdentity) { return nextIdentity; },
+              persistStoredRecords() { return true; }
+            };
+            global.lucide = { createIcons() {} };
+
+            const html = fs.readFileSync(process.argv[2], 'utf8');
+            const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+            vm.runInThisContext(scripts.at(-1)[1], { filename: process.argv[2] });
+
+            setTerminalTradingMode({ IsDemo: true, IsExecutionEnabled: true, AccountId: 'DEMO-1', AccountCurrency: 'USDd', Label: 'DEMO TRADING' });
+            setTerminalData({
+              DrawingIdentity: 'basket-1', Symbol: 'SYN-1', Currency: 'USD', Candles: [],
+              Components: [{ Epic: 'AAPL' }, { Epic: 'MSFT' }, { Epic: 'NVDA' }]
+            });
+            messages.length = 0;
+            allMessages.length = 0;
+            setTerminalBusy(true, 'Refreshing positions');
+            assert.equal(element('place-buy-basket').disabled, true);
+            assert.equal(element('place-sell-basket').disabled, true);
+            setTerminalBusy(false, '');
+            setTerminalPreflight({ IsReady: false, Ticket: null, Failures: [{ Epic: 'AAPL', Reason: 'Market closed' }] });
+            assert.equal(element('trade-readiness').textContent, 'Market closed');
+            element('place-buy-basket').click();
+            assert.deepEqual(messages.pop(), { type: 'preflightBasket', side: 'BUY', basketNotional: 300 });
+
+            setTerminalPreflight({
+              IsReady: true,
+              Ticket: {
+                TicketId: 'host-ticket-1', BasketId: 'basket-1', Side: 'BUY', RequestedNotional: 300,
+                EstimatedMargin: 72.5, MarginCurrency: 'USDd', ExpiresUtc: '2026-07-30T12:02:00Z',
+                Legs: [
+                  { Direction: 'BUY', Epic: 'AAPL', Quantity: 0.1, ReferencePrice: 201.25 },
+                  { Direction: 'SELL', Epic: 'MSFT', Quantity: 0.2, ReferencePrice: 502.5 },
+                  { Direction: 'BUY', Epic: 'NVDA', Quantity: 0.3, ReferencePrice: 180.75 }
+                ]
+              },
+              Failures: []
+            });
+            assert.equal(element('trade-confirmation').open, true);
+            assert.equal(element('confirmation-legs').children.length, 3);
+            assert.equal(element('confirm-execution').disabled, true);
+            element('partial-execution-ack').checked = true;
+            element('partial-execution-ack').dispatch('change');
+            assert.equal(element('confirm-execution').disabled, false);
+            element('confirm-execution').click();
+            assert.deepEqual(messages.pop(), { type: 'executeBasket', ticketId: 'host-ticket-1' });
+
+            setTerminalExecutionProgress({
+              ExecutionId: 'host-execution-1', TicketId: 'host-ticket-1', BasketId: 'basket-1', Side: 'BUY',
+              State: 'NeedsAttention', UpdatedUtc: '2026-07-30T12:01:00Z',
+              Legs: [{ Epic: 'AAPL', Direction: 'BUY', Quantity: 0.1, State: 'Open', DealReference: 'REF-1', DealId: 'DEAL-1', Message: '' }]
+            });
+            setTerminalExecutions([{
+              ExecutionId: 'host-execution-1', TicketId: 'host-ticket-1', BasketId: 'basket-1', Side: 'BUY',
+              State: 'NeedsAttention', UpdatedUtc: '2026-07-30T12:01:00Z',
+              Legs: [{ Epic: 'AAPL', Direction: 'BUY', Quantity: 0.1, State: 'Open', DealReference: 'REF-1', DealId: 'DEAL-1', Message: '' }]
+            }]);
+            assert.match(element('execution-state').textContent, /Needs attention/i);
+            assert.match(element('position-list').children[0].textContent, /DEAL-1/);
+
+            element('refresh-executions').click();
+            assert.deepEqual(messages.pop(), { type: 'refreshExecutions' });
+            setTerminalExecutions([{
+              ExecutionId: 'host-execution-1', TicketId: 'host-ticket-1', BasketId: 'basket-1', Side: 'BUY',
+              State: 'NeedsAttention', UpdatedUtc: '2026-07-30T12:02:00Z',
+              Legs: [{ Epic: 'AAPL', Direction: 'BUY', Quantity: 0.1, State: 'Open', DealReference: 'REF-1', DealId: 'DEAL-1', Message: '' }]
+            }]);
+            element('close-host-execution-1').click();
+            assert.deepEqual(messages.pop(), { type: 'closeBasket', executionId: 'host-execution-1' });
+
+            for (const message of allMessages) {
+              for (const forbidden of ['epic', 'direction', 'quantity', 'price', 'dealId']) {
+                assert.equal(Object.hasOwn(message, forbidden), false, `browser message leaked ${forbidden}`);
+              }
+            }
+            setTerminalTradingMode({ IsDemo: false, IsExecutionEnabled: false, Label: 'TRADING DISABLED' });
+            assert.equal(element('place-buy-basket').disabled, true);
+            assert.equal(element('place-sell-basket').disabled, true);
+            """;
+
+        RunNodeScript(script, htmlPath, "synthetic trading workspace runtime");
     }
 
     private static void TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs()
@@ -2461,6 +2705,34 @@ public static class SyntheticTradingTests
         }
 
         throw new FileNotFoundException($"Repository file not found: {Path.Combine(segments)}");
+    }
+
+    private static void RunNodeScript(string script, string htmlPath, string description)
+    {
+        var scriptPath = Path.Combine(Path.GetTempPath(), $"capetf-{Guid.NewGuid():N}.cjs");
+        File.WriteAllText(scriptPath, script, new UTF8Encoding(false));
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo("node")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                ArgumentList = { scriptPath, htmlPath },
+            }) ?? throw new Exception($"could not start Node for {description}");
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            if (process.ExitCode != 0)
+            {
+                throw new Exception($"{description} failed ({process.ExitCode}): {error}{output}");
+            }
+        }
+        finally
+        {
+            File.Delete(scriptPath);
+        }
     }
 
     private static void AssertSequence(IEnumerable<string> actual, params string[] expected)
