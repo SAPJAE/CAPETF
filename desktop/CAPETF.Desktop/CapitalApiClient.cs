@@ -138,7 +138,7 @@ public sealed partial class CapitalApiClient : IDisposable
     {
         EnsureSession();
         using var doc = await GetJsonAsync($"api/v1/markets/{Uri.EscapeDataString(epic)}", cancellationToken);
-        return ParseMarketDetails(doc.RootElement);
+        return ParseMarketDetails(doc.RootElement, DateTimeOffset.UtcNow);
     }
 
     public async Task<IReadOnlyList<ChartPoint>> GetPricesAsync(string epic, string resolution, int max, CancellationToken cancellationToken = default)
@@ -258,10 +258,19 @@ public sealed partial class CapitalApiClient : IDisposable
     internal static MarketInstrument? ParseMarketDetails(string json)
     {
         using var document = JsonDocument.Parse(json);
-        return ParseMarketDetails(document.RootElement);
+        return ParseMarketDetails(document.RootElement, DateTimeOffset.UtcNow);
     }
 
-    internal static MarketInstrument? ParseMarketDetails(JsonElement root)
+    internal static MarketInstrument? ParseMarketDetails(string json, DateTimeOffset retrievedAt)
+    {
+        using var document = JsonDocument.Parse(json);
+        return ParseMarketDetails(document.RootElement, retrievedAt);
+    }
+
+    internal static MarketInstrument? ParseMarketDetails(JsonElement root) =>
+        ParseMarketDetails(root, DateTimeOffset.UtcNow);
+
+    internal static MarketInstrument? ParseMarketDetails(JsonElement root, DateTimeOffset retrievedAt)
     {
         if (!root.TryGetProperty("instrument", out var instrument) || instrument.ValueKind != JsonValueKind.Object)
         {
@@ -290,7 +299,7 @@ public sealed partial class CapitalApiClient : IDisposable
             Offer = offer,
             Price = price,
             LastTickAt = root.TryGetProperty("snapshot", out snapshot)
-                ? ParseSnapshotTimestamp(snapshot)
+                ? ParseSnapshotTimestamp(snapshot, retrievedAt)
                 : null,
             Status = root.TryGetProperty("snapshot", out snapshot)
                 ? ReadString(snapshot, "marketStatus") ?? ""
@@ -356,17 +365,41 @@ public sealed partial class CapitalApiClient : IDisposable
             ReadString(document.RootElement, "currencyIsoCode") ?? "");
     }
 
-    private static DateTimeOffset? ParseSnapshotTimestamp(JsonElement snapshot)
+    private static DateTimeOffset? ParseSnapshotTimestamp(JsonElement snapshot, DateTimeOffset retrievedAt)
     {
         var source = ReadString(snapshot, "updateTimeUTC");
-        if (string.IsNullOrWhiteSpace(source)) return null;
-        return DateTimeOffset.TryParse(
-            source,
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-            out var parsed)
-                ? parsed
-                : null;
+        if (!string.IsNullOrWhiteSpace(source) && DateTimeOffset.TryParse(
+                source,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var parsedUtc))
+        {
+            return parsedUtc;
+        }
+
+        var localSource = ReadString(snapshot, "updateTime");
+        if (string.IsNullOrWhiteSpace(localSource) || !DateTime.TryParse(
+                localSource,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces,
+                out var parsedLocal))
+        {
+            return null;
+        }
+
+        var unspecified = DateTime.SpecifyKind(parsedLocal, DateTimeKind.Unspecified);
+        DateTimeOffset? nearest = null;
+        var nearestDistance = TimeSpan.MaxValue;
+        for (var minutes = -14 * 60; minutes <= 14 * 60; minutes += 15)
+        {
+            var candidate = new DateTimeOffset(unspecified, TimeSpan.FromMinutes(minutes)).ToUniversalTime();
+            var distance = (candidate - retrievedAt.ToUniversalTime()).Duration();
+            if (distance >= nearestDistance) continue;
+            nearest = candidate;
+            nearestDistance = distance;
+        }
+
+        return nearestDistance <= TimeSpan.FromHours(12) ? nearest : null;
     }
 
     private static IReadOnlyList<OhlcPoint> ParseOhlcPrices(JsonElement root)

@@ -150,7 +150,7 @@ public static class SyntheticBasketBuilderTests
         CapComTerminalShowsActionableConnectionFailures();
         CapitalApiClientAllowsReconnectAfterRequests();
         CapitalApiClientParsesMarketDetailsSnapshotAndDealingRules();
-        CapitalApiClientDoesNotTreatLocalSnapshotTimeAsUtc();
+        CapitalApiClientInfersOffsetlessSnapshotNearRetrievalTime();
         MarketSnapshotRejectsOlderSourceTimeAndClearsMissingSides();
         CapitalStreamingTimestampParserRequiresSourceTime();
         CapitalStreamingClientRejectsClosedSocketsAndWindowRecreates();
@@ -4547,7 +4547,7 @@ public static class SyntheticBasketBuilderTests
         AssertEqual(DateTimeOffset.Parse("2026-07-27T13:45:12.345Z"), details.LastTickAt, "market details must retain the Capital.com source snapshot timestamp");
     }
 
-    private static void CapitalApiClientDoesNotTreatLocalSnapshotTimeAsUtc()
+    private static void CapitalApiClientInfersOffsetlessSnapshotNearRetrievalTime()
     {
         const string json =
             """
@@ -4562,15 +4562,16 @@ public static class SyntheticBasketBuilderTests
             }
             """;
 
-        var details = CapitalApiClient.ParseMarketDetails(json);
+        var retrievedAt = DateTimeOffset.Parse("2026-07-27T16:52:12Z");
+        var details = CapitalApiClient.ParseMarketDetails(json, retrievedAt);
 
         if (details is null) throw new Exception("market details should preserve a snapshot with account-local time");
         AssertNear(484.16m, details.Bid ?? 0m, "account-local snapshots should still supply bid");
         AssertNear(484.76m, details.Offer ?? 0m, "account-local snapshots should still supply ask");
-        if (details.LastTickAt is not null)
-        {
-            throw new Exception("offset-less updateTime must not be treated as UTC and block newer WebSocket ticks");
-        }
+        AssertEqual(
+            DateTimeOffset.Parse("2026-07-27T16:52:11.279Z"),
+            details.LastTickAt,
+            "offset-less updateTime must infer the nearby source instant instead of being discarded or treated as UTC");
     }
 
     private static void MarketSnapshotRejectsOlderSourceTimeAndClearsMissingSides()
