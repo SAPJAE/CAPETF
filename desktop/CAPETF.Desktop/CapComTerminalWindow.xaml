@@ -60,6 +60,7 @@
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
                         <TextBlock Text="cap.com Terminal" Foreground="{StaticResource InkBrush}" FontSize="20" FontWeight="SemiBold" Margin="0,0,14,0"/>
                         <TextBlock x:Name="ConnectionText" Text="saved keys required" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="TradingModeText" Text="TRADING DISABLED" Foreground="OrangeRed" FontWeight="SemiBold" VerticalAlignment="Center" Margin="12,0,0,0"/>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
                         <Button Content="Fit" Click="FitChart_Click"/>
@@ -136,8 +137,8 @@
                     <TextBlock x:Name="SyntheticFormulaText" Text="No formula yet."/>
                     <TextBox x:Name="QuantityBox" Text="300"/>
                     <TextBlock x:Name="OrderPreviewText" Text="Preview only. No live orders are sent."/>
-                    <Button Content="Buy" Click="BuyPreview_Click"/>
-                    <Button Content="Sell" Click="SellPreview_Click"/>
+                    <Button Content="Preview Buy" Click="BuyPreview_Click"/>
+                    <Button Content="Preview Sell" Click="SellPreview_Click"/>
                     <ItemsControl x:Name="ComponentsList"/>
                 </StackPanel>
             </Grid>

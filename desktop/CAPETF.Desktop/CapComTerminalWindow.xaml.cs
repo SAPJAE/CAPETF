@@ -16,6 +16,7 @@ public partial class CapComTerminalWindow : Window
     private readonly CapitalApiClient _api = new();
     private readonly SyntheticHistoryService _history;
     private readonly SyntheticMarginPreviewService _marginPreview;
+    private readonly SyntheticTradingHostCoordinator _tradingCoordinator;
     private readonly TerminalOperationState _operationState = new();
     private readonly WindowLifetime _windowLifetime = new();
     private readonly List<MarketInstrument> _instruments = [];
@@ -45,6 +46,12 @@ public partial class CapComTerminalWindow : Window
         OperationProgressPanel.DataContext = _operationState;
         _history = new SyntheticHistoryService(_api);
         _marginPreview = new SyntheticMarginPreviewService(new CapitalApiSyntheticMarginDataSource(_api));
+        _tradingCoordinator = new SyntheticTradingHostCoordinator(
+            new SyntheticBasketExecutionService(new CapitalTradingGateway(_api)),
+            new SyntheticExecutionStore(SyntheticExecutionStorePath()),
+            new SyntheticPositionReconciler(),
+            () => _api.IsDemoTradingSession,
+            cancellationToken => _api.GetOpenPositionsAsync(cancellationToken));
         StrategyBox.ItemsSource = SyntheticStrategyCatalog.All;
         StrategyBox.DisplayMemberPath = nameof(SyntheticStrategy.Label);
         StrategyBox.SelectedValuePath = nameof(SyntheticStrategy.Kind);
@@ -60,6 +67,7 @@ public partial class CapComTerminalWindow : Window
     {
         var saved = _credentialStore.Load();
         ConnectionText.Text = saved is null ? "no saved Capital.com keys" : $"saved keys loaded for {SavedCredentialLabel(saved)}";
+        TradingModeText.Text = saved?.UseDemo == true ? "DEMO LOGIN REQUIRED" : "TRADING DISABLED";
     }
 
     private async void Connect_Click(object sender, RoutedEventArgs e)
@@ -76,6 +84,8 @@ public partial class CapComTerminalWindow : Window
             ConnectionText.Text = $"connecting to {SavedCredentialLabel(saved)}...";
             await _api.LoginAsync(saved, cancellationToken);
             await ResetMarginPreviewAfterLoginAsync();
+            await PublishTerminalTradingModeAsync();
+            await _tradingCoordinator.ReconnectAsync(PublishTerminalExecutionsAsync, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             ConnectionText.Text = $"connected to {SavedCredentialLabel(saved)}";
             StatusText.Text = $"Connected to {SavedCredentialLabel(saved)}. Loading universe...";
@@ -698,6 +708,8 @@ public partial class CapComTerminalWindow : Window
         if (saved is null) throw new InvalidOperationException("No saved Capital.com keys found.");
         await _api.LoginAsync(saved, cancellationToken);
         await ResetMarginPreviewAfterLoginAsync();
+        await PublishTerminalTradingModeAsync();
+        await _tradingCoordinator.ReconnectAsync(PublishTerminalExecutionsAsync, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         ConnectionText.Text = "connected";
     }
@@ -720,6 +732,14 @@ public partial class CapComTerminalWindow : Window
             return false;
         }
 
+        return await RunStartedOperationAsync(operationName, action, cancellationToken);
+    }
+
+    private async Task<bool> RunStartedOperationAsync(
+        string operationName,
+        Func<CancellationToken, Task> action,
+        CancellationToken cancellationToken)
+    {
         var controlsDisabled = false;
         try
         {
@@ -1021,6 +1041,7 @@ public partial class CapComTerminalWindow : Window
                         {
                             await SendTerminalPayloadAsync(_pendingPayload);
                         }
+                        await PublishInitialTradingStateAsync();
                     };
                     TerminalWebView.Source = new Uri(terminalPath);
                     StatusText.Text = "Interactive chart host loading.";
@@ -1072,6 +1093,152 @@ public partial class CapComTerminalWindow : Window
     {
         var label = JsonSerializer.Serialize(operationName ?? string.Empty);
         return InvokeTerminalScriptAsync($"window.setTerminalBusy && window.setTerminalBusy({busy.ToString().ToLowerInvariant()}, {label});");
+    }
+
+    private async Task PreflightSyntheticBasketAsync(
+        string side,
+        decimal basketNotional,
+        CancellationToken cancellationToken)
+    {
+        if (_basket is null)
+        {
+            await PublishTerminalPreflightAsync(new SyntheticPreflightResult(
+                false,
+                null,
+                [new SyntheticPreflightFailure("", "Build a synthetic basket before preflight.")]));
+            return;
+        }
+
+        var basket = _basket;
+        await EnsureConnectedAsync(cancellationToken);
+        await RefreshBasketMarketDetailsAsync(basket, cancellationToken);
+        _marginPreview.InvalidateCaches();
+        var margin = await _marginPreview.BuildAsync(basket, basketNotional, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        var result = SyntheticTradePreflight.Build(new SyntheticPreflightInput(
+            _api.IsDemoTradingSession,
+            SyntheticTerminalChartPayload.DrawingIdentity(basket),
+            basket,
+            side,
+            basketNotional,
+            DateTimeOffset.UtcNow,
+            margin));
+        result = _tradingCoordinator.RegisterPreflight(result);
+        await PublishTerminalPreflightAsync(result);
+    }
+
+    private Task ExecuteSyntheticBasketAsync(Guid ticketId)
+    {
+        var cancellationToken = _windowLifetime.Token;
+        if (cancellationToken.IsCancellationRequested) return Task.CompletedTask;
+        const string operationName = "Executing synthetic basket";
+        if (!_operationState.TryBegin(operationName))
+        {
+            _windowLifetime.TryApply(() => StatusText.Text = $"{_operationState.Label} is already running.");
+            return Task.CompletedTask;
+        }
+
+        SyntheticHostExecution execution;
+        try
+        {
+            execution = _tradingCoordinator.BeginExecution(ticketId);
+        }
+        catch (Exception ex)
+        {
+            _operationState.Fail(ex.Message);
+            _windowLifetime.TryApply(() => StatusText.Text = ex.Message);
+            return PublishTerminalExecutionErrorAsync(ex.Message);
+        }
+
+        var operation = RunStartedOperationAsync(
+            operationName,
+            async token =>
+            {
+                await _tradingCoordinator.ExecuteAsync(
+                    execution,
+                    PublishTerminalExecutionProgressAsync,
+                    PublishTerminalExecutionsAsync,
+                    token);
+                _marginPreview.InvalidateCaches();
+            },
+            cancellationToken);
+        return FinishSyntheticExecutionAsync(execution, operation);
+    }
+
+    private static async Task FinishSyntheticExecutionAsync(
+        SyntheticHostExecution execution,
+        Task operation)
+    {
+        try
+        {
+            await operation;
+        }
+        finally
+        {
+            execution.Dispose();
+        }
+    }
+
+    private Task RefreshSyntheticExecutionsAsync(CancellationToken cancellationToken) =>
+        _tradingCoordinator.RefreshAsync(PublishTerminalExecutionsAsync, cancellationToken);
+
+    private Task CloseSyntheticBasketAsync(string executionId, CancellationToken cancellationToken) =>
+        _tradingCoordinator.CloseAsync(
+            executionId,
+            PublishTerminalExecutionProgressAsync,
+            PublishTerminalExecutionsAsync,
+            cancellationToken);
+
+    private Task PublishTerminalPreflightAsync(SyntheticPreflightResult result) =>
+        PublishTerminalCallbackAsync("setTerminalPreflight", result);
+
+    private Task PublishTerminalExecutionsAsync(IReadOnlyList<SyntheticExecutionRecord> records) =>
+        PublishTerminalCallbackAsync("setTerminalExecutions", records);
+
+    private Task PublishTerminalExecutionProgressAsync(SyntheticExecutionRecord record) =>
+        PublishTerminalCallbackAsync("setTerminalExecutionProgress", record);
+
+    private Task PublishTerminalExecutionErrorAsync(string error) =>
+        PublishTerminalCallbackAsync("setTerminalExecutionProgress", new { Error = error });
+
+    private Task PublishTerminalTradingModeAsync()
+    {
+        var session = _api.Session;
+        var isDemo = session is not null && _api.IsDemoTradingSession;
+        TradingModeText.Text = isDemo ? "DEMO TRADING" : "TRADING DISABLED";
+        TradingModeText.Foreground = isDemo
+            ? System.Windows.Media.Brushes.LightGreen
+            : System.Windows.Media.Brushes.OrangeRed;
+        return PublishTerminalCallbackAsync("setTerminalTradingMode", new
+        {
+            IsDemo = isDemo,
+            IsExecutionEnabled = isDemo,
+            AccountId = session?.CurrentAccountId ?? "",
+            AccountCurrency = session?.AccountCurrency ?? "",
+            Label = isDemo ? "DEMO TRADING" : "TRADING DISABLED",
+        });
+    }
+
+    private async Task PublishInitialTradingStateAsync()
+    {
+        try
+        {
+            await PublishTerminalTradingModeAsync();
+            await _tradingCoordinator.PublishStoredAsync(PublishTerminalExecutionsAsync, _windowLifetime.Token);
+        }
+        catch (OperationCanceledException) when (_windowLifetime.IsClosing)
+        {
+        }
+        catch (Exception ex)
+        {
+            _windowLifetime.TryApply(() => StatusText.Text = $"Execution history could not be loaded: {ex.Message}");
+        }
+    }
+
+    private Task PublishTerminalCallbackAsync<T>(string callback, T payload)
+    {
+        var json = JsonSerializer.Serialize(payload);
+        return InvokeTerminalScriptAsync($"window.{callback} && window.{callback}({json});");
     }
 
     private void ScheduleMarginPreview(decimal basketNotional)
@@ -1128,6 +1295,12 @@ public partial class CapComTerminalWindow : Window
 
     private static string SavedCredentialLabel(ApiCredentials credentials) =>
         credentials.UseDemo ? "Capital.com demo" : "Capital.com live";
+
+    private static string SyntheticExecutionStorePath() =>
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CAPETF",
+            "synthetic-executions.json");
 
     private void CancelMarginPreviewRequest()
     {
@@ -1261,6 +1434,48 @@ public partial class CapComTerminalWindow : Window
             using var message = JsonDocument.Parse(e.WebMessageAsJson);
             var root = message.RootElement;
             if (!root.TryGetProperty("type", out var type)) return;
+            var messageType = type.GetString();
+            if (messageType is "preflightBasket" or "executeBasket" or "refreshExecutions" or "closeBasket")
+            {
+                if (!SyntheticTradingBrowserRequestParser.TryParse(root, out var request, out var error))
+                {
+                    StatusText.Text = error;
+                    if (messageType == "preflightBasket")
+                    {
+                        await PublishTerminalPreflightAsync(new SyntheticPreflightResult(
+                            false,
+                            null,
+                            [new SyntheticPreflightFailure("", error)]));
+                    }
+                    else
+                    {
+                        await PublishTerminalExecutionErrorAsync(error);
+                    }
+                    return;
+                }
+
+                switch (request)
+                {
+                    case SyntheticPreflightBasketRequest preflight:
+                        await RunOperationAsync(
+                            "Preflighting synthetic basket",
+                            token => PreflightSyntheticBasketAsync(preflight.Side, preflight.BasketNotional, token));
+                        break;
+                    case SyntheticExecuteBasketRequest execute:
+                        await ExecuteSyntheticBasketAsync(execute.TicketId);
+                        break;
+                    case SyntheticRefreshExecutionsRequest:
+                        await RunOperationAsync("Refreshing synthetic executions", RefreshSyntheticExecutionsAsync);
+                        break;
+                    case SyntheticCloseBasketRequest close:
+                        await RunOperationAsync(
+                            "Closing synthetic basket",
+                            token => CloseSyntheticBasketAsync(close.ExecutionId, token));
+                        break;
+                }
+                return;
+            }
+
             if (type.GetString() == "cancelMarginPreview")
             {
                 await ResetMarginPreviewContextAsync(
@@ -1345,6 +1560,7 @@ public partial class CapComTerminalWindow : Window
         base.OnClosing(e);
         if (e.Cancel) return;
         CancelMarginPreviewRequest();
+        _tradingCoordinator.CancelPendingOperations();
         _windowLifetime.BeginClosing();
     }
 
@@ -1359,6 +1575,7 @@ public partial class CapComTerminalWindow : Window
         }
         finally
         {
+            _tradingCoordinator.Dispose();
             _api.Dispose();
             _windowLifetime.Dispose();
             base.OnClosed(e);

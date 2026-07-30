@@ -11,6 +11,15 @@ public static class SyntheticTradingTests
 {
     public static void RunAll()
     {
+        TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs();
+        HostConsumesFrozenTicketsBeforeExecutionAndRejectsReuse();
+        HostRejectsExpiredTicketsWithoutMutation();
+        HostDuplicateGuardDoesNotConsumeTheBlockedTicket();
+        HostDemoGateBlocksExecutionAndCloseMutations();
+        HostPersistsEveryTransitionBeforePublication();
+        HostReconnectReconcilesAndPersistsBeforePublication();
+        HostCancellationPreservesAcknowledgedExecutionState();
+        WpfHostPublishesTradingContractsWithoutLegacyPreviewMutation();
         PreflightRejectsNonDemoSessions();
         PreflightRejectsInvalidComponentCounts();
         PreflightRejectsDuplicateEpics();
@@ -69,6 +78,280 @@ public static class SyntheticTradingTests
         ReconciliationReopensClosedLegWithoutClosureMetadataAndPersistsIt();
         ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
         ReconciliationMapsRejectedOpenPendingToNeedsAttentionAndPersistsIt();
+    }
+
+    private static void TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs()
+    {
+        using var preflightDocument = JsonDocument.Parse(
+            "{\"type\":\"preflightBasket\",\"side\":\"SELL\",\"basketNotional\":450}");
+        AssertTrue(
+            SyntheticTradingBrowserRequestParser.TryParse(preflightDocument.RootElement, out var preflight, out var preflightError),
+            $"valid preflight request must parse: {preflightError}");
+        var preflightRequest = preflight as SyntheticPreflightBasketRequest
+            ?? throw new Exception("preflight request type");
+        AssertEqual("SELL", preflightRequest.Side, "preflight side");
+        AssertEqual(450m, preflightRequest.BasketNotional, "preflight notional");
+
+        var ticketId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        using var executeDocument = JsonDocument.Parse(
+            "{\"type\":\"executeBasket\",\"ticketId\":\"11111111-1111-1111-1111-111111111111\"}");
+        AssertTrue(
+            SyntheticTradingBrowserRequestParser.TryParse(executeDocument.RootElement, out var execute, out var executeError),
+            $"valid execute request must parse: {executeError}");
+        AssertEqual(ticketId, ((SyntheticExecuteBasketRequest)execute!).TicketId, "execute ticket identity");
+
+        foreach (var unsafePayload in new[]
+        {
+            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"basketNotional\":300,\"epic\":\"AAPL\"}",
+            "{\"type\":\"executeBasket\",\"ticketId\":\"11111111-1111-1111-1111-111111111111\",\"direction\":\"SELL\"}",
+            "{\"type\":\"executeBasket\",\"ticketId\":\"11111111-1111-1111-1111-111111111111\",\"quantity\":999}",
+            "{\"type\":\"closeBasket\",\"executionId\":\"execution-123\",\"dealId\":\"attacker-deal\"}",
+            "{\"type\":\"refreshExecutions\",\"epic\":\"AAPL\"}",
+        })
+        {
+            using var unsafeDocument = JsonDocument.Parse(unsafePayload);
+            AssertFalse(
+                SyntheticTradingBrowserRequestParser.TryParse(unsafeDocument.RootElement, out _, out _),
+                $"browser mutation fields must be rejected: {unsafePayload}");
+        }
+    }
+
+    private static void HostConsumesFrozenTicketsBeforeExecutionAndRejectsReuse()
+    {
+        using var directory = new TemporaryDirectory();
+        var gateway = AcceptedExecutionGateway("AAPL");
+        var mutableLegs = new List<SyntheticExecutionLeg>
+        {
+            new("AAPL", "BUY", 1m, 100m, 1m, 100m, 20m, "USD"),
+        };
+        var ticketId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var ticket = CreateHostTicket(ticketId, mutableLegs);
+        using var coordinator = CreateHostCoordinator(directory.Path, gateway);
+        coordinator.RegisterPreflight(new SyntheticPreflightResult(true, ticket, []));
+        mutableLegs[0] = mutableLegs[0] with { Direction = "SELL", Quantity = 999m };
+
+        using (var execution = coordinator.BeginExecution(ticketId))
+        {
+            AssertThrows<InvalidOperationException>(
+                () => coordinator.BeginExecution(ticketId),
+                "a consumed ticket must be unavailable before any gateway mutation");
+            coordinator.ExecuteAsync(execution, _ => Task.CompletedTask, _ => Task.CompletedTask, default)
+                .GetAwaiter().GetResult();
+        }
+
+        AssertEqual("BUY", gateway.PostRequests.Single().Direction, "host-owned ticket direction must be authoritative");
+        AssertEqual(1m, gateway.PostRequests.Single().Size, "host-owned ticket quantity must be authoritative");
+        AssertThrows<InvalidOperationException>(
+            () => coordinator.BeginExecution(ticketId),
+            "a used ticket must not be reusable");
+    }
+
+    private static void HostRejectsExpiredTicketsWithoutMutation()
+    {
+        using var directory = new TemporaryDirectory();
+        var gateway = AcceptedExecutionGateway("AAPL");
+        var now = DateTimeOffset.Parse("2026-07-30T12:05:00Z");
+        var ticketId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        using var coordinator = CreateHostCoordinator(directory.Path, gateway, utcNow: () => now);
+        coordinator.RegisterPreflight(new SyntheticPreflightResult(
+            true,
+            CreateHostTicket(ticketId) with { ExpiresUtc = now.AddSeconds(-1) },
+            []));
+
+        var exception = AssertThrows<InvalidOperationException>(
+            () => coordinator.BeginExecution(ticketId),
+            "expired execution ticket must fail");
+
+        AssertContains(exception.Message, "expired", "expired ticket error");
+        AssertEqual(0, gateway.CreateInvocations, "expired ticket must fail before gateway mutation");
+    }
+
+    private static void HostDuplicateGuardDoesNotConsumeTheBlockedTicket()
+    {
+        using var directory = new TemporaryDirectory();
+        var firstTicketId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        var secondTicketId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+        using var coordinator = CreateHostCoordinator(directory.Path, AcceptedExecutionGateway("AAPL"));
+        coordinator.RegisterPreflight(new SyntheticPreflightResult(true, CreateHostTicket(firstTicketId), []));
+        coordinator.RegisterPreflight(new SyntheticPreflightResult(true, CreateHostTicket(secondTicketId), []));
+
+        var first = coordinator.BeginExecution(firstTicketId);
+        var duplicate = AssertThrows<InvalidOperationException>(
+            () => coordinator.BeginExecution(secondTicketId),
+            "duplicate trading operation must be blocked");
+        AssertContains(duplicate.Message, "already running", "duplicate operation error");
+        first.Dispose();
+
+        using var second = coordinator.BeginExecution(secondTicketId);
+    }
+
+    private static void HostDemoGateBlocksExecutionAndCloseMutations()
+    {
+        using var directory = new TemporaryDirectory();
+        var isDemo = false;
+        var gateway = AcceptedExecutionGateway("AAPL");
+        var ticketId = Guid.Parse("66666666-6666-6666-6666-666666666666");
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "executions.json"));
+        store.SaveAsync([CreatePersistedExecutionRecord()], default).GetAwaiter().GetResult();
+        using var coordinator = CreateHostCoordinator(directory.Path, gateway, () => isDemo, store: store);
+        coordinator.RegisterPreflight(new SyntheticPreflightResult(true, CreateHostTicket(ticketId), []));
+
+        AssertThrows<InvalidOperationException>(
+            () => coordinator.BeginExecution(ticketId),
+            "host execution gate must reject a non-demo session");
+        AssertThrows<InvalidOperationException>(
+            () => coordinator.CloseAsync("execution-123", _ => Task.CompletedTask, _ => Task.CompletedTask, default)
+                .GetAwaiter().GetResult(),
+            "host close gate must reject a non-demo session");
+        AssertEqual(0, gateway.CreateInvocations, "non-demo execution must not mutate");
+        AssertEqual(0, gateway.CloseInvocations, "non-demo close must not mutate");
+
+        isDemo = true;
+        using var permitted = coordinator.BeginExecution(ticketId);
+    }
+
+    private static void HostPersistsEveryTransitionBeforePublication()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "executions.json"));
+        var ticketId = Guid.Parse("77777777-7777-7777-7777-777777777777");
+        using var coordinator = CreateHostCoordinator(
+            directory.Path,
+            AcceptedExecutionGateway("AAPL"),
+            store: store);
+        coordinator.RegisterPreflight(new SyntheticPreflightResult(true, CreateHostTicket(ticketId), []));
+        var progressPublications = 0;
+
+        Task AssertProgressPersisted(SyntheticExecutionRecord published)
+        {
+            var persisted = store.LoadAsync(default).GetAwaiter().GetResult()
+                .Single(record => record.ExecutionId == published.ExecutionId);
+            AssertEqual(published.TicketId, persisted.TicketId, "persisted transition ticket identity");
+            AssertEqual(StateSignature(published), StateSignature(persisted), "execution transition must persist before progress publication");
+            AssertEqual(published.Legs[0].DealReference, persisted.Legs[0].DealReference, "persisted transition acknowledgement identity");
+            AssertEqual(published.Legs[0].DealId, persisted.Legs[0].DealId, "persisted transition permanent deal identity");
+            progressPublications++;
+            return Task.CompletedTask;
+        }
+
+        Task AssertExecutionsPersisted(IReadOnlyList<SyntheticExecutionRecord> published)
+        {
+            var persisted = store.LoadAsync(default).GetAwaiter().GetResult();
+            AssertEqual(published.Count, persisted.Count, "persisted execution publication count");
+            AssertEqual(
+                string.Join("|", published.Select(record => $"{record.ExecutionId}:{StateSignature(record)}")),
+                string.Join("|", persisted.Select(record => $"{record.ExecutionId}:{StateSignature(record)}")),
+                "execution list must persist before publication");
+            return Task.CompletedTask;
+        }
+
+        using var execution = coordinator.BeginExecution(ticketId);
+        var result = coordinator.ExecuteAsync(execution, AssertProgressPersisted, AssertExecutionsPersisted, default)
+            .GetAwaiter().GetResult();
+
+        AssertEqual(SyntheticExecutionState.Open, result.State, "accepted host execution state");
+        AssertTrue(progressPublications >= 5, "every service transition must be published after persistence");
+    }
+
+    private static void HostReconnectReconcilesAndPersistsBeforePublication()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "executions.json"));
+        store.SaveAsync([CreatePersistedExecutionRecord()], default).GetAwaiter().GetResult();
+        using var coordinator = CreateHostCoordinator(
+            directory.Path,
+            new ScriptedTradingGateway(),
+            utcNow: () => DateTimeOffset.Parse("2026-07-30T12:10:00Z"),
+            store: store,
+            getOpenPositions: _ => Task.FromResult<IReadOnlyList<CapitalOpenPosition>>([]));
+        var publishedAfterPersistence = false;
+
+        var reconciled = coordinator.ReconnectAsync(records =>
+        {
+            var persisted = store.LoadAsync(default).GetAwaiter().GetResult();
+            AssertEqual(SyntheticExecutionState.Closed, persisted.Single().State, "reconnect persistence state");
+            AssertEqual(SyntheticExecutionState.Closed, records.Single().State, "reconnect publication state");
+            publishedAfterPersistence = true;
+            return Task.CompletedTask;
+        }, default).GetAwaiter().GetResult();
+
+        AssertEqual(SyntheticExecutionState.Closed, reconciled.Single().State, "reconnect reconciled state");
+        AssertTrue(publishedAfterPersistence, "reconnect must publish reconciled records");
+    }
+
+    private static void HostCancellationPreservesAcknowledgedExecutionState()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "executions.json"));
+        var gateway = AcceptedExecutionGateway("AAPL", "MSFT");
+        var ticketId = Guid.Parse("88888888-8888-8888-8888-888888888888");
+        using var coordinator = CreateHostCoordinator(directory.Path, gateway, store: store);
+        coordinator.RegisterPreflight(new SyntheticPreflightResult(
+            true,
+            CreateHostTicket(ticketId, [
+                new SyntheticExecutionLeg("AAPL", "BUY", 1m, 100m, 1m, 100m, 20m, "USD"),
+                new SyntheticExecutionLeg("MSFT", "BUY", 1m, 100m, 1m, 100m, 20m, "USD"),
+            ]),
+            []));
+        var cancelledAfterAcknowledgement = false;
+
+        Task CancelAfterAcknowledgement(SyntheticExecutionRecord record)
+        {
+            if (!cancelledAfterAcknowledgement && record.Legs[0].State == SyntheticExecutionLegState.Confirming)
+            {
+                cancelledAfterAcknowledgement = true;
+                coordinator.CancelPendingOperations();
+            }
+            return Task.CompletedTask;
+        }
+
+        using var execution = coordinator.BeginExecution(ticketId);
+        var result = coordinator.ExecuteAsync(execution, CancelAfterAcknowledgement, _ => Task.CompletedTask, default)
+            .GetAwaiter().GetResult();
+        var persisted = store.LoadAsync(default).GetAwaiter().GetResult().Single();
+
+        AssertTrue(cancelledAfterAcknowledgement, "shutdown cancellation must occur after acknowledgement persistence");
+        AssertEqual(SyntheticExecutionLegState.Unknown, result.Legs[0].State, "acknowledged cancellation outcome");
+        AssertEqual("o_aapl", persisted.Legs[0].DealReference, "acknowledged deal reference must remain persisted");
+        AssertEqual(SyntheticExecutionLegState.Pending, persisted.Legs[1].State, "shutdown must leave unsent legs pending");
+        AssertEqual(1, gateway.CreateInvocations, "shutdown must stop unsent mutations");
+    }
+
+    private static void WpfHostPublishesTradingContractsWithoutLegacyPreviewMutation()
+    {
+        var source = ReadRepositoryFile("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs");
+        var xaml = ReadRepositoryFile("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml");
+        foreach (var callback in new[]
+        {
+            "setTerminalPreflight",
+            "setTerminalExecutions",
+            "setTerminalExecutionProgress",
+            "setTerminalTradingMode",
+        })
+        {
+            AssertContains(source, callback, $"WPF callback {callback}");
+        }
+
+        var preflightBody = SliceSource(source, "private async Task PreflightSyntheticBasketAsync", "private Task ExecuteSyntheticBasketAsync");
+        AssertOrdered(preflightBody,
+            "RefreshBasketMarketDetailsAsync",
+            "InvalidateCaches",
+            "BuildAsync",
+            "SyntheticTradePreflight.Build",
+            "RegisterPreflight");
+        var executeBody = SliceSource(source, "private Task ExecuteSyntheticBasketAsync", "private static async Task FinishSyntheticExecutionAsync");
+        AssertTrue(
+            executeBody.IndexOf("BeginExecution(ticketId)", StringComparison.Ordinal)
+            < executeBody.IndexOf("await ", StringComparison.Ordinal),
+            "ticket consumption must happen before the execute path can await");
+        AssertOrdered(executeBody, "_operationState.TryBegin", "BeginExecution(ticketId)", "RunStartedOperationAsync");
+        var previewBody = SliceSource(source, "private void PreviewSyntheticOrder", "protected override void OnClosing");
+        AssertFalse(previewBody.Contains("CreatePositionAsync", StringComparison.Ordinal), "legacy preview must not create positions");
+        AssertFalse(previewBody.Contains("ClosePositionAsync", StringComparison.Ordinal), "legacy preview must not close positions");
+        AssertFalse(previewBody.Contains("BeginExecution", StringComparison.Ordinal), "legacy preview must not consume execution tickets");
+        var closingBody = SliceSource(source, "protected override void OnClosing", "protected override void OnClosed");
+        AssertOrdered(closingBody, "CancelPendingOperations", "BeginClosing");
+        AssertContains(xaml, "TradingModeText", "persistent WPF demo-state label");
     }
 
     private static void ExecutionStoreRoundTripsVersionedRecordsAndDealIdentity()
@@ -1690,6 +1973,41 @@ public static class SyntheticTradingTests
         ISyntheticExecutionClock? clock = null) =>
         new(gateway, clock ?? new TestExecutionClock());
 
+    private static SyntheticTradingHostCoordinator CreateHostCoordinator(
+        string directory,
+        ScriptedTradingGateway gateway,
+        Func<bool>? isDemo = null,
+        Func<DateTimeOffset>? utcNow = null,
+        SyntheticExecutionStore? store = null,
+        Func<CancellationToken, Task<IReadOnlyList<CapitalOpenPosition>>>? getOpenPositions = null)
+    {
+        var clock = new TestExecutionClock();
+        return new SyntheticTradingHostCoordinator(
+            new SyntheticBasketExecutionService(gateway, clock),
+            store ?? new SyntheticExecutionStore(Path.Combine(directory, "executions.json")),
+            new SyntheticPositionReconciler(),
+            isDemo ?? (() => true),
+            getOpenPositions ?? (_ => Task.FromResult<IReadOnlyList<CapitalOpenPosition>>([])),
+            utcNow ?? (() => clock.UtcNow));
+    }
+
+    private static SyntheticExecutionTicket CreateHostTicket(
+        Guid ticketId,
+        IReadOnlyList<SyntheticExecutionLeg>? legs = null)
+    {
+        var now = DateTimeOffset.Parse("2026-07-30T12:00:00Z");
+        return new SyntheticExecutionTicket(
+            ticketId.ToString("N"),
+            "basket-123",
+            "BUY",
+            300m,
+            now,
+            now.AddMinutes(2),
+            60m,
+            "USD",
+            legs ?? [new SyntheticExecutionLeg("AAPL", "BUY", 1m, 100m, 1m, 100m, 20m, "USD")]);
+    }
+
     private static SyntheticExecutionTicket CreateExecutionTicket(params string[] epics)
     {
         var now = DateTimeOffset.Parse("2026-07-30T12:00:00Z");
@@ -1851,6 +2169,42 @@ public static class SyntheticTradingTests
         {
             throw new Exception($"{message}: expected '{value}' to contain '{expected}'");
         }
+    }
+
+    private static void AssertOrdered(string value, params string[] expected)
+    {
+        var previous = -1;
+        foreach (var item in expected)
+        {
+            var current = value.IndexOf(item, StringComparison.Ordinal);
+            if (current <= previous)
+            {
+                throw new Exception($"expected '{item}' after index {previous} in source contract");
+            }
+            previous = current;
+        }
+    }
+
+    private static string SliceSource(string source, string start, string end)
+    {
+        var startIndex = source.IndexOf(start, StringComparison.Ordinal);
+        var endIndex = source.IndexOf(end, startIndex + Math.Max(start.Length, 1), StringComparison.Ordinal);
+        if (startIndex < 0 || endIndex < 0 || endIndex <= startIndex)
+        {
+            throw new Exception($"source contract boundaries missing: {start} -> {end}");
+        }
+        return source[startIndex..endIndex];
+    }
+
+    private static string ReadRepositoryFile(params string[] segments)
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            var path = segments.Aggregate(directory.FullName, Path.Combine);
+            if (File.Exists(path)) return File.ReadAllText(path);
+        }
+
+        throw new FileNotFoundException($"Repository file not found: {Path.Combine(segments)}");
     }
 
     private static void AssertSequence(IEnumerable<string> actual, params string[] expected)
@@ -2121,6 +2475,7 @@ public static class SyntheticTradingTests
         public Dictionary<string, Queue<Func<Task<CapitalDealConfirmation>>>> ConfirmResults { get; } = new(StringComparer.Ordinal);
         public List<string> Calls { get; } = [];
         public List<string> PostCalls { get; } = [];
+        public List<CapitalPositionRequest> PostRequests { get; } = [];
         public List<string> ConfirmCalls { get; } = [];
         public List<string> CloseCalls { get; } = [];
         public int CreateInvocations { get; private set; }
@@ -2132,6 +2487,7 @@ public static class SyntheticTradingTests
             cancellationToken.ThrowIfCancellationRequested();
             Calls.Add($"POST:{request.Epic}");
             PostCalls.Add(request.Epic);
+            PostRequests.Add(request);
             return PostResults.Dequeue()();
         }
 
@@ -2156,6 +2512,7 @@ public static class SyntheticTradingTests
         {
             Calls.Clear();
             PostCalls.Clear();
+            PostRequests.Clear();
             ConfirmCalls.Clear();
             CloseCalls.Clear();
             CreateInvocations = 0;
