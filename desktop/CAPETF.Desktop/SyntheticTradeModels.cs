@@ -56,6 +56,65 @@ public sealed record SyntheticExecutionTicket(
     string MarginCurrency,
     IReadOnlyList<SyntheticExecutionLeg> Legs);
 
+public enum SyntheticExecutionState
+{
+    Preflighting,
+    Ready,
+    Submitting,
+    PartiallyOpen,
+    Open,
+    NeedsAttention,
+    Closing,
+    PartiallyClosed,
+    Closed,
+    Rejected,
+}
+
+public enum SyntheticExecutionLegState
+{
+    Pending,
+    Submitted,
+    Confirming,
+    Open,
+    Rejected,
+    Unknown,
+    Closing,
+    Closed,
+}
+
+public sealed record SyntheticExecutionLegRecord(
+    string Epic,
+    string Direction,
+    decimal Multiplier,
+    decimal ReferencePrice,
+    decimal Quantity,
+    decimal Notional,
+    decimal EstimatedMargin,
+    string MarginCurrency,
+    SyntheticExecutionLegState State,
+    string DealReference,
+    string DealId,
+    string CloseDealReference,
+    decimal? FillLevel,
+    string Message,
+    DateTimeOffset? SubmittedUtc,
+    DateTimeOffset? ConfirmedUtc,
+    DateTimeOffset? ClosedUtc,
+    DateTimeOffset UpdatedUtc);
+
+public sealed record SyntheticExecutionRecord(
+    string ExecutionId,
+    string TicketId,
+    string BasketId,
+    string Side,
+    decimal RequestedNotional,
+    decimal EstimatedMargin,
+    string MarginCurrency,
+    DateTimeOffset CreatedUtc,
+    DateTimeOffset UpdatedUtc,
+    SyntheticExecutionState State,
+    IReadOnlyList<SyntheticExecutionLegRecord> Legs);
+
 public sealed record SyntheticPreflightResult(
     bool IsReady,
     SyntheticExecutionTicket? Ticket,

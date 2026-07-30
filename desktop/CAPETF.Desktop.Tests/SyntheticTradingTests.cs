@@ -19,6 +19,16 @@ public static class SyntheticTradingTests
         PreflightRejectsMissingMargin();
         PreflightRejectsInsufficientFunds();
         PreflightCreatesFrozenTicketWithReversedNegativeLeg();
+        ExecutionWaitsForAcceptedConfirmationBeforeSubmittingNextLeg();
+        ExplicitRejectionStopsUnsentLegs();
+        MalformedAcknowledgementStopsWithoutRetry();
+        ConfirmationTimeoutIsUnknownWithoutRetry();
+        NetworkFailureBeforeAcknowledgementStopsWithoutRetry();
+        AmbiguousMutationFailureIsUnknownWithoutRetry();
+        CancellationStopsUnsentLegsAfterAcceptedLeg();
+        PartialSuccessRemainsOpenWithoutRollback();
+        CloseConfirmsOnlyTrackedOpenDealIds();
+        PartialClosePreservesRemainingOpenLeg();
         ProductionTransportDisablesAutomaticRedirects();
         LiveMutationIsRejectedBeforeItIsSent();
         DemoPositionRequestUsesCapitalContract();
@@ -140,6 +150,204 @@ public static class SyntheticTradingTests
         AssertEqual(10m, negativeLeg.ReferencePrice, "chart updates must not mutate a frozen ticket");
     }
 
+    private static void ExecutionWaitsForAcceptedConfirmationBeforeSubmittingNextLeg()
+    {
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_aapl")));
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_msft")));
+        gateway.ConfirmResults["o_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(AcceptedConfirmation("o_aapl", "d_aapl"))]);
+        gateway.ConfirmResults["o_msft"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(AcceptedConfirmation("o_msft", "d_msft") with
+            {
+                AffectedDeals = [new CapitalAffectedDeal("d_msft", "")],
+            })]);
+        var progress = new List<SyntheticExecutionRecord>();
+
+        var result = CreateExecutionService(gateway).ExecuteAsync(
+            CreateExecutionTicket("AAPL", "MSFT"),
+            Capture(progress),
+            default).GetAwaiter().GetResult();
+
+        AssertSequence(gateway.Calls, "POST:AAPL", "CONFIRM:o_aapl", "POST:MSFT", "CONFIRM:o_msft");
+        AssertEqual(SyntheticExecutionState.Open, result.State, "accepted basket state");
+        AssertTrue(result.Legs.All(leg => leg.State == SyntheticExecutionLegState.Open), "every accepted leg must be open");
+        AssertEqual("d_aapl", result.Legs[0].DealId, "first permanent deal ID");
+        AssertEqual("d_msft", result.Legs[1].DealId, "second permanent deal ID");
+        AssertTrue(progress.Count > 4, "every execution transition must be published");
+        AssertEqual(SyntheticExecutionLegState.Pending, progress[0].Legs[0].State, "record must be published before the first submission");
+    }
+
+    private static void ExplicitRejectionStopsUnsentLegs()
+    {
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_aapl")));
+        gateway.ConfirmResults["o_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(RejectedConfirmation("o_aapl", "MARKET_CLOSED"))]);
+
+        var result = Execute(gateway, "AAPL", "MSFT");
+
+        AssertSequence(gateway.Calls, "POST:AAPL", "CONFIRM:o_aapl");
+        AssertEqual(SyntheticExecutionState.Rejected, result.State, "fully rejected basket state");
+        AssertEqual(SyntheticExecutionLegState.Rejected, result.Legs[0].State, "rejected leg state");
+        AssertEqual(SyntheticExecutionLegState.Pending, result.Legs[1].State, "unsent leg remains pending");
+        AssertTrue(result.Legs[0].Message.Contains("MARKET_CLOSED", StringComparison.Ordinal), "Capital rejection reason must be retained");
+    }
+
+    private static void MalformedAcknowledgementStopsWithoutRetry()
+    {
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(new CapitalDealAcknowledgement("", "", "")));
+
+        var result = Execute(gateway, "AAPL", "MSFT");
+
+        AssertSequence(gateway.Calls, "POST:AAPL");
+        AssertEqual(SyntheticExecutionLegState.Rejected, result.Legs[0].State, "malformed acknowledgement state");
+        AssertContains(result.Legs[0].Message, "deal reference", "malformed acknowledgement message");
+        AssertEqual(1, gateway.PostCalls.Count, "malformed acknowledgement must not retry POST");
+    }
+
+    private static void ConfirmationTimeoutIsUnknownWithoutRetry()
+    {
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_aapl")));
+        gateway.ConfirmResults["o_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            Enumerable.Range(0, 15).Select(_ => (Func<Task<CapitalDealConfirmation>>)(
+                () => Task.FromResult(PendingConfirmation("o_aapl")))));
+        var clock = new TestExecutionClock();
+
+        var result = CreateExecutionService(gateway, clock).ExecuteAsync(
+            CreateExecutionTicket("AAPL", "MSFT"),
+            IgnoreProgress,
+            default).GetAwaiter().GetResult();
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, result.State, "timed-out basket state");
+        AssertEqual(SyntheticExecutionLegState.Unknown, result.Legs[0].State, "timed-out leg state");
+        AssertEqual(15, gateway.ConfirmCalls.Count, "confirmation polling must be bounded");
+        AssertEqual(15, clock.Delays.Count, "confirmation timeout must span fifteen injected seconds");
+        AssertEqual(TimeSpan.FromSeconds(1), clock.Delays[0], "confirmation polling delay");
+        AssertEqual(1, gateway.PostCalls.Count, "confirmation timeout must not retry POST");
+    }
+
+    private static void NetworkFailureBeforeAcknowledgementStopsWithoutRetry()
+    {
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromException<CapitalDealAcknowledgement>(new HttpRequestException("offline before send")));
+
+        var result = Execute(gateway, "AAPL", "MSFT");
+
+        AssertEqual(SyntheticExecutionState.Rejected, result.State, "known failed submission state");
+        AssertEqual(SyntheticExecutionLegState.Rejected, result.Legs[0].State, "known failed leg state");
+        AssertEqual(SyntheticExecutionLegState.Pending, result.Legs[1].State, "network failure stops unsent legs");
+        AssertEqual(1, gateway.PostCalls.Count, "network failure must not retry POST");
+    }
+
+    private static void AmbiguousMutationFailureIsUnknownWithoutRetry()
+    {
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromException<CapitalDealAcknowledgement>(
+            new CapitalMutationOutcomeUnknownException("connection lost after dispatch")));
+
+        var result = Execute(gateway, "AAPL", "MSFT");
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, result.State, "ambiguous basket state");
+        AssertEqual(SyntheticExecutionLegState.Unknown, result.Legs[0].State, "ambiguous leg state");
+        AssertEqual(SyntheticExecutionLegState.Pending, result.Legs[1].State, "ambiguous failure stops unsent legs");
+        AssertEqual(1, gateway.PostCalls.Count, "ambiguous failure must not retry POST");
+    }
+
+    private static void CancellationStopsUnsentLegsAfterAcceptedLeg()
+    {
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_aapl")));
+        gateway.ConfirmResults["o_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(AcceptedConfirmation("o_aapl", "d_aapl"))]);
+        using var cancellation = new CancellationTokenSource();
+        SyntheticExecutionProgress progress = (record, _) =>
+        {
+            if (record.Legs[0].State == SyntheticExecutionLegState.Open) cancellation.Cancel();
+            return Task.CompletedTask;
+        };
+
+        var result = CreateExecutionService(gateway).ExecuteAsync(
+            CreateExecutionTicket("AAPL", "MSFT"),
+            progress,
+            cancellation.Token).GetAwaiter().GetResult();
+
+        AssertSequence(gateway.Calls, "POST:AAPL", "CONFIRM:o_aapl");
+        AssertEqual(SyntheticExecutionState.NeedsAttention, result.State, "cancelled partial basket state");
+        AssertEqual(SyntheticExecutionLegState.Open, result.Legs[0].State, "accepted leg remains open after cancellation");
+        AssertEqual(SyntheticExecutionLegState.Pending, result.Legs[1].State, "cancelled unsent leg remains pending");
+    }
+
+    private static void PartialSuccessRemainsOpenWithoutRollback()
+    {
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_aapl")));
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_msft")));
+        gateway.ConfirmResults["o_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(AcceptedConfirmation("o_aapl", "d_aapl"))]);
+        gateway.ConfirmResults["o_msft"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(RejectedConfirmation("o_msft", "INSUFFICIENT_FUNDS"))]);
+
+        var partial = Execute(gateway, "AAPL", "MSFT", "NVDA");
+
+        AssertSequence(gateway.Calls, "POST:AAPL", "CONFIRM:o_aapl", "POST:MSFT", "CONFIRM:o_msft");
+        AssertEqual(SyntheticExecutionState.NeedsAttention, partial.State, "partial basket remains visible");
+        AssertEqual(SyntheticExecutionLegState.Open, partial.Legs[0].State, "successful leg stays open");
+        AssertEqual("d_aapl", partial.Legs[0].DealId, "successful permanent deal ID is retained");
+        AssertEqual(SyntheticExecutionLegState.Pending, partial.Legs[2].State, "leg after failure is not sent");
+        AssertEqual(0, gateway.CloseCalls.Count, "execution failure must not roll back opened legs");
+    }
+
+    private static void CloseConfirmsOnlyTrackedOpenDealIds()
+    {
+        var gateway = AcceptedExecutionGateway("AAPL", "MSFT");
+        var service = CreateExecutionService(gateway);
+        var open = service.ExecuteAsync(CreateExecutionTicket("AAPL", "MSFT"), IgnoreProgress, default).GetAwaiter().GetResult();
+        gateway.ClearCalls();
+        gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_aapl")));
+        gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_msft")));
+        gateway.ConfirmResults["c_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(ClosedConfirmation("c_aapl", "d_aapl"))]);
+        gateway.ConfirmResults["c_msft"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(ClosedConfirmation("c_msft", "d_msft"))]);
+
+        var closed = service.CloseAsync(open, IgnoreProgress, default).GetAwaiter().GetResult();
+
+        AssertSequence(gateway.Calls, "CLOSE:d_aapl", "CONFIRM:c_aapl", "CLOSE:d_msft", "CONFIRM:c_msft");
+        AssertEqual("d_aapl|d_msft", string.Join("|", gateway.CloseCalls), "close uses tracked open deal IDs");
+        AssertEqual(SyntheticExecutionState.Closed, closed.State, "closed basket state");
+        AssertTrue(closed.Legs.All(leg => leg.State == SyntheticExecutionLegState.Closed), "all confirmed closes are closed");
+        AssertEqual("o_aapl", closed.Legs[0].DealReference, "close must preserve the original open reference");
+        AssertEqual("c_aapl", closed.Legs[0].CloseDealReference, "close acknowledgement reference");
+        AssertTrue(closed.Legs[0].ClosedUtc is not null, "confirmed close timestamp");
+    }
+
+    private static void PartialClosePreservesRemainingOpenLeg()
+    {
+        var gateway = AcceptedExecutionGateway("AAPL", "MSFT", "NVDA");
+        var service = CreateExecutionService(gateway);
+        var open = service.ExecuteAsync(CreateExecutionTicket("AAPL", "MSFT", "NVDA"), IgnoreProgress, default).GetAwaiter().GetResult();
+        gateway.ClearCalls();
+        gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_aapl")));
+        gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_msft")));
+        gateway.ConfirmResults["c_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(ClosedConfirmation("c_aapl", "d_aapl"))]);
+        gateway.ConfirmResults["c_msft"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(RejectedConfirmation("c_msft", "POSITION_NOT_FOUND"))]);
+
+        var partial = service.CloseAsync(open, IgnoreProgress, default).GetAwaiter().GetResult();
+
+        AssertSequence(gateway.Calls, "CLOSE:d_aapl", "CONFIRM:c_aapl", "CLOSE:d_msft", "CONFIRM:c_msft");
+        AssertEqual(SyntheticExecutionState.PartiallyClosed, partial.State, "partial close basket state");
+        AssertEqual(SyntheticExecutionLegState.Closed, partial.Legs[0].State, "confirmed close state");
+        AssertEqual(SyntheticExecutionLegState.Open, partial.Legs[1].State, "rejected close remains explicitly open");
+        AssertContains(partial.Legs[1].Message, "POSITION_NOT_FOUND", "close rejection reason");
+        AssertEqual(SyntheticExecutionLegState.Open, partial.Legs[2].State, "close failure stops later open legs");
+        AssertEqual(2, gateway.CloseCalls.Count, "failed close must not retry or continue");
+    }
+
     private static SyntheticPreflightInput CreatePreflightInput(
         SyntheticBasket? basket = null,
         DateTimeOffset? now = null) =>
@@ -151,6 +359,64 @@ public static class SyntheticTradingTests
             600m,
             now ?? DateTimeOffset.Parse("2026-07-30T12:00:00Z"),
             CreateMarginSummary());
+
+    private static SyntheticExecutionRecord Execute(ScriptedTradingGateway gateway, params string[] epics) =>
+        CreateExecutionService(gateway).ExecuteAsync(CreateExecutionTicket(epics), IgnoreProgress, default).GetAwaiter().GetResult();
+
+    private static SyntheticBasketExecutionService CreateExecutionService(
+        ScriptedTradingGateway gateway,
+        ISyntheticExecutionClock? clock = null) =>
+        new(gateway, clock ?? new TestExecutionClock());
+
+    private static SyntheticExecutionTicket CreateExecutionTicket(params string[] epics)
+    {
+        var now = DateTimeOffset.Parse("2026-07-30T12:00:00Z");
+        return new SyntheticExecutionTicket(
+            "ticket-123",
+            "basket-123",
+            "BUY",
+            300m,
+            now,
+            now.AddMinutes(2),
+            60m,
+            "USD",
+            epics.Select(epic => new SyntheticExecutionLeg(epic, "BUY", 1m, 100m, 1m, 100m, 20m, "USD")).ToArray());
+    }
+
+    private static ScriptedTradingGateway AcceptedExecutionGateway(params string[] epics)
+    {
+        var gateway = new ScriptedTradingGateway();
+        foreach (var epic in epics)
+        {
+            var suffix = epic.ToLowerInvariant();
+            gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement($"o_{suffix}")));
+            gateway.ConfirmResults[$"o_{suffix}"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+                [() => Task.FromResult(AcceptedConfirmation($"o_{suffix}", $"d_{suffix}"))]);
+        }
+        return gateway;
+    }
+
+    private static CapitalDealAcknowledgement Acknowledgement(string reference) => new(reference, "", "");
+
+    private static CapitalDealConfirmation AcceptedConfirmation(string reference, string dealId) =>
+        new(reference, "ACCEPTED", dealId, 101.25m, [new CapitalAffectedDeal(dealId, "OPENED")], "");
+
+    private static CapitalDealConfirmation ClosedConfirmation(string reference, string dealId) =>
+        new(reference, "ACCEPTED", dealId, null, [new CapitalAffectedDeal(dealId, "CLOSED")], "");
+
+    private static CapitalDealConfirmation RejectedConfirmation(string reference, string reason) =>
+        new(reference, "REJECTED", "", null, [], reason);
+
+    private static CapitalDealConfirmation PendingConfirmation(string reference) =>
+        new(reference, "PENDING", "", null, [], "");
+
+    private static SyntheticExecutionProgress Capture(List<SyntheticExecutionRecord> records) => (record, _) =>
+    {
+        records.Add(record);
+        return Task.CompletedTask;
+    };
+
+    private static Task IgnoreProgress(SyntheticExecutionRecord record, CancellationToken cancellationToken) => Task.CompletedTask;
 
     private static SyntheticBasket CreateBasket(IEnumerable<SyntheticComponent>? components = null)
     {
@@ -212,6 +478,19 @@ public static class SyntheticTradingTests
         {
             throw new Exception($"preflight failure missing: {epic} {reason}");
         }
+    }
+
+    private static void AssertContains(string value, string expected, string message)
+    {
+        if (!value.Contains(expected, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new Exception($"{message}: expected '{value}' to contain '{expected}'");
+        }
+    }
+
+    private static void AssertSequence(IEnumerable<string> actual, params string[] expected)
+    {
+        AssertEqual(string.Join(" -> ", expected), string.Join(" -> ", actual), "gateway call sequence");
     }
 
     private static void ProductionTransportDisablesAutomaticRedirects()
@@ -445,6 +724,63 @@ public static class SyntheticTradingTests
                 response.Headers.Add("X-SECURITY-TOKEN", "security-token");
             }
             return response;
+        }
+    }
+
+    private sealed class ScriptedTradingGateway : ICapitalTradingGateway
+    {
+        public Queue<Func<Task<CapitalDealAcknowledgement>>> PostResults { get; } = [];
+        public Queue<Func<Task<CapitalDealAcknowledgement>>> CloseResults { get; } = [];
+        public Dictionary<string, Queue<Func<Task<CapitalDealConfirmation>>>> ConfirmResults { get; } = new(StringComparer.Ordinal);
+        public List<string> Calls { get; } = [];
+        public List<string> PostCalls { get; } = [];
+        public List<string> ConfirmCalls { get; } = [];
+        public List<string> CloseCalls { get; } = [];
+
+        public Task<CapitalDealAcknowledgement> CreatePositionAsync(CapitalPositionRequest request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls.Add($"POST:{request.Epic}");
+            PostCalls.Add(request.Epic);
+            return PostResults.Dequeue()();
+        }
+
+        public Task<CapitalDealConfirmation> GetDealConfirmationAsync(string dealReference, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls.Add($"CONFIRM:{dealReference}");
+            ConfirmCalls.Add(dealReference);
+            return ConfirmResults[dealReference].Dequeue()();
+        }
+
+        public Task<CapitalDealAcknowledgement> ClosePositionAsync(string dealId, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls.Add($"CLOSE:{dealId}");
+            CloseCalls.Add(dealId);
+            return CloseResults.Dequeue()();
+        }
+
+        public void ClearCalls()
+        {
+            Calls.Clear();
+            PostCalls.Clear();
+            ConfirmCalls.Clear();
+            CloseCalls.Clear();
+        }
+    }
+
+    private sealed class TestExecutionClock : ISyntheticExecutionClock
+    {
+        public DateTimeOffset UtcNow { get; private set; } = DateTimeOffset.Parse("2026-07-30T12:00:00Z");
+        public List<TimeSpan> Delays { get; } = [];
+
+        public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Delays.Add(delay);
+            UtcNow += delay;
+            return Task.CompletedTask;
         }
     }
 
