@@ -19,6 +19,8 @@ public sealed class SyntheticExecutionStore
     private readonly string _path;
     private readonly string _temporaryPathPrefix;
 
+    public string LastLoadWarning { get; private set; } = "";
+
     public SyntheticExecutionStore(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("A persistence path is required.", nameof(path));
@@ -95,11 +97,13 @@ public sealed class SyntheticExecutionStore
 
             ValidateExecutions(document.Executions);
 
+            LastLoadWarning = "";
             return document.Executions;
         }
-        catch (JsonException)
+        catch (JsonException exception)
         {
-            QuarantineMalformedFile();
+            var quarantinePath = QuarantineMalformedFile();
+            LastLoadWarning = $"Synthetic position history was invalid and quarantined at {quarantinePath}. Capital.com positions may still be open. {exception.Message}";
             return [];
         }
     }
@@ -135,7 +139,7 @@ public sealed class SyntheticExecutionStore
         }
     }
 
-    private void QuarantineMalformedFile()
+    private string QuarantineMalformedFile()
     {
         var suffix = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmssfffffff");
         var quarantinePath = _path + ".corrupt-" + suffix;
@@ -147,6 +151,7 @@ public sealed class SyntheticExecutionStore
         }
 
         File.Move(_path, quarantinePath);
+        return quarantinePath;
     }
 
     private void CleanupAbandonedTemporaryFiles()

@@ -150,7 +150,7 @@ public static class SyntheticBasketBuilderTests
         CapComTerminalShowsActionableConnectionFailures();
         CapitalApiClientAllowsReconnectAfterRequests();
         CapitalApiClientParsesMarketDetailsSnapshotAndDealingRules();
-        CapitalApiClientInfersOffsetlessSnapshotNearRetrievalTime();
+        CapitalApiClientRejectsOffsetlessSnapshotForTradingFreshness();
         MarketSnapshotRejectsOlderSourceTimeAndClearsMissingSides();
         CapitalStreamingTimestampParserRequiresSourceTime();
         CapitalStreamingClientRejectsClosedSocketsAndWindowRecreates();
@@ -4547,7 +4547,7 @@ public static class SyntheticBasketBuilderTests
         AssertEqual(DateTimeOffset.Parse("2026-07-27T13:45:12.345Z"), details.LastTickAt, "market details must retain the Capital.com source snapshot timestamp");
     }
 
-    private static void CapitalApiClientInfersOffsetlessSnapshotNearRetrievalTime()
+    private static void CapitalApiClientRejectsOffsetlessSnapshotForTradingFreshness()
     {
         const string json =
             """
@@ -4568,10 +4568,10 @@ public static class SyntheticBasketBuilderTests
         if (details is null) throw new Exception("market details should preserve a snapshot with account-local time");
         AssertNear(484.16m, details.Bid ?? 0m, "account-local snapshots should still supply bid");
         AssertNear(484.76m, details.Offer ?? 0m, "account-local snapshots should still supply ask");
-        AssertEqual(
-            DateTimeOffset.Parse("2026-07-27T16:52:11.279Z"),
+        AssertEqual<DateTimeOffset?>(
+            null,
             details.LastTickAt,
-            "offset-less updateTime must infer the nearby source instant instead of being discarded or treated as UTC");
+            "offset-less updateTime must not be reinterpreted as a fresh UTC quote");
     }
 
     private static void MarketSnapshotRejectsOlderSourceTimeAndClearsMissingSides()

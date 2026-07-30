@@ -25,6 +25,8 @@ public static class SyntheticTradingTests
         HostRejectsExpiredTicketsWithoutMutation();
         HostDuplicateGuardDoesNotConsumeTheBlockedTicket();
         HostDemoGateBlocksExecutionAndCloseMutations();
+        HostRejectsCrossAccountExecutionAndCloseMutations();
+        HostScopesLegacyExecutionOnlyAfterExactCurrentAccountMatch();
         HostPersistsEveryTransitionBeforePublication();
         HostReconnectReconcilesAndPersistsBeforePublication();
         HostCancellationPreservesAcknowledgedExecutionState();
@@ -35,6 +37,7 @@ public static class SyntheticTradingTests
         FreshPreflightSnapshotsRejectIncompleteCurrentMetadata();
         FreshPreflightSnapshotsBuildDetachedBasketFromExactResponses();
         PreflightRejectsNonDemoSessions();
+        PreflightRejectsNonHedgingAccounts();
         PreflightRejectsInvalidComponentCounts();
         PreflightRejectsDuplicateEpics();
         PreflightReturnsLegFailuresInEpicOrder();
@@ -44,6 +47,7 @@ public static class SyntheticTradingTests
         PreflightRejectsInsufficientFunds();
         PreflightCreatesFrozenTicketWithReversedNegativeLeg();
         ExecutionWaitsForAcceptedConfirmationBeforeSubmittingNextLeg();
+        AcceptedConfirmationRequiresExplicitOpenedAffectedDeal();
         ExplicitRejectionStopsUnsentLegs();
         MalformedAcknowledgementStopsWithoutRetry();
         ConfirmationTimeoutIsUnknownWithoutRetry();
@@ -64,6 +68,8 @@ public static class SyntheticTradingTests
         ProductionTransportDisablesAutomaticRedirects();
         LiveMutationIsRejectedBeforeItIsSent();
         DemoPositionRequestUsesCapitalContract();
+        LostCreateResponseRecoversUniqueNewPositionWithoutRetry();
+        MalformedCreateResponseRecoversUniqueNewPositionWithoutRetry();
         DemoPositionRedirectDoesNotReachRedirectTarget();
         DealConfirmationParsesRequiredFields();
         OpenPositionsParseRequiredFields();
@@ -91,6 +97,7 @@ public static class SyntheticTradingTests
         ReconciliationNormalizesConfirmingLegWhenOpenPositionDisappearsAndPersistsIt();
         ReconciliationReopensClosedLegWithoutClosureMetadataAndPersistsIt();
         ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
+        ReconciliationClosesUnknownTrackedDealWhenCapitalNoLongerListsIt();
         ReconciliationMapsRejectedOpenPendingToNeedsAttentionAndPersistsIt();
     }
 
@@ -886,6 +893,56 @@ public static class SyntheticTradingTests
         using var permitted = coordinator.BeginExecution(ticketId);
     }
 
+    private static void HostRejectsCrossAccountExecutionAndCloseMutations()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "executions.json"));
+        store.SaveAsync([CreatePersistedExecutionRecord() with { AccountId = "account-a" }], default).GetAwaiter().GetResult();
+        var gateway = AcceptedExecutionGateway("AAPL");
+        var ticketId = Guid.Parse("67676767-6767-6767-6767-676767676767");
+        using var coordinator = CreateHostCoordinator(
+            directory.Path,
+            gateway,
+            store: store,
+            currentAccountId: () => "account-b");
+        coordinator.RegisterPreflight(new SyntheticPreflightResult(
+            true,
+            CreateHostTicket(ticketId) with { AccountId = "account-a" },
+            []));
+
+        AssertThrows<InvalidOperationException>(
+            () => coordinator.BeginExecution(ticketId),
+            "a ticket created for another Capital account must not execute");
+        AssertThrows<InvalidOperationException>(
+            () => coordinator.CloseAsync("execution-123", _ => Task.CompletedTask, _ => Task.CompletedTask, default)
+                .GetAwaiter().GetResult(),
+            "a persisted execution from another Capital account must not close");
+        AssertEqual(0, gateway.CreateInvocations, "cross-account execution must not mutate");
+        AssertEqual(0, gateway.CloseInvocations, "cross-account close must not mutate");
+    }
+
+    private static void HostScopesLegacyExecutionOnlyAfterExactCurrentAccountMatch()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "executions.json"));
+        var legacy = CreatePersistedExecutionRecord() with { AccountId = "" };
+        store.SaveAsync([legacy], default).GetAwaiter().GetResult();
+        var position = legacy.Legs[0];
+        using var coordinator = CreateHostCoordinator(
+            directory.Path,
+            new ScriptedTradingGateway(),
+            store: store,
+            utcNow: () => DateTimeOffset.Parse("2026-07-30T12:10:00Z"),
+            currentAccountId: () => "account-current",
+            getOpenPositions: _ => Task.FromResult<IReadOnlyList<CapitalOpenPosition>>([
+                new(position.DealId, position.Epic, position.Direction, position.Quantity, position.FillLevel, 1m, "USD", "TRADEABLE"),
+            ]));
+
+        var reconciled = coordinator.ReconnectAsync(_ => Task.CompletedTask, default).GetAwaiter().GetResult().Single();
+
+        AssertEqual("account-current", reconciled.AccountId, "legacy execution is scoped only after its exact permanent deal is present");
+    }
+
     private static void HostPersistsEveryTransitionBeforePublication()
     {
         using var directory = new TemporaryDirectory();
@@ -1219,6 +1276,7 @@ public static class SyntheticTradingTests
         var restored = store.LoadAsync(default).GetAwaiter().GetResult();
 
         AssertEqual(0, restored.Count, "malformed persistence must not create execution records");
+        AssertContains(store.LastLoadWarning, "quarantined", "malformed persistence must surface a visible warning");
         AssertFalse(File.Exists(path), "malformed persistence must be moved away from the active path");
         AssertEqual(1, Directory.GetFiles(directory.Path, "executions.json.corrupt-*").Length, "malformed file must be quarantined with a UTC suffix");
     }
@@ -2194,6 +2252,28 @@ public static class SyntheticTradingTests
         AssertEqual("No permanent deal ID was received.", reconciled.Legs[0].Message, "unresolved audit message must remain intact");
     }
 
+    private static void ReconciliationClosesUnknownTrackedDealWhenCapitalNoLongerListsIt()
+    {
+        var original = CreatePersistedExecutionRecord() with
+        {
+            State = SyntheticExecutionState.NeedsAttention,
+            Legs = [CreatePersistedExecutionRecord().Legs[0] with
+            {
+                State = SyntheticExecutionLegState.Unknown,
+                CloseDealReference = "close-response-lost",
+                Message = "Close outcome was unknown.",
+            }],
+        };
+
+        var reconciled = new SyntheticPositionReconciler().Reconcile(
+            original,
+            [],
+            DateTimeOffset.Parse("2026-07-30T13:00:00Z"));
+
+        AssertEqual(SyntheticExecutionLegState.Closed, reconciled.Legs[0].State, "missing tracked deal resolves an ambiguous close as closed");
+        AssertEqual(SyntheticExecutionState.Closed, reconciled.State, "resolved ambiguous close closes the basket");
+    }
+
     private static void ReconciliationMapsRejectedOpenPendingToNeedsAttentionAndPersistsIt()
     {
         using var directory = new TemporaryDirectory();
@@ -2297,6 +2377,14 @@ public static class SyntheticTradingTests
         AssertContainsFailure(result, "", "Demo trading session is required.");
     }
 
+    private static void PreflightRejectsNonHedgingAccounts()
+    {
+        var result = SyntheticTradePreflight.Build(CreatePreflightInput() with { HedgingMode = false });
+
+        AssertFalse(result.IsReady, "netting accounts must fail preflight");
+        AssertContainsFailure(result, "", "Capital.com hedging mode is required.");
+    }
+
     private static void PreflightRejectsInvalidComponentCounts()
     {
         var basket = CreateBasket().Components.Take(2).ToList();
@@ -2304,6 +2392,13 @@ public static class SyntheticTradingTests
 
         AssertFalse(result.IsReady, "two-leg baskets must fail preflight");
         AssertContainsFailure(result, "", "Synthetic baskets must contain 3 or 4 components.");
+
+        var fiveLegBasket = CreateBasket(CreateBasket().Components
+            .Concat([CreateComponent("DELTA", 1m), CreateComponent("EPSILON", -1m)])
+            .ToList());
+        var fiveLegResult = SyntheticTradePreflight.Build(CreatePreflightInput(fiveLegBasket));
+        AssertFalse(fiveLegResult.IsReady, "five-leg baskets must fail preflight");
+        AssertContainsFailure(fiveLegResult, "", "Synthetic baskets must contain 3 or 4 components.");
     }
 
     private static void PreflightRejectsDuplicateEpics()
@@ -2337,12 +2432,14 @@ public static class SyntheticTradingTests
         var basket = CreateBasket();
         basket.Components.Single(component => component.Instrument.Epic == "BETA").Instrument.Bid = 0m;
         basket.Components.Single(component => component.Instrument.Epic == "GAMMA").Instrument.LastTickAt = now.AddMinutes(-5).AddTicks(-1);
+        basket.Components.Single(component => component.Instrument.Epic == "ALPHA").Instrument.LastTickAt = now.AddSeconds(1);
 
         var result = SyntheticTradePreflight.Build(CreatePreflightInput(basket, now));
 
         AssertFalse(result.IsReady, "zero and stale quotes must fail preflight");
         AssertContainsFailure(result, "BETA", "Bid and offer prices must be positive.");
         AssertContainsFailure(result, "GAMMA", "Quote is older than five minutes.");
+        AssertContainsFailure(result, "ALPHA", "Quote timestamp is in the future.");
     }
 
     private static void PreflightRejectsInvalidRoundedSize()
@@ -2410,7 +2507,7 @@ public static class SyntheticTradingTests
         gateway.ConfirmResults["o_msft"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
             [() => Task.FromResult(AcceptedConfirmation("o_msft", "d_msft") with
             {
-                AffectedDeals = [new CapitalAffectedDeal("d_msft", "")],
+                AffectedDeals = [new CapitalAffectedDeal("d_msft", "OPENED")],
             })]);
         var progress = new List<SyntheticExecutionRecord>();
 
@@ -2426,6 +2523,20 @@ public static class SyntheticTradingTests
         AssertEqual("d_msft", result.Legs[1].DealId, "second permanent deal ID");
         AssertTrue(progress.Count > 4, "every execution transition must be published");
         AssertEqual(SyntheticExecutionLegState.Pending, progress[0].Legs[0].State, "record must be published before the first submission");
+    }
+
+    private static void AcceptedConfirmationRequiresExplicitOpenedAffectedDeal()
+    {
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_alpha")));
+        gateway.ConfirmResults["o_alpha"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(new CapitalDealConfirmation("o_alpha", "ACCEPTED", "top-level-deal", 101m, [], ""))]);
+
+        var result = Execute(gateway, "ALPHA");
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, result.State, "accepted confirmation without OPENED affected deal needs attention");
+        AssertEqual(SyntheticExecutionLegState.Unknown, result.Legs[0].State, "top-level deal ID must not be treated as a newly opened position");
+        AssertEqual("", result.Legs[0].DealId, "unverified top-level deal ID must not be persisted as an open position");
     }
 
     private static void ExplicitRejectionStopsUnsentLegs()
@@ -2819,7 +2930,9 @@ public static class SyntheticTradingTests
             "BUY",
             600m,
             now ?? DateTimeOffset.Parse("2026-07-30T12:00:00Z"),
-            CreateMarginSummary());
+            CreateMarginSummary(),
+            "account-123",
+            true);
 
     private static SyntheticPreflightInput CreateThreeLegPreflightInput() =>
         CreatePreflightInput(CreateBasket([
@@ -2843,7 +2956,8 @@ public static class SyntheticTradingTests
         Func<DateTimeOffset>? utcNow = null,
         SyntheticExecutionStore? store = null,
         Func<CancellationToken, Task<IReadOnlyList<CapitalOpenPosition>>>? getOpenPositions = null,
-        ISyntheticExecutionClock? clock = null)
+        ISyntheticExecutionClock? clock = null,
+        Func<string>? currentAccountId = null)
     {
         var executionClock = clock ?? new TestExecutionClock();
         return new SyntheticTradingHostCoordinator(
@@ -2852,7 +2966,8 @@ public static class SyntheticTradingTests
             new SyntheticPositionReconciler(),
             isDemo ?? (() => true),
             getOpenPositions ?? (_ => Task.FromResult<IReadOnlyList<CapitalOpenPosition>>([])),
-            utcNow ?? (() => executionClock.UtcNow));
+            utcNow ?? (() => executionClock.UtcNow),
+            currentAccountId);
     }
 
     private static SyntheticExecutionTicket CreateHostTicket(
@@ -3176,6 +3291,34 @@ public static class SyntheticTradingTests
         AssertEqual("REF-123", acknowledgement.DealReference, "position acknowledgement reference");
     }
 
+    private static void LostCreateResponseRecoversUniqueNewPositionWithoutRetry()
+    {
+        var handler = new LostCreateResponseTradingHandler();
+        using var client = Login(handler, useDemo: true);
+        var gateway = new CapitalTradingGateway(client);
+
+        var acknowledgement = gateway.CreatePositionAsync(
+            new CapitalPositionRequest("AAPL", "BUY", 2.5m),
+            default).GetAwaiter().GetResult();
+
+        AssertEqual("DEAL-NEW", acknowledgement.RecoveredDealId, "lost response must recover the unique new permanent deal ID");
+        AssertEqual(123.45m, acknowledgement.RecoveredLevel, "recovery must preserve the opened level");
+        AssertEqual(1, handler.PostCount, "an ambiguous create must never be retried");
+        AssertEqual(2, handler.PositionListCount, "recovery compares one before and one after snapshot");
+    }
+
+    private static void MalformedCreateResponseRecoversUniqueNewPositionWithoutRetry()
+    {
+        var handler = new LostCreateResponseTradingHandler(returnMalformedResponse: true);
+        using var client = Login(handler, useDemo: true);
+        var acknowledgement = new CapitalTradingGateway(client).CreatePositionAsync(
+            new CapitalPositionRequest("AAPL", "BUY", 2.5m),
+            default).GetAwaiter().GetResult();
+
+        AssertEqual("DEAL-NEW", acknowledgement.RecoveredDealId, "malformed accepted response must recover the unique new deal");
+        AssertEqual(1, handler.PostCount, "malformed create response must not cause a retry");
+    }
+
     private static void DealConfirmationParsesRequiredFields()
     {
         var handler = new TradingHandler();
@@ -3391,6 +3534,55 @@ public static class SyntheticTradingTests
             }
             return response;
         }
+    }
+
+    private sealed class LostCreateResponseTradingHandler : HttpMessageHandler
+    {
+        private readonly bool _returnMalformedResponse;
+
+        public LostCreateResponseTradingHandler(bool returnMalformedResponse = false)
+        {
+            _returnMalformedResponse = returnMalformedResponse;
+        }
+
+        public int PostCount { get; private set; }
+        public int PositionListCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath;
+            if (path == "/api/v1/session")
+            {
+                var login = JsonResponse("{}");
+                login.Headers.Add("CST", "cst-token");
+                login.Headers.Add("X-SECURITY-TOKEN", "security-token");
+                return Task.FromResult(login);
+            }
+
+            if (path == "/api/v1/positions" && request.Method == HttpMethod.Get)
+            {
+                PositionListCount++;
+                var added = PositionListCount > 1
+                    ? ",{\"position\":{\"dealId\":\"DEAL-NEW\",\"direction\":\"BUY\",\"size\":2.5,\"level\":123.45},\"market\":{\"epic\":\"AAPL\"}}"
+                    : "";
+                return Task.FromResult(JsonResponse(
+                    $"{{\"positions\":[{{\"position\":{{\"dealId\":\"DEAL-OLD\",\"direction\":\"BUY\",\"size\":1,\"level\":100}},\"market\":{{\"epic\":\"AAPL\"}}}}{added}]}}"));
+            }
+
+            if (path == "/api/v1/positions" && request.Method == HttpMethod.Post)
+            {
+                PostCount++;
+                if (_returnMalformedResponse) return Task.FromResult(JsonResponse("{ accepted-but-truncated"));
+                throw new HttpRequestException("response lost after Capital accepted the request");
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+
+        private static HttpResponseMessage JsonResponse(string body) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
     }
 
     private sealed class ScriptedTradingGateway : ICapitalTradingGateway

@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Text.Json;
 
 namespace CAPETF.Desktop;
 
@@ -25,18 +26,64 @@ public sealed class CapitalTradingGateway : ICapitalTradingGateway
         CapitalPositionRequest request,
         CancellationToken cancellationToken)
     {
+        var before = await _client.GetOpenPositionsAsync(cancellationToken);
         try
         {
             return await _client.CreatePositionAsync(request, cancellationToken);
         }
         catch (HttpRequestException exception)
         {
-            throw new CapitalMutationOutcomeUnknownException("The position request outcome is unknown.", exception);
+            return await RecoverCreatedPositionAsync(request, before, exception);
         }
-        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        catch (JsonException exception)
         {
-            throw new CapitalMutationOutcomeUnknownException("The position request timed out with an unknown outcome.", exception);
+            return await RecoverCreatedPositionAsync(request, before, exception);
         }
+        catch (OperationCanceledException exception)
+        {
+            return await RecoverCreatedPositionAsync(request, before, exception);
+        }
+    }
+
+    private async Task<CapitalDealAcknowledgement> RecoverCreatedPositionAsync(
+        CapitalPositionRequest request,
+        IReadOnlyList<CapitalOpenPosition> before,
+        Exception originalException)
+    {
+        try
+        {
+            var existingIds = before
+                .Where(position => !string.IsNullOrWhiteSpace(position.DealId))
+                .Select(position => position.DealId)
+                .ToHashSet(StringComparer.Ordinal);
+            var after = await _client.GetOpenPositionsAsync(CancellationToken.None);
+            var matches = after.Where(position =>
+                    !string.IsNullOrWhiteSpace(position.DealId)
+                    && !existingIds.Contains(position.DealId)
+                    && position.Epic.Equals(request.Epic, StringComparison.OrdinalIgnoreCase)
+                    && position.Direction.Equals(request.Direction, StringComparison.OrdinalIgnoreCase)
+                    && position.Size == request.Size)
+                .ToArray();
+            if (matches.Length == 1)
+            {
+                return new CapitalDealAcknowledgement(
+                    "",
+                    "ACCEPTED",
+                    "Recovered from the unique new Capital.com position after the response was lost.",
+                    matches[0].DealId,
+                    matches[0].Level);
+            }
+        }
+        catch (Exception recoveryException)
+        {
+            throw new CapitalMutationOutcomeUnknownException(
+                $"The position request outcome is unknown and recovery failed: {recoveryException.Message}",
+                originalException);
+        }
+
+        throw new CapitalMutationOutcomeUnknownException(
+            "The position request outcome is unknown; no unique new position could be identified.",
+            originalException);
     }
 
     public async Task<CapitalDealAcknowledgement> ClosePositionAsync(string dealId, CancellationToken cancellationToken)
@@ -195,6 +242,27 @@ public sealed class SyntheticBasketExecutionService
             {
                 record = MarkLeg(record, index, SyntheticExecutionLegState.Rejected, FormatReason(record.Legs[index].Epic, "submission", acknowledgement.Reason));
                 break;
+            }
+
+            if (!string.IsNullOrWhiteSpace(acknowledgement.RecoveredDealId))
+            {
+                record = UpdateLeg(
+                    record,
+                    index,
+                    leg => leg with
+                    {
+                        State = SyntheticExecutionLegState.Open,
+                        DealId = acknowledgement.RecoveredDealId,
+                        FillLevel = acknowledgement.RecoveredLevel,
+                        Message = acknowledgement.Reason,
+                        ConfirmedUtc = _clock.UtcNow,
+                        UpdatedUtc = _clock.UtcNow,
+                    },
+                    record.Legs.Count(leg => leg.State == SyntheticExecutionLegState.Open) + 1 == record.Legs.Count
+                        ? SyntheticExecutionState.Open
+                        : SyntheticExecutionState.PartiallyOpen);
+                await progress(record, CancellationToken.None);
+                continue;
             }
 
             if (string.IsNullOrWhiteSpace(acknowledgement.DealReference))
@@ -378,7 +446,8 @@ public sealed class SyntheticBasketExecutionService
             now,
             now,
             SyntheticExecutionState.Submitting,
-            legs);
+            legs,
+            ticket.AccountId);
     }
 
     private async Task<ConfirmationResult> PollConfirmationAsync(string dealReference, CancellationToken cancellationToken)
@@ -565,7 +634,7 @@ public sealed class SyntheticBasketExecutionService
             !string.IsNullOrWhiteSpace(deal.DealId)
             && deal.Status.Equals(requiredStatus, StringComparison.OrdinalIgnoreCase));
         if (affectedDeal is not null) return affectedDeal.DealId;
-        return confirmation.DealId;
+        return "";
     }
 
     private static bool IsAccepted(string status) => status.Equals("ACCEPTED", StringComparison.OrdinalIgnoreCase);

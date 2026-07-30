@@ -224,9 +224,12 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
     private readonly Func<bool> _isDemoTradingSession;
     private readonly Func<CancellationToken, Task<IReadOnlyList<CapitalOpenPosition>>> _getOpenPositions;
     private readonly Func<DateTimeOffset> _utcNow;
+    private readonly Func<string> _currentAccountId;
     private readonly CancellationTokenSource _shutdown = new();
     private int _operationActive;
     private int _disposed;
+
+    public string PersistenceWarning => _store.LastLoadWarning;
 
     public SyntheticTradingHostCoordinator(
         SyntheticBasketExecutionService executionService,
@@ -234,7 +237,8 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
         SyntheticPositionReconciler reconciler,
         Func<bool> isDemoTradingSession,
         Func<CancellationToken, Task<IReadOnlyList<CapitalOpenPosition>>> getOpenPositions,
-        Func<DateTimeOffset>? utcNow = null)
+        Func<DateTimeOffset>? utcNow = null,
+        Func<string>? currentAccountId = null)
     {
         _executionService = executionService ?? throw new ArgumentNullException(nameof(executionService));
         _store = store ?? throw new ArgumentNullException(nameof(store));
@@ -242,6 +246,7 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
         _isDemoTradingSession = isDemoTradingSession ?? throw new ArgumentNullException(nameof(isDemoTradingSession));
         _getOpenPositions = getOpenPositions ?? throw new ArgumentNullException(nameof(getOpenPositions));
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        _currentAccountId = currentAccountId ?? (() => "");
     }
 
     public SyntheticPreflightResult RegisterPreflight(SyntheticPreflightResult result)
@@ -289,6 +294,7 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
             {
                 throw new InvalidOperationException("Execution ticket has expired. Run preflight again.");
             }
+            EnsureAccountOwnership(ticket.AccountId, "execution ticket");
 
             return new SyntheticHostExecution(this, ticket);
         }
@@ -364,6 +370,7 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
             var record = records.SingleOrDefault(candidate =>
                 candidate.ExecutionId.Equals(executionId, StringComparison.Ordinal))
                 ?? throw new InvalidOperationException("Synthetic execution was not found.");
+            EnsureAccountOwnership(record.AccountId, "synthetic execution");
             var result = await _executionService.CloseAsync(
                 record,
                 (transition, persistenceToken) => PersistThenPublishAsync(transition, publishProgress, persistenceToken),
@@ -443,7 +450,29 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
 
             var positions = await _getOpenPositions(linked.Token);
             var now = _utcNow();
-            var reconciled = records.Select(record => _reconciler.Reconcile(record, positions, now)).ToArray();
+            var activeAccountId = _currentAccountId().Trim();
+            var positionIds = positions
+                .Where(position => !string.IsNullOrWhiteSpace(position.DealId))
+                .Select(position => position.DealId)
+                .ToHashSet(StringComparer.Ordinal);
+            var reconciled = records.Select(record =>
+            {
+                if (string.IsNullOrWhiteSpace(activeAccountId)) return _reconciler.Reconcile(record, positions, now);
+                if (!string.IsNullOrWhiteSpace(record.AccountId))
+                {
+                    return record.AccountId.Equals(activeAccountId, StringComparison.Ordinal)
+                        ? _reconciler.Reconcile(record, positions, now)
+                        : record;
+                }
+
+                var tracked = record.Legs
+                    .Where(leg => leg.State is SyntheticExecutionLegState.Open or SyntheticExecutionLegState.Closing)
+                    .Select(leg => leg.DealId)
+                    .Where(dealId => !string.IsNullOrWhiteSpace(dealId))
+                    .ToArray();
+                if (tracked.Length == 0 || tracked.Any(dealId => !positionIds.Contains(dealId))) return record;
+                return _reconciler.Reconcile(record with { AccountId = activeAccountId }, positions, now);
+            }).ToArray();
             await _store.SaveAsync(reconciled, linked.Token);
             await publishExecutions(reconciled);
             return reconciled;
@@ -488,6 +517,15 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
         {
             throw new InvalidOperationException("Synthetic basket mutations require a Capital.com demo session.");
         }
+    }
+
+    private void EnsureAccountOwnership(string recordAccountId, string subject)
+    {
+        var activeAccountId = _currentAccountId().Trim();
+        if (string.IsNullOrWhiteSpace(activeAccountId)) return;
+        if (!string.IsNullOrWhiteSpace(recordAccountId)
+            && recordAccountId.Equals(activeAccountId, StringComparison.Ordinal)) return;
+        throw new InvalidOperationException($"The {subject} belongs to a different or unverified Capital.com account.");
     }
 
     private void PurgeExpiredTicketsLocked()

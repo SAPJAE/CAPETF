@@ -46,6 +46,15 @@ public sealed partial class CapitalApiClient
         return ParseOpenPositions(document.RootElement);
     }
 
+    public async Task<CapitalAccountPreferences> GetAccountPreferencesAsync(CancellationToken cancellationToken = default)
+    {
+        using var document = await SendTradingJsonAsync(HttpMethod.Get, "api/v1/accounts/preferences", null, cancellationToken);
+        return new CapitalAccountPreferences(
+            document.RootElement.TryGetProperty("hedgingMode", out var value)
+            && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            && value.GetBoolean());
+    }
+
     public async Task<CapitalDealAcknowledgement> ClosePositionAsync(string dealId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(dealId)) throw new ArgumentException("A deal ID is required.", nameof(dealId));

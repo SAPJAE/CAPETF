@@ -2,7 +2,14 @@ namespace CAPETF.Desktop;
 
 public sealed record CapitalPositionRequest(string Epic, string Direction, decimal Size);
 
-public sealed record CapitalDealAcknowledgement(string DealReference, string DealStatus, string Reason);
+public sealed record CapitalDealAcknowledgement(
+    string DealReference,
+    string DealStatus,
+    string Reason,
+    string RecoveredDealId = "",
+    decimal? RecoveredLevel = null);
+
+public sealed record CapitalAccountPreferences(bool HedgingMode);
 
 public sealed record CapitalAffectedDeal(string DealId, string Status);
 
@@ -31,7 +38,9 @@ public sealed record SyntheticPreflightInput(
     string Side,
     decimal RequestedNotional,
     DateTimeOffset NowUtc,
-    SyntheticMarginSummary? Margin);
+    SyntheticMarginSummary? Margin,
+    string AccountId = "",
+    bool HedgingMode = false);
 
 public sealed record SyntheticPreflightFailure(string Epic, string Reason);
 
@@ -54,7 +63,8 @@ public sealed record SyntheticExecutionTicket(
     DateTimeOffset ExpiresUtc,
     decimal EstimatedMargin,
     string MarginCurrency,
-    IReadOnlyList<SyntheticExecutionLeg> Legs);
+    IReadOnlyList<SyntheticExecutionLeg> Legs,
+    string AccountId = "");
 
 public enum SyntheticExecutionState
 {
@@ -114,7 +124,8 @@ public sealed record SyntheticExecutionRecord(
     DateTimeOffset CreatedUtc,
     DateTimeOffset UpdatedUtc,
     SyntheticExecutionState State,
-    IReadOnlyList<SyntheticExecutionLegRecord> Legs);
+    IReadOnlyList<SyntheticExecutionLegRecord> Legs,
+    string AccountId = "");
 
 public sealed record SyntheticPreflightResult(
     bool IsReady,

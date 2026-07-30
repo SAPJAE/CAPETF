@@ -53,7 +53,8 @@ public partial class CapComTerminalWindow : Window
             new CapitalTradingGateway(_api),
             SyntheticTradingComposition.DefaultExecutionStorePath(),
             () => _api.IsDemoTradingSession,
-            cancellationToken => _api.GetOpenPositionsAsync(cancellationToken));
+            cancellationToken => _api.GetOpenPositionsAsync(cancellationToken),
+            currentAccountId: () => _api.Session?.CurrentAccountId ?? "");
         StrategyBox.ItemsSource = SyntheticStrategyCatalog.All;
         StrategyBox.DisplayMemberPath = nameof(SyntheticStrategy.Label);
         StrategyBox.SelectedValuePath = nameof(SyntheticStrategy.Kind);
@@ -1128,6 +1129,8 @@ public partial class CapComTerminalWindow : Window
         }
 
         var freshBasket = snapshotResult.Basket;
+        var preferences = await _api.GetAccountPreferencesAsync(cancellationToken);
+        var accountId = _api.Session?.CurrentAccountId ?? "";
         _marginPreview.InvalidateCaches();
         var margin = await _marginPreview.BuildAsync(freshBasket, basketNotional, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -1138,7 +1141,9 @@ public partial class CapComTerminalWindow : Window
             side,
             basketNotional,
             DateTimeOffset.UtcNow,
-            margin));
+            margin,
+            accountId,
+            preferences.HedgingMode));
         result = _tradingCoordinator.RegisterPreflight(result);
         await PublishTerminalPreflightAsync(result);
     }
@@ -1220,8 +1225,13 @@ public partial class CapComTerminalWindow : Window
     private Task PublishTerminalPreflightAsync(SyntheticPreflightResult result) =>
         PublishTerminalCallbackAsync("setTerminalPreflight", result);
 
-    private Task PublishTerminalExecutionsAsync(IReadOnlyList<SyntheticExecutionRecord> records) =>
-        PublishTerminalCallbackAsync("setTerminalExecutions", records);
+    private async Task PublishTerminalExecutionsAsync(IReadOnlyList<SyntheticExecutionRecord> records)
+    {
+        await PublishTerminalCallbackAsync("setTerminalExecutions", records);
+        if (string.IsNullOrWhiteSpace(_tradingCoordinator.PersistenceWarning)) return;
+        _windowLifetime.TryApply(() => StatusText.Text = _tradingCoordinator.PersistenceWarning);
+        await PublishTerminalExecutionErrorAsync(_tradingCoordinator.PersistenceWarning);
+    }
 
     private Task PublishTerminalExecutionProgressAsync(SyntheticExecutionRecord record) =>
         PublishTerminalCallbackAsync("setTerminalExecutionProgress", record);

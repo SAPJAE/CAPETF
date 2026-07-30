@@ -138,7 +138,19 @@ public sealed partial class CapitalApiClient : IDisposable
     {
         EnsureSession();
         using var doc = await GetJsonAsync($"api/v1/markets/{Uri.EscapeDataString(epic)}", cancellationToken);
-        return ParseMarketDetails(doc.RootElement, DateTimeOffset.UtcNow);
+        var details = ParseMarketDetails(doc.RootElement, DateTimeOffset.UtcNow);
+        if (details is null || details.LastTickAt is not null) return details;
+
+        using var summaries = await GetJsonAsync($"api/v1/markets?epics={Uri.EscapeDataString(epic)}", cancellationToken);
+        var current = ExtractMarkets(summaries.RootElement).SingleOrDefault(candidate =>
+            candidate.Epic.Equals(epic, StringComparison.OrdinalIgnoreCase));
+        if (current?.LastTickAt is null) return details;
+        details.Bid = current.Bid;
+        details.Offer = current.Offer;
+        details.Price = current.Price;
+        details.Status = current.Status;
+        details.LastTickAt = current.LastTickAt;
+        return details;
     }
 
     public async Task<IReadOnlyList<ChartPoint>> GetPricesAsync(string epic, string resolution, int max, CancellationToken cancellationToken = default)
@@ -377,29 +389,7 @@ public sealed partial class CapitalApiClient : IDisposable
             return parsedUtc;
         }
 
-        var localSource = ReadString(snapshot, "updateTime");
-        if (string.IsNullOrWhiteSpace(localSource) || !DateTime.TryParse(
-                localSource,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AllowWhiteSpaces,
-                out var parsedLocal))
-        {
-            return null;
-        }
-
-        var unspecified = DateTime.SpecifyKind(parsedLocal, DateTimeKind.Unspecified);
-        DateTimeOffset? nearest = null;
-        var nearestDistance = TimeSpan.MaxValue;
-        for (var minutes = -14 * 60; minutes <= 14 * 60; minutes += 15)
-        {
-            var candidate = new DateTimeOffset(unspecified, TimeSpan.FromMinutes(minutes)).ToUniversalTime();
-            var distance = (candidate - retrievedAt.ToUniversalTime()).Duration();
-            if (distance >= nearestDistance) continue;
-            nearest = candidate;
-            nearestDistance = distance;
-        }
-
-        return nearestDistance <= TimeSpan.FromHours(12) ? nearest : null;
+        return null;
     }
 
     private static IReadOnlyList<OhlcPoint> ParseOhlcPrices(JsonElement root)
@@ -458,6 +448,8 @@ public sealed partial class CapitalApiClient : IDisposable
         if (!root.TryGetProperty("markets", out var markets) || markets.ValueKind != JsonValueKind.Array) yield break;
         foreach (var market in markets.EnumerateArray())
         {
+            var bid = ReadDecimal(market, "bid");
+            var offer = ReadDecimal(market, "offer");
             yield return new MarketInstrument
             {
                 Epic = ReadString(market, "epic") ?? "",
@@ -469,6 +461,10 @@ public sealed partial class CapitalApiClient : IDisposable
                 Sector = ReadString(market, "sector") ?? ReadString(market, "industry") ?? "",
                 Region = ReadString(market, "region") ?? "",
                 LotSize = ReadDecimal(market, "lotSize"),
+                Bid = bid,
+                Offer = offer,
+                Price = bid is > 0m && offer is > 0m ? (bid.Value + offer.Value) / 2m : bid ?? offer,
+                LastTickAt = ParseSnapshotTimestamp(market, DateTimeOffset.UtcNow),
                 Status = ReadString(market, "marketStatus") ?? ReadString(market, "status") ?? "",
             };
         }

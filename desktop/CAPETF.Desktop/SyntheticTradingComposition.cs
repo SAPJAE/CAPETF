@@ -16,7 +16,8 @@ internal static class SyntheticTradingComposition
         Func<bool> isDemoTradingSession,
         Func<CancellationToken, Task<IReadOnlyList<CapitalOpenPosition>>> getOpenPositions,
         ISyntheticExecutionClock? clock = null,
-        Func<DateTimeOffset>? utcNow = null)
+        Func<DateTimeOffset>? utcNow = null,
+        Func<string>? currentAccountId = null)
     {
         ArgumentNullException.ThrowIfNull(gateway);
         ArgumentNullException.ThrowIfNull(isDemoTradingSession);
@@ -31,6 +32,7 @@ internal static class SyntheticTradingComposition
             new SyntheticPositionReconciler(),
             isDemoTradingSession,
             getOpenPositions,
-            coordinatorClock);
+            coordinatorClock,
+            currentAccountId);
     }
 }

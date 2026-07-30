@@ -42,7 +42,8 @@ public sealed class SyntheticPositionReconciler
             };
         }
 
-        if (leg.State is SyntheticExecutionLegState.Open or SyntheticExecutionLegState.Closing)
+        if (leg.State is SyntheticExecutionLegState.Open or SyntheticExecutionLegState.Closing
+            || leg.State == SyntheticExecutionLegState.Unknown && !string.IsNullOrWhiteSpace(leg.DealId))
         {
             return leg with
             {

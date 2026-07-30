@@ -15,6 +15,8 @@ public static class SyntheticTradePreflight
         var side = NormalizeSide(input.Side);
 
         if (!input.IsDemoSession) globalFailures.Add(Failure("Demo trading session is required."));
+        if (string.IsNullOrWhiteSpace(input.AccountId)) globalFailures.Add(Failure("Active Capital.com account is required."));
+        if (!input.HedgingMode) globalFailures.Add(Failure("Capital.com hedging mode is required."));
         if (string.IsNullOrWhiteSpace(input.BasketId)) globalFailures.Add(Failure("Basket ID is required."));
         if (input.RequestedNotional <= 0m) globalFailures.Add(Failure("Requested notional must be positive."));
         if (side is null) globalFailures.Add(Failure("Side must be BUY or SELL."));
@@ -49,8 +51,12 @@ public static class SyntheticTradePreflight
             {
                 legFailures.Add(Failure(epic, "Bid and offer prices must be positive."));
             }
-            if (component.Instrument.LastTickAt is null ||
-                input.NowUtc - component.Instrument.LastTickAt.Value > MaximumQuoteAge)
+            if (component.Instrument.LastTickAt is not null && component.Instrument.LastTickAt.Value > input.NowUtc)
+            {
+                legFailures.Add(Failure(epic, "Quote timestamp is in the future."));
+            }
+            else if (component.Instrument.LastTickAt is null ||
+                     input.NowUtc - component.Instrument.LastTickAt.Value > MaximumQuoteAge)
             {
                 legFailures.Add(Failure(epic, "Quote is older than five minutes."));
             }
@@ -140,7 +146,8 @@ public static class SyntheticTradePreflight
             input.NowUtc.Add(TicketLifetime),
             margin.TotalMargin.Value,
             margin.AccountCurrency,
-            Array.AsReadOnly(legs));
+            Array.AsReadOnly(legs),
+            input.AccountId);
 
         return new SyntheticPreflightResult(true, ticket, Array.Empty<SyntheticPreflightFailure>());
     }
