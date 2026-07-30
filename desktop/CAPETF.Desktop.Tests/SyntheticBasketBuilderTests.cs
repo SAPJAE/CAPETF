@@ -3859,8 +3859,11 @@ public static class SyntheticBasketBuilderTests
             "invalid browser notionals must explicitly cancel the host margin preview");
 
         var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
-        AssertTrue(source.Contains("type.GetString() == \"cancelMarginPreview\"", StringComparison.Ordinal),
-            "the WPF host must handle the browser margin-cancel message");
+        var parserSource = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "SyntheticTradingHostCoordinator.cs"));
+        AssertTrue(parserSource.Contains("case \"cancelMarginPreview\":", StringComparison.Ordinal),
+            "the strict browser parser must accept the margin-cancel message");
+        AssertTrue(source.Contains("case SyntheticCancelMarginPreviewRequest:", StringComparison.Ordinal),
+            "the WPF host must route the typed browser margin-cancel request");
         var cancelStart = source.IndexOf("private void CancelMarginPreviewRequest()", StringComparison.Ordinal);
         var cancelEnd = source.IndexOf("private async Task ResetMarginPreviewContextAsync", cancelStart, StringComparison.Ordinal);
         if (cancelStart < 0 || cancelEnd <= cancelStart)

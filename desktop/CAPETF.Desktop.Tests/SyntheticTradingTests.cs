@@ -12,6 +12,8 @@ public static class SyntheticTradingTests
     public static void RunAll()
     {
         TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs();
+        TradingBrowserParserRejectsMalformedShapesWithoutThrowing();
+        TradingBrowserHandlerTurnsMalformedAndSemanticFailuresIntoRejections();
         HostConsumesFrozenTicketsBeforeExecutionAndRejectsReuse();
         HostRejectsExpiredTicketsWithoutMutation();
         HostDuplicateGuardDoesNotConsumeTheBlockedTicket();
@@ -19,7 +21,12 @@ public static class SyntheticTradingTests
         HostPersistsEveryTransitionBeforePublication();
         HostReconnectReconcilesAndPersistsBeforePublication();
         HostCancellationPreservesAcknowledgedExecutionState();
+        WindowLifecycleDefersCloseUntilAcknowledgedSaveCompletes();
+        WindowLifecycleBoundsOnlyPreDispatchWait();
         WpfHostPublishesTradingContractsWithoutLegacyPreviewMutation();
+        FreshPreflightSnapshotsRejectFailedRefreshDespiteStaleMetadata();
+        FreshPreflightSnapshotsRejectIncompleteCurrentMetadata();
+        FreshPreflightSnapshotsBuildDetachedBasketFromExactResponses();
         PreflightRejectsNonDemoSessions();
         PreflightRejectsInvalidComponentCounts();
         PreflightRejectsDuplicateEpics();
@@ -114,6 +121,89 @@ public static class SyntheticTradingTests
                 SyntheticTradingBrowserRequestParser.TryParse(unsafeDocument.RootElement, out _, out _),
                 $"browser mutation fields must be rejected: {unsafePayload}");
         }
+    }
+
+    private static void TradingBrowserParserRejectsMalformedShapesWithoutThrowing()
+    {
+        foreach (var payload in new[]
+        {
+            "42",
+            "[]",
+            "{}",
+            "{\"type\":42}",
+            "{\"type\":\"executeBasket\",\"ticketId\":\"not-a-guid\"}",
+            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"basketNotional\":\"300\"}",
+            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"basketNotional\":1e999}",
+            "{\"type\":\"unknownAction\"}",
+            "{",
+        })
+        {
+            var parsed = SyntheticTradingBrowserRequestParser.TryParse(payload, out var request, out var error);
+
+            AssertFalse(parsed, $"malformed browser payload must be rejected without throwing: {payload}");
+            AssertTrue(request is null, "a rejected browser payload must not produce a request");
+            AssertFalse(string.IsNullOrWhiteSpace(error), "a rejected browser payload must have a visible error");
+        }
+    }
+
+    private static void TradingBrowserHandlerTurnsMalformedAndSemanticFailuresIntoRejections()
+    {
+        var handled = 0;
+        var rejections = new List<string>();
+        var rejectedPayloads = new[]
+        {
+            "42",
+            "{}",
+            "{\"type\":42}",
+            "{\"type\":\"executeBasket\",\"ticketId\":\"not-a-guid\"}",
+            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"basketNotional\":\"300\"}",
+            "{\"type\":\"unknownAction\"}",
+        };
+        foreach (var payload in rejectedPayloads)
+        {
+            SyntheticTradingBrowserMessageHandler.HandleAsync(
+                    payload,
+                    _ =>
+                    {
+                        handled++;
+                        return Task.CompletedTask;
+                    },
+                    error =>
+                    {
+                        rejections.Add(error);
+                        return Task.CompletedTask;
+                    })
+                .GetAwaiter().GetResult();
+        }
+
+        AssertEqual(0, handled, "malformed browser messages must not reach the action handler");
+        AssertEqual(rejectedPayloads.Length, rejections.Count, "each malformed browser message must publish one rejection");
+
+        SyntheticTradingBrowserMessageHandler.HandleAsync(
+                "{\"type\":\"refreshExecutions\"}",
+                _ => throw new InvalidOperationException("semantic request failure"),
+                error =>
+                {
+                    rejections.Add(error);
+                    return Task.CompletedTask;
+                })
+            .GetAwaiter().GetResult();
+
+        AssertEqual(rejectedPayloads.Length + 1, rejections.Count, "semantic JSON failures must be rejected at the handler boundary");
+        AssertContains(rejections[^1], "semantic request failure", "semantic rejection message");
+
+        SyntheticTradingBrowserMessageHandler.HandleAsync(
+                "{\"type\":\"refreshExecutions\"}",
+                _ => throw new FormatException("semantic format failure"),
+                error =>
+                {
+                    rejections.Add(error);
+                    return Task.CompletedTask;
+                })
+            .GetAwaiter().GetResult();
+
+        AssertEqual(rejectedPayloads.Length + 2, rejections.Count, "format failures must be rejected at the handler boundary");
+        AssertContains(rejections[^1], "semantic format failure", "format rejection message");
     }
 
     private static void HostConsumesFrozenTicketsBeforeExecutionAndRejectsReuse()
@@ -333,10 +423,14 @@ public static class SyntheticTradingTests
         }
 
         var preflightBody = SliceSource(source, "private async Task PreflightSyntheticBasketAsync", "private Task ExecuteSyntheticBasketAsync");
+        AssertFalse(
+            preflightBody.Contains("RefreshBasketMarketDetailsAsync", StringComparison.Ordinal),
+            "trading preflight must not treat the mutable basket refresh as authoritative");
         AssertOrdered(preflightBody,
-            "RefreshBasketMarketDetailsAsync",
+            "_preflightMarketSnapshots.LoadAsync",
+            "snapshotResult.Basket",
             "InvalidateCaches",
-            "BuildAsync",
+            "BuildAsync(freshBasket",
             "SyntheticTradePreflight.Build",
             "RegisterPreflight");
         var executeBody = SliceSource(source, "private Task ExecuteSyntheticBasketAsync", "private static async Task FinishSyntheticExecutionAsync");
@@ -352,6 +446,135 @@ public static class SyntheticTradingTests
         var closingBody = SliceSource(source, "protected override void OnClosing", "protected override void OnClosed");
         AssertOrdered(closingBody, "CancelPendingOperations", "BeginClosing");
         AssertContains(xaml, "TradingModeText", "persistent WPF demo-state label");
+    }
+
+    private static void WindowLifecycleDefersCloseUntilAcknowledgedSaveCompletes()
+    {
+        using var closeAuthorized = new ManualResetEventSlim();
+        var saveGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var events = new List<string>();
+        var lifecycle = new SyntheticTradingWindowLifecycleCoordinator(TimeSpan.FromMilliseconds(20));
+        var operation = lifecycle.BeginOperation();
+
+        async Task PersistAcknowledgedMutationAsync()
+        {
+            operation.MarkMutationDispatched();
+            events.Add("acknowledged");
+            await saveGate.Task;
+            events.Add("saved");
+        }
+
+        var workflow = PersistAcknowledgedMutationAsync();
+        operation.Track(workflow);
+        var mayCloseImmediately = lifecycle.RequestClose(
+            () => events.Add("cancelled"),
+            () =>
+            {
+                events.Add("authorized");
+                events.Add("disposed");
+                closeAuthorized.Set();
+            });
+
+        AssertFalse(mayCloseImmediately, "an acknowledged mutation must defer window close");
+        Thread.Sleep(75);
+        AssertFalse(closeAuthorized.IsSet, "post-dispatch persistence must not use the pre-dispatch timeout");
+        AssertFalse(events.Contains("disposed"), "API/store disposal must wait for acknowledged persistence");
+
+        saveGate.SetResult();
+        workflow.GetAwaiter().GetResult();
+        AssertTrue(closeAuthorized.Wait(TimeSpan.FromSeconds(2)), "close must be authorized after persistence completes");
+        AssertOrdered(string.Join('|', events), "cancelled", "saved", "authorized", "disposed");
+        AssertTrue(
+            lifecycle.RequestClose(() => throw new Exception("cancellation must run once"), () => throw new Exception("authorization must run once")),
+            "the authorized reentrant close must proceed without starting another close cycle");
+    }
+
+    private static void WindowLifecycleBoundsOnlyPreDispatchWait()
+    {
+        using var closeAuthorized = new ManualResetEventSlim();
+        var operationGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lifecycle = new SyntheticTradingWindowLifecycleCoordinator(TimeSpan.FromMilliseconds(20));
+        var operation = lifecycle.BeginOperation();
+        operation.Track(operationGate.Task);
+
+        AssertFalse(
+            lifecycle.RequestClose(() => { }, closeAuthorized.Set),
+            "an active pre-dispatch operation must initially defer close");
+        AssertTrue(
+            closeAuthorized.Wait(TimeSpan.FromSeconds(2)),
+            "a cancelled pre-dispatch operation must have a bounded shutdown wait");
+        AssertThrows<OperationCanceledException>(
+            operation.MarkMutationDispatched,
+            "a timed-out pre-dispatch operation must be blocked before entering the gateway");
+
+        operationGate.SetResult();
+    }
+
+    private static void FreshPreflightSnapshotsRejectFailedRefreshDespiteStaleMetadata()
+    {
+        var basket = CreateBasket();
+        foreach (var component in basket.Components)
+        {
+            component.Instrument.MarginFactor = 99m;
+            component.Instrument.MarginFactorUnit = "PERCENTAGE";
+        }
+        var requestedEpics = new List<string>();
+        var loader = new SyntheticPreflightMarketSnapshotLoader((epic, _) =>
+        {
+            requestedEpics.Add(epic);
+            return epic == "BETA"
+                ? Task.FromException<MarketInstrument?>(new InvalidOperationException("refresh failed"))
+                : Task.FromResult<MarketInstrument?>(CreateFreshMarketDetails(epic));
+        });
+
+        var result = loader.LoadAsync(basket, default).GetAwaiter().GetResult();
+
+        AssertTrue(result.Basket is null, "a failed current market refresh must not return a tradable basket");
+        AssertEqual(3, result.Snapshots.Count, "only successful current snapshots may be retained");
+        AssertContainsFailure(result.Failures, "BETA", "refresh failed");
+        AssertEqual(4, requestedEpics.Count, "preflight must attempt current market details for every leg");
+        AssertEqual(99m, basket.Components[1].Instrument.MarginFactor, "stale source margin proves refresh cannot fall back");
+    }
+
+    private static void FreshPreflightSnapshotsRejectIncompleteCurrentMetadata()
+    {
+        var basket = CreateBasket();
+        var loader = new SyntheticPreflightMarketSnapshotLoader((epic, _) =>
+        {
+            var details = CreateFreshMarketDetails(epic);
+            if (epic == "GAMMA") details.MarginFactor = null;
+            return Task.FromResult<MarketInstrument?>(details);
+        });
+
+        var result = loader.LoadAsync(basket, default).GetAwaiter().GetResult();
+
+        AssertTrue(result.Basket is null, "missing current trading metadata must fail closed");
+        AssertContainsFailure(result.Failures, "GAMMA", "margin factor");
+    }
+
+    private static void FreshPreflightSnapshotsBuildDetachedBasketFromExactResponses()
+    {
+        var basket = CreateBasket();
+        var responses = basket.Components.ToDictionary(
+            component => component.Instrument.Epic,
+            component => CreateFreshMarketDetails(component.Instrument.Epic),
+            StringComparer.OrdinalIgnoreCase);
+        var loader = new SyntheticPreflightMarketSnapshotLoader((epic, _) =>
+            Task.FromResult<MarketInstrument?>(responses[epic]));
+
+        var result = loader.LoadAsync(basket, default).GetAwaiter().GetResult();
+        var freshBasket = result.Basket ?? throw new Exception("complete current snapshots must produce a fresh basket");
+
+        AssertFalse(ReferenceEquals(basket, freshBasket), "preflight must not mutate or reuse the displayed basket");
+        AssertEqual(basket.Components.Count, result.Snapshots.Count, "every current response must enter the snapshot collection");
+        foreach (var component in freshBasket.Components)
+        {
+            AssertTrue(
+                ReferenceEquals(responses[component.Instrument.Epic], component.Instrument),
+                "the preflight basket must consume the exact fetched market snapshot");
+        }
+        AssertEqual(10m, basket.Components[0].Instrument.Bid, "the displayed basket quote must remain unchanged");
+        AssertEqual(11m, freshBasket.Components[0].Instrument.Bid, "the detached basket must carry the current quote");
     }
 
     private static void ExecutionStoreRoundTripsVersionedRecordsAndDealIdentity()
@@ -2138,6 +2361,26 @@ public static class SyntheticTradingTests
             FormulaMultiplier = multiplier,
         };
 
+    private static MarketInstrument CreateFreshMarketDetails(string epic) =>
+        new()
+        {
+            Epic = epic,
+            Name = epic,
+            Symbol = epic,
+            Type = "SHARES",
+            Currency = "USD",
+            Bid = 11m,
+            Offer = 12m,
+            Price = 11.5m,
+            LastTickAt = DateTimeOffset.Parse("2026-07-30T12:01:00Z"),
+            Status = "TRADEABLE",
+            LotSize = 1m,
+            MinDealSize = 1m,
+            MinSizeIncrement = 1m,
+            MarginFactor = 20m,
+            MarginFactorUnit = "PERCENTAGE",
+        };
+
     private static SyntheticMarginSummary CreateMarginSummary(decimal available = 500m)
     {
         var legs = new[]
@@ -2160,6 +2403,19 @@ public static class SyntheticTradingTests
         if (!result.Failures.Any(failure => failure.Epic == epic && failure.Reason == reason))
         {
             throw new Exception($"preflight failure missing: {epic} {reason}");
+        }
+    }
+
+    private static void AssertContainsFailure(
+        IReadOnlyList<SyntheticPreflightFailure> failures,
+        string epic,
+        string reasonFragment)
+    {
+        if (!failures.Any(failure =>
+                failure.Epic == epic &&
+                failure.Reason.Contains(reasonFragment, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new Exception($"preflight failure missing: {epic} containing {reasonFragment}");
         }
     }
 

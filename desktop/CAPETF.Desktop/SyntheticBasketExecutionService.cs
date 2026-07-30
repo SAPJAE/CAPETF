@@ -89,9 +89,16 @@ public sealed class SyntheticBasketExecutionService
         _clock = clock ?? new SystemSyntheticExecutionClock();
     }
 
-    public async Task<SyntheticExecutionRecord> ExecuteAsync(
+    public Task<SyntheticExecutionRecord> ExecuteAsync(
         SyntheticExecutionTicket ticket,
         SyntheticExecutionProgress progress,
+        CancellationToken cancellationToken) =>
+        ExecuteAsync(ticket, progress, null, cancellationToken);
+
+    internal async Task<SyntheticExecutionRecord> ExecuteAsync(
+        SyntheticExecutionTicket ticket,
+        SyntheticExecutionProgress progress,
+        Action? mutationDispatching,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(ticket);
@@ -141,6 +148,24 @@ public sealed class SyntheticBasketExecutionService
             }
 
             CapitalDealAcknowledgement acknowledgement;
+            try
+            {
+                mutationDispatching?.Invoke();
+            }
+            catch (OperationCanceledException)
+            {
+                cancelled = true;
+                record = UpdateLeg(
+                    record,
+                    index,
+                    leg => leg with
+                    {
+                        State = SyntheticExecutionLegState.Pending,
+                        SubmittedUtc = null,
+                        UpdatedUtc = _clock.UtcNow,
+                    });
+                break;
+            }
             try
             {
                 var leg = record.Legs[index];
@@ -205,9 +230,16 @@ public sealed class SyntheticBasketExecutionService
         return record;
     }
 
-    public async Task<SyntheticExecutionRecord> CloseAsync(
+    public Task<SyntheticExecutionRecord> CloseAsync(
         SyntheticExecutionRecord record,
         SyntheticExecutionProgress progress,
+        CancellationToken cancellationToken) =>
+        CloseAsync(record, progress, null, cancellationToken);
+
+    internal async Task<SyntheticExecutionRecord> CloseAsync(
+        SyntheticExecutionRecord record,
+        SyntheticExecutionProgress progress,
+        Action? mutationDispatching,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(record);
@@ -248,6 +280,19 @@ public sealed class SyntheticBasketExecutionService
             }
 
             CapitalDealAcknowledgement acknowledgement;
+            try
+            {
+                mutationDispatching?.Invoke();
+            }
+            catch (OperationCanceledException)
+            {
+                cancelled = true;
+                current = UpdateLeg(
+                    current,
+                    index,
+                    leg => leg with { State = SyntheticExecutionLegState.Open, UpdatedUtc = _clock.UtcNow });
+                break;
+            }
             try
             {
                 mutationDispatched = true;

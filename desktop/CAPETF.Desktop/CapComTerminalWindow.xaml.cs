@@ -16,7 +16,9 @@ public partial class CapComTerminalWindow : Window
     private readonly CapitalApiClient _api = new();
     private readonly SyntheticHistoryService _history;
     private readonly SyntheticMarginPreviewService _marginPreview;
+    private readonly SyntheticPreflightMarketSnapshotLoader _preflightMarketSnapshots;
     private readonly SyntheticTradingHostCoordinator _tradingCoordinator;
+    private readonly SyntheticTradingWindowLifecycleCoordinator _tradingLifecycle = new();
     private readonly TerminalOperationState _operationState = new();
     private readonly WindowLifetime _windowLifetime = new();
     private readonly List<MarketInstrument> _instruments = [];
@@ -46,6 +48,7 @@ public partial class CapComTerminalWindow : Window
         OperationProgressPanel.DataContext = _operationState;
         _history = new SyntheticHistoryService(_api);
         _marginPreview = new SyntheticMarginPreviewService(new CapitalApiSyntheticMarginDataSource(_api));
+        _preflightMarketSnapshots = new SyntheticPreflightMarketSnapshotLoader(_api.GetMarketDetailsAsync);
         _tradingCoordinator = new SyntheticTradingHostCoordinator(
             new SyntheticBasketExecutionService(new CapitalTradingGateway(_api)),
             new SyntheticExecutionStore(SyntheticExecutionStorePath()),
@@ -1111,14 +1114,28 @@ public partial class CapComTerminalWindow : Window
 
         var basket = _basket;
         await EnsureConnectedAsync(cancellationToken);
-        await RefreshBasketMarketDetailsAsync(basket, cancellationToken);
+        _operationState.BeginStage("Refreshing preflight market details", basket.Components.Count);
+        var snapshotResult = await _preflightMarketSnapshots.LoadAsync(
+            basket,
+            cancellationToken,
+            (completed, total) => _operationState.Report("Refreshing preflight market details", completed, total));
+        if (snapshotResult.Basket is null)
+        {
+            await PublishTerminalPreflightAsync(new SyntheticPreflightResult(
+                false,
+                null,
+                snapshotResult.Failures));
+            return;
+        }
+
+        var freshBasket = snapshotResult.Basket;
         _marginPreview.InvalidateCaches();
-        var margin = await _marginPreview.BuildAsync(basket, basketNotional, cancellationToken);
+        var margin = await _marginPreview.BuildAsync(freshBasket, basketNotional, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         var result = SyntheticTradePreflight.Build(new SyntheticPreflightInput(
             _api.IsDemoTradingSession,
-            SyntheticTerminalChartPayload.DrawingIdentity(basket),
-            basket,
+            SyntheticTerminalChartPayload.DrawingIdentity(freshBasket),
+            freshBasket,
             side,
             basketNotional,
             DateTimeOffset.UtcNow,
@@ -1138,13 +1155,16 @@ public partial class CapComTerminalWindow : Window
             return Task.CompletedTask;
         }
 
-        SyntheticHostExecution execution;
+        SyntheticHostExecution? execution = null;
+        SyntheticTradingWindowLifecycleCoordinator.TrackedOperation? trackedOperation = null;
         try
         {
             execution = _tradingCoordinator.BeginExecution(ticketId);
+            trackedOperation = _tradingLifecycle.BeginOperation();
         }
         catch (Exception ex)
         {
+            execution?.Dispose();
             _operationState.Fail(ex.Message);
             _windowLifetime.TryApply(() => StatusText.Text = ex.Message);
             return PublishTerminalExecutionErrorAsync(ex.Message);
@@ -1158,11 +1178,14 @@ public partial class CapComTerminalWindow : Window
                     execution,
                     PublishTerminalExecutionProgressAsync,
                     PublishTerminalExecutionsAsync,
+                    trackedOperation.MarkMutationDispatched,
                     token);
                 _marginPreview.InvalidateCaches();
             },
             cancellationToken);
-        return FinishSyntheticExecutionAsync(execution, operation);
+        var finished = FinishSyntheticExecutionAsync(execution, operation);
+        trackedOperation.Track(finished);
+        return finished;
     }
 
     private static async Task FinishSyntheticExecutionAsync(
@@ -1182,12 +1205,18 @@ public partial class CapComTerminalWindow : Window
     private Task RefreshSyntheticExecutionsAsync(CancellationToken cancellationToken) =>
         _tradingCoordinator.RefreshAsync(PublishTerminalExecutionsAsync, cancellationToken);
 
-    private Task CloseSyntheticBasketAsync(string executionId, CancellationToken cancellationToken) =>
-        _tradingCoordinator.CloseAsync(
+    private Task CloseSyntheticBasketAsync(string executionId, CancellationToken cancellationToken)
+    {
+        var trackedOperation = _tradingLifecycle.BeginOperation();
+        var operation = _tradingCoordinator.CloseAsync(
             executionId,
             PublishTerminalExecutionProgressAsync,
             PublishTerminalExecutionsAsync,
+            trackedOperation.MarkMutationDispatched,
             cancellationToken);
+        trackedOperation.Track(operation);
+        return operation;
+    }
 
     private Task PublishTerminalPreflightAsync(SyntheticPreflightResult result) =>
         PublishTerminalCallbackAsync("setTerminalPreflight", result);
@@ -1431,67 +1460,50 @@ public partial class CapComTerminalWindow : Window
         if (_windowLifetime.IsClosing) return;
         try
         {
-            using var message = JsonDocument.Parse(e.WebMessageAsJson);
-            var root = message.RootElement;
-            if (!root.TryGetProperty("type", out var type)) return;
-            var messageType = type.GetString();
-            if (messageType is "preflightBasket" or "executeBasket" or "refreshExecutions" or "closeBasket")
-            {
-                if (!SyntheticTradingBrowserRequestParser.TryParse(root, out var request, out var error))
-                {
-                    StatusText.Text = error;
-                    if (messageType == "preflightBasket")
-                    {
-                        await PublishTerminalPreflightAsync(new SyntheticPreflightResult(
-                            false,
-                            null,
-                            [new SyntheticPreflightFailure("", error)]));
-                    }
-                    else
-                    {
-                        await PublishTerminalExecutionErrorAsync(error);
-                    }
-                    return;
-                }
+            await SyntheticTradingBrowserMessageHandler.HandleAsync(
+                e.WebMessageAsJson,
+                HandleTerminalBrowserRequestAsync,
+                RejectTerminalBrowserRequestAsync);
+        }
+        catch (Exception ex) when (SyntheticTradingBrowserRequestParser.IsSemanticJsonException(ex))
+        {
+            await RejectTerminalBrowserRequestAsync($"Browser request was rejected: {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            await RejectTerminalBrowserRequestAsync($"Browser request failed: {ex.Message}");
+        }
+    }
 
-                switch (request)
-                {
-                    case SyntheticPreflightBasketRequest preflight:
-                        await RunOperationAsync(
-                            "Preflighting synthetic basket",
-                            token => PreflightSyntheticBasketAsync(preflight.Side, preflight.BasketNotional, token));
-                        break;
-                    case SyntheticExecuteBasketRequest execute:
-                        await ExecuteSyntheticBasketAsync(execute.TicketId);
-                        break;
-                    case SyntheticRefreshExecutionsRequest:
-                        await RunOperationAsync("Refreshing synthetic executions", RefreshSyntheticExecutionsAsync);
-                        break;
-                    case SyntheticCloseBasketRequest close:
-                        await RunOperationAsync(
-                            "Closing synthetic basket",
-                            token => CloseSyntheticBasketAsync(close.ExecutionId, token));
-                        break;
-                }
-                return;
-            }
-
-            if (type.GetString() == "cancelMarginPreview")
-            {
+    private async Task HandleTerminalBrowserRequestAsync(SyntheticTradingBrowserRequest request)
+    {
+        switch (request)
+        {
+            case SyntheticPreflightBasketRequest preflight:
+                await RunOperationAsync(
+                    "Preflighting synthetic basket",
+                    token => PreflightSyntheticBasketAsync(preflight.Side, preflight.BasketNotional, token));
+                break;
+            case SyntheticExecuteBasketRequest execute:
+                await ExecuteSyntheticBasketAsync(execute.TicketId);
+                break;
+            case SyntheticRefreshExecutionsRequest:
+                await RunOperationAsync("Refreshing synthetic executions", RefreshSyntheticExecutionsAsync);
+                break;
+            case SyntheticCloseBasketRequest close:
+                await RunOperationAsync(
+                    "Closing synthetic basket",
+                    token => CloseSyntheticBasketAsync(close.ExecutionId, token));
+                break;
+            case SyntheticCancelMarginPreviewRequest:
                 await ResetMarginPreviewContextAsync(
                     clearBasket: false,
                     reason: SyntheticMarginPreviewInput.InvalidReason,
                     releaseBusy: true);
-                return;
-            }
-            if (type.GetString() == "previewMargins")
-            {
-                decimal? requestedNotional = root.TryGetProperty("basketNotional", out var marginNotional) &&
-                                             marginNotional.TryGetDecimal(out var parsedMarginNotional)
-                    ? parsedMarginNotional
-                    : null;
+                break;
+            case SyntheticPreviewMarginsRequest previewMargins:
                 if (!SyntheticMarginPreviewInput.TryValidate(
-                        requestedNotional,
+                        previewMargins.BasketNotional,
                         out var validatedNotional,
                         out var inputError))
                 {
@@ -1499,21 +1511,26 @@ public partial class CapComTerminalWindow : Window
                         clearBasket: false,
                         reason: inputError,
                         releaseBusy: true);
-                    return;
+                    break;
                 }
                 ScheduleMarginPreview(validatedNotional);
-                return;
-            }
-            if (type.GetString() != "previewOrder") return;
-            var side = root.TryGetProperty("side", out var sideValue) ? sideValue.GetString() ?? "BUY" : "BUY";
-            var basketNotional = root.TryGetProperty("basketNotional", out var notionalValue) && notionalValue.TryGetDecimal(out var parsed)
-                ? parsed
-                : 0m;
-            PreviewSyntheticOrder(side, basketNotional);
+                break;
+            case SyntheticPreviewOrderRequest previewOrder:
+                PreviewSyntheticOrder(previewOrder.Side, previewOrder.BasketNotional);
+                break;
         }
-        catch (JsonException ex)
+    }
+
+    private async Task RejectTerminalBrowserRequestAsync(string error)
+    {
+        _windowLifetime.TryApply(() => StatusText.Text = error);
+        try
         {
-            StatusText.Text = $"Order preview request was invalid: {ex.Message}";
+            await PublishTerminalExecutionErrorAsync(error);
+        }
+        catch (Exception ex)
+        {
+            _windowLifetime.TryApply(() => StatusText.Text = $"{error} ({ex.Message})");
         }
     }
 
@@ -1559,9 +1576,23 @@ public partial class CapComTerminalWindow : Window
     {
         base.OnClosing(e);
         if (e.Cancel) return;
-        CancelMarginPreviewRequest();
-        _tradingCoordinator.CancelPendingOperations();
-        _windowLifetime.BeginClosing();
+        if (!_tradingLifecycle.RequestClose(
+                () =>
+                {
+                    CancelMarginPreviewRequest();
+                    _tradingCoordinator.CancelPendingOperations();
+                    _windowLifetime.BeginClosing();
+                },
+                () =>
+                {
+                    if (!Dispatcher.HasShutdownStarted)
+                    {
+                        _ = Dispatcher.InvokeAsync(Close);
+                    }
+                }))
+        {
+            e.Cancel = true;
+        }
     }
 
     protected override void OnClosed(EventArgs e)

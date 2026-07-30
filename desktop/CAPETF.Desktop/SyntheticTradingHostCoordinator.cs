@@ -16,8 +16,36 @@ internal sealed record SyntheticRefreshExecutionsRequest
 internal sealed record SyntheticCloseBasketRequest(string ExecutionId)
     : SyntheticTradingBrowserRequest;
 
+internal sealed record SyntheticCancelMarginPreviewRequest
+    : SyntheticTradingBrowserRequest;
+
+internal sealed record SyntheticPreviewMarginsRequest(decimal BasketNotional)
+    : SyntheticTradingBrowserRequest;
+
+internal sealed record SyntheticPreviewOrderRequest(string Side, decimal BasketNotional)
+    : SyntheticTradingBrowserRequest;
+
 internal static class SyntheticTradingBrowserRequestParser
 {
+    public static bool TryParse(
+        string json,
+        out SyntheticTradingBrowserRequest? request,
+        out string error)
+    {
+        request = null;
+        error = "";
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return TryParse(document.RootElement, out request, out error);
+        }
+        catch (Exception exception) when (IsSemanticJsonException(exception))
+        {
+            error = $"Browser request is invalid: {exception.Message}";
+            return false;
+        }
+    }
+
     public static bool TryParse(
         JsonElement root,
         out SyntheticTradingBrowserRequest? request,
@@ -93,6 +121,38 @@ internal static class SyntheticTradingBrowserRequestParser
                 request = new SyntheticCloseBasketRequest(executionIdValue.GetString()!);
                 return true;
 
+            case "cancelMarginPreview":
+                if (!HasOnlyProperties(root, "type"))
+                {
+                    error = "Margin preview cancellation does not accept input data.";
+                    return false;
+                }
+                request = new SyntheticCancelMarginPreviewRequest();
+                return true;
+
+            case "previewMargins":
+                if (!HasOnlyProperties(root, "type", "basketNotional")
+                    || !TryGetDecimal(root, "basketNotional", out var marginNotional))
+                {
+                    error = "Margin preview requires a numeric basket notional.";
+                    return false;
+                }
+                request = new SyntheticPreviewMarginsRequest(marginNotional);
+                return true;
+
+            case "previewOrder":
+                if (!HasOnlyProperties(root, "type", "side", "basketNotional")
+                    || !root.TryGetProperty("side", out var orderSideValue)
+                    || orderSideValue.ValueKind != JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(orderSideValue.GetString())
+                    || !TryGetDecimal(root, "basketNotional", out var orderNotional))
+                {
+                    error = "Order preview requires a side and numeric basket notional.";
+                    return false;
+                }
+                request = new SyntheticPreviewOrderRequest(orderSideValue.GetString()!, orderNotional);
+                return true;
+
             default:
                 error = "Unsupported trading request.";
                 return false;
@@ -102,7 +162,9 @@ internal static class SyntheticTradingBrowserRequestParser
     private static bool HasOnlyProperties(JsonElement root, params string[] allowed)
     {
         var allowedSet = new HashSet<string>(allowed, StringComparer.Ordinal);
-        return root.EnumerateObject().All(property => allowedSet.Contains(property.Name));
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        return root.EnumerateObject().All(property =>
+            allowedSet.Contains(property.Name) && seen.Add(property.Name));
     }
 
     private static bool TryGetGuid(JsonElement root, string propertyName, out Guid value)
@@ -111,6 +173,44 @@ internal static class SyntheticTradingBrowserRequestParser
         return root.TryGetProperty(propertyName, out var property)
             && property.ValueKind == JsonValueKind.String
             && Guid.TryParse(property.GetString(), out value);
+    }
+
+    private static bool TryGetDecimal(JsonElement root, string propertyName, out decimal value)
+    {
+        value = default;
+        return root.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.Number
+            && property.TryGetDecimal(out value);
+    }
+
+    internal static bool IsSemanticJsonException(Exception exception) =>
+        exception is JsonException or InvalidOperationException or FormatException or OverflowException;
+}
+
+internal static class SyntheticTradingBrowserMessageHandler
+{
+    public static async Task HandleAsync(
+        string json,
+        Func<SyntheticTradingBrowserRequest, Task> handleRequest,
+        Func<string, Task> rejectRequest)
+    {
+        ArgumentNullException.ThrowIfNull(handleRequest);
+        ArgumentNullException.ThrowIfNull(rejectRequest);
+
+        if (!SyntheticTradingBrowserRequestParser.TryParse(json, out var request, out var error))
+        {
+            await rejectRequest(error);
+            return;
+        }
+
+        try
+        {
+            await handleRequest(request!);
+        }
+        catch (Exception exception) when (SyntheticTradingBrowserRequestParser.IsSemanticJsonException(exception))
+        {
+            await rejectRequest($"Browser request was rejected: {exception.Message}");
+        }
     }
 }
 
@@ -203,6 +303,14 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
         SyntheticHostExecution execution,
         Func<SyntheticExecutionRecord, Task> publishProgress,
         Func<IReadOnlyList<SyntheticExecutionRecord>, Task> publishExecutions,
+        CancellationToken cancellationToken) =>
+        await ExecuteAsync(execution, publishProgress, publishExecutions, null, cancellationToken);
+
+    public async Task<SyntheticExecutionRecord> ExecuteAsync(
+        SyntheticHostExecution execution,
+        Func<SyntheticExecutionRecord, Task> publishProgress,
+        Func<IReadOnlyList<SyntheticExecutionRecord>, Task> publishExecutions,
+        Action? mutationDispatching,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(execution);
@@ -219,6 +327,7 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
             var result = await _executionService.ExecuteAsync(
                 execution.Ticket,
                 (record, persistenceToken) => PersistThenPublishAsync(record, publishProgress, persistenceToken),
+                mutationDispatching,
                 linked.Token);
             await PublishStoredExecutionsAsync(publishExecutions, CancellationToken.None);
             return result;
@@ -233,6 +342,14 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
         string executionId,
         Func<SyntheticExecutionRecord, Task> publishProgress,
         Func<IReadOnlyList<SyntheticExecutionRecord>, Task> publishExecutions,
+        CancellationToken cancellationToken) =>
+        await CloseAsync(executionId, publishProgress, publishExecutions, null, cancellationToken);
+
+    public async Task<SyntheticExecutionRecord> CloseAsync(
+        string executionId,
+        Func<SyntheticExecutionRecord, Task> publishProgress,
+        Func<IReadOnlyList<SyntheticExecutionRecord>, Task> publishExecutions,
+        Action? mutationDispatching,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(executionId)) throw new ArgumentException("An execution ID is required.", nameof(executionId));
@@ -250,6 +367,7 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
             var result = await _executionService.CloseAsync(
                 record,
                 (transition, persistenceToken) => PersistThenPublishAsync(transition, publishProgress, persistenceToken),
+                mutationDispatching,
                 linked.Token);
             await PublishStoredExecutionsAsync(publishExecutions, CancellationToken.None);
             return result;
