@@ -23,12 +23,18 @@ public static class SyntheticTradingTests
         ExplicitRejectionStopsUnsentLegs();
         MalformedAcknowledgementStopsWithoutRetry();
         ConfirmationTimeoutIsUnknownWithoutRetry();
-        NetworkFailureBeforeAcknowledgementStopsWithoutRetry();
+        GenericCreateFailureIsUnknownWithoutRetry();
         AmbiguousMutationFailureIsUnknownWithoutRetry();
         CancellationStopsUnsentLegsAfterAcceptedLeg();
         PartialSuccessRemainsOpenWithoutRollback();
         CloseConfirmsOnlyTrackedOpenDealIds();
         PartialClosePreservesRemainingOpenLeg();
+        GenericCloseFailureIsUnknownAndCannotBeRetriedBlindly();
+        MalformedCloseAcknowledgementIsUnknownAndCannotBeRetriedBlindly();
+        CreateAcknowledgementPersistenceIgnoresCallerCancellation();
+        AcceptedCreatePersistenceIgnoresCallerCancellation();
+        CloseAcknowledgementPersistenceIgnoresCallerCancellation();
+        AcceptedClosePersistenceIgnoresCallerCancellation();
         ProductionTransportDisablesAutomaticRedirects();
         LiveMutationIsRejectedBeforeItIsSent();
         DemoPositionRequestUsesCapitalContract();
@@ -202,7 +208,8 @@ public static class SyntheticTradingTests
         var result = Execute(gateway, "AAPL", "MSFT");
 
         AssertSequence(gateway.Calls, "POST:AAPL");
-        AssertEqual(SyntheticExecutionLegState.Rejected, result.Legs[0].State, "malformed acknowledgement state");
+        AssertEqual(SyntheticExecutionState.NeedsAttention, result.State, "malformed acknowledgement basket state");
+        AssertEqual(SyntheticExecutionLegState.Unknown, result.Legs[0].State, "malformed acknowledgement state");
         AssertContains(result.Legs[0].Message, "deal reference", "malformed acknowledgement message");
         AssertEqual(1, gateway.PostCalls.Count, "malformed acknowledgement must not retry POST");
     }
@@ -229,15 +236,15 @@ public static class SyntheticTradingTests
         AssertEqual(1, gateway.PostCalls.Count, "confirmation timeout must not retry POST");
     }
 
-    private static void NetworkFailureBeforeAcknowledgementStopsWithoutRetry()
+    private static void GenericCreateFailureIsUnknownWithoutRetry()
     {
         var gateway = new ScriptedTradingGateway();
-        gateway.PostResults.Enqueue(() => Task.FromException<CapitalDealAcknowledgement>(new HttpRequestException("offline before send")));
+        gateway.PostResults.Enqueue(() => Task.FromException<CapitalDealAcknowledgement>(new InvalidOperationException("connection reset after dispatch")));
 
         var result = Execute(gateway, "AAPL", "MSFT");
 
-        AssertEqual(SyntheticExecutionState.Rejected, result.State, "known failed submission state");
-        AssertEqual(SyntheticExecutionLegState.Rejected, result.Legs[0].State, "known failed leg state");
+        AssertEqual(SyntheticExecutionState.NeedsAttention, result.State, "generic create failure basket state");
+        AssertEqual(SyntheticExecutionLegState.Unknown, result.Legs[0].State, "generic create failure leg state");
         AssertEqual(SyntheticExecutionLegState.Pending, result.Legs[1].State, "network failure stops unsent legs");
         AssertEqual(1, gateway.PostCalls.Count, "network failure must not retry POST");
     }
@@ -348,6 +355,148 @@ public static class SyntheticTradingTests
         AssertEqual(2, gateway.CloseCalls.Count, "failed close must not retry or continue");
     }
 
+    private static void GenericCloseFailureIsUnknownAndCannotBeRetriedBlindly()
+    {
+        var gateway = AcceptedExecutionGateway("AAPL");
+        var service = CreateExecutionService(gateway);
+        var open = service.ExecuteAsync(CreateExecutionTicket("AAPL"), IgnoreProgress, default).GetAwaiter().GetResult();
+        gateway.ClearCalls();
+        gateway.CloseResults.Enqueue(() => Task.FromException<CapitalDealAcknowledgement>(
+            new InvalidOperationException("connection reset after close dispatch")));
+
+        var unknown = service.CloseAsync(open, IgnoreProgress, default).GetAwaiter().GetResult();
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, unknown.State, "generic close failure basket state");
+        AssertEqual(SyntheticExecutionLegState.Unknown, unknown.Legs[0].State, "generic close failure leg state");
+        AssertEqual(1, gateway.CloseCalls.Count, "generic close failure must not retry DELETE");
+        gateway.ClearCalls();
+
+        service.CloseAsync(unknown, IgnoreProgress, default).GetAwaiter().GetResult();
+
+        AssertEqual(0, gateway.CloseCalls.Count, "unknown close outcome must not permit a blind second DELETE");
+    }
+
+    private static void MalformedCloseAcknowledgementIsUnknownAndCannotBeRetriedBlindly()
+    {
+        var gateway = AcceptedExecutionGateway("AAPL");
+        var service = CreateExecutionService(gateway);
+        var open = service.ExecuteAsync(CreateExecutionTicket("AAPL"), IgnoreProgress, default).GetAwaiter().GetResult();
+        gateway.ClearCalls();
+        gateway.CloseResults.Enqueue(() => Task.FromResult(new CapitalDealAcknowledgement("", "", "")));
+
+        var unknown = service.CloseAsync(open, IgnoreProgress, default).GetAwaiter().GetResult();
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, unknown.State, "malformed close acknowledgement basket state");
+        AssertEqual(SyntheticExecutionLegState.Unknown, unknown.Legs[0].State, "malformed close acknowledgement leg state");
+        AssertContains(unknown.Legs[0].Message, "deal reference", "malformed close acknowledgement message");
+        AssertEqual(1, gateway.CloseCalls.Count, "malformed close acknowledgement must not retry DELETE");
+        gateway.ClearCalls();
+
+        service.CloseAsync(unknown, IgnoreProgress, default).GetAwaiter().GetResult();
+
+        AssertEqual(0, gateway.CloseCalls.Count, "malformed close outcome must not permit a blind second DELETE");
+    }
+
+    private static void CreateAcknowledgementPersistenceIgnoresCallerCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() =>
+        {
+            cancellation.Cancel();
+            return Task.FromResult(Acknowledgement("o_aapl"));
+        });
+        var persisted = new List<SyntheticExecutionRecord>();
+
+        var result = CreateExecutionService(gateway).ExecuteAsync(
+            CreateExecutionTicket("AAPL", "MSFT"),
+            CaptureAndHonorCancellation(persisted),
+            cancellation.Token).GetAwaiter().GetResult();
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, result.State, "cancelled acknowledged create basket state");
+        AssertEqual(SyntheticExecutionLegState.Unknown, result.Legs[0].State, "cancelled acknowledged create outcome");
+        AssertEqual("o_aapl", result.Legs[0].DealReference, "acknowledgement reference must survive cancellation");
+        AssertTrue(persisted.Any(record => record.Legs[0].State == SyntheticExecutionLegState.Confirming), "acknowledgement state must be critically persisted");
+        AssertTrue(persisted.Any(record => record.Legs[0].State == SyntheticExecutionLegState.Unknown), "unknown outcome must be critically persisted");
+        AssertEqual(0, gateway.ConfirmCalls.Count, "cancellation before confirmation stops polling");
+        AssertEqual(1, gateway.PostCalls.Count, "acknowledged mutation must not be retried");
+    }
+
+    private static void AcceptedCreatePersistenceIgnoresCallerCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_aapl")));
+        gateway.ConfirmResults["o_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() =>
+            {
+                cancellation.Cancel();
+                return Task.FromResult(AcceptedConfirmation("o_aapl", "d_aapl"));
+            }]);
+        var persisted = new List<SyntheticExecutionRecord>();
+
+        var result = CreateExecutionService(gateway).ExecuteAsync(
+            CreateExecutionTicket("AAPL", "MSFT"),
+            CaptureAndHonorCancellation(persisted),
+            cancellation.Token).GetAwaiter().GetResult();
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, result.State, "cancelled accepted create basket state");
+        AssertEqual(SyntheticExecutionLegState.Open, result.Legs[0].State, "accepted leg remains open after cancellation");
+        AssertEqual(SyntheticExecutionLegState.Pending, result.Legs[1].State, "cancellation stops future create mutations");
+        AssertTrue(persisted.Any(record => record.Legs[0].State == SyntheticExecutionLegState.Open), "accepted open state must be critically persisted");
+        AssertSequence(gateway.Calls, "POST:AAPL", "CONFIRM:o_aapl");
+    }
+
+    private static void CloseAcknowledgementPersistenceIgnoresCallerCancellation()
+    {
+        var gateway = AcceptedExecutionGateway("AAPL");
+        var service = CreateExecutionService(gateway);
+        var open = service.ExecuteAsync(CreateExecutionTicket("AAPL"), IgnoreProgress, default).GetAwaiter().GetResult();
+        gateway.ClearCalls();
+        using var cancellation = new CancellationTokenSource();
+        gateway.CloseResults.Enqueue(() =>
+        {
+            cancellation.Cancel();
+            return Task.FromResult(Acknowledgement("c_aapl"));
+        });
+        var persisted = new List<SyntheticExecutionRecord>();
+
+        var result = service.CloseAsync(open, CaptureAndHonorCancellation(persisted), cancellation.Token).GetAwaiter().GetResult();
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, result.State, "cancelled acknowledged close basket state");
+        AssertEqual(SyntheticExecutionLegState.Unknown, result.Legs[0].State, "cancelled acknowledged close outcome");
+        AssertEqual("c_aapl", result.Legs[0].CloseDealReference, "close acknowledgement must survive cancellation");
+        AssertTrue(persisted.Any(record => record.Legs[0].CloseDealReference == "c_aapl"), "close acknowledgement state must be critically persisted");
+        AssertTrue(persisted.Any(record => record.Legs[0].State == SyntheticExecutionLegState.Unknown), "unknown close outcome must be critically persisted");
+        AssertEqual(0, gateway.ConfirmCalls.Count, "cancellation before close confirmation stops polling");
+        AssertEqual(1, gateway.CloseCalls.Count, "acknowledged close must not be retried");
+    }
+
+    private static void AcceptedClosePersistenceIgnoresCallerCancellation()
+    {
+        var gateway = AcceptedExecutionGateway("AAPL", "MSFT");
+        var service = CreateExecutionService(gateway);
+        var open = service.ExecuteAsync(CreateExecutionTicket("AAPL", "MSFT"), IgnoreProgress, default).GetAwaiter().GetResult();
+        gateway.ClearCalls();
+        using var cancellation = new CancellationTokenSource();
+        gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_aapl")));
+        gateway.ConfirmResults["c_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() =>
+            {
+                cancellation.Cancel();
+                return Task.FromResult(ClosedConfirmation("c_aapl", "d_aapl"));
+            }]);
+        var persisted = new List<SyntheticExecutionRecord>();
+
+        var result = service.CloseAsync(open, CaptureAndHonorCancellation(persisted), cancellation.Token).GetAwaiter().GetResult();
+
+        AssertEqual(SyntheticExecutionState.PartiallyClosed, result.State, "cancelled accepted close basket state");
+        AssertEqual(SyntheticExecutionLegState.Closed, result.Legs[0].State, "accepted close remains closed after cancellation");
+        AssertEqual(SyntheticExecutionLegState.Open, result.Legs[1].State, "cancellation stops future close mutations");
+        AssertTrue(persisted.Any(record => record.Legs[0].State == SyntheticExecutionLegState.Closed), "accepted closed state must be critically persisted");
+        AssertSequence(gateway.Calls, "CLOSE:d_aapl", "CONFIRM:c_aapl");
+    }
+
     private static SyntheticPreflightInput CreatePreflightInput(
         SyntheticBasket? basket = null,
         DateTimeOffset? now = null) =>
@@ -412,6 +561,13 @@ public static class SyntheticTradingTests
 
     private static SyntheticExecutionProgress Capture(List<SyntheticExecutionRecord> records) => (record, _) =>
     {
+        records.Add(record);
+        return Task.CompletedTask;
+    };
+
+    private static SyntheticExecutionProgress CaptureAndHonorCancellation(List<SyntheticExecutionRecord> records) => (record, cancellationToken) =>
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         records.Add(record);
         return Task.CompletedTask;
     };

@@ -101,6 +101,7 @@ public sealed class SyntheticBasketExecutionService
         var record = CreateRecord(ticket);
         await progress(record, cancellationToken);
         var cancelled = false;
+        var mutationDispatched = false;
 
         for (var index = 0; index < record.Legs.Count; index++)
         {
@@ -123,12 +124,13 @@ public sealed class SyntheticBasketExecutionService
                 record.Legs.Any(leg => leg.State == SyntheticExecutionLegState.Open)
                     ? SyntheticExecutionState.PartiallyOpen
                     : SyntheticExecutionState.Submitting);
-            await progress(record, cancellationToken);
+            await progress(record, mutationDispatched ? CancellationToken.None : cancellationToken);
 
             CapitalDealAcknowledgement acknowledgement;
             try
             {
                 var leg = record.Legs[index];
+                mutationDispatched = true;
                 acknowledgement = await _gateway.CreatePositionAsync(
                     new CapitalPositionRequest(leg.Epic, leg.Direction, leg.Quantity),
                     cancellationToken);
@@ -146,7 +148,7 @@ public sealed class SyntheticBasketExecutionService
             }
             catch (Exception exception)
             {
-                record = MarkLeg(record, index, SyntheticExecutionLegState.Rejected, $"{record.Legs[index].Epic} submission failed: {exception.Message}");
+                record = MarkLeg(record, index, SyntheticExecutionLegState.Unknown, $"{record.Legs[index].Epic} submission failed with an unknown outcome: {exception.Message}");
                 break;
             }
 
@@ -158,7 +160,7 @@ public sealed class SyntheticBasketExecutionService
 
             if (string.IsNullOrWhiteSpace(acknowledgement.DealReference))
             {
-                record = MarkLeg(record, index, SyntheticExecutionLegState.Rejected, $"{record.Legs[index].Epic} submission returned no deal reference.");
+                record = MarkLeg(record, index, SyntheticExecutionLegState.Unknown, $"{record.Legs[index].Epic} submission returned no deal reference; the outcome is unknown.");
                 break;
             }
 
@@ -171,12 +173,12 @@ public sealed class SyntheticBasketExecutionService
                     DealReference = acknowledgement.DealReference,
                     UpdatedUtc = _clock.UtcNow,
                 });
-            await progress(record, cancellationToken);
+            await progress(record, CancellationToken.None);
 
             var confirmation = await PollConfirmationAsync(acknowledgement.DealReference, cancellationToken);
-            if (confirmation.Cancelled) cancelled = true;
+            if (confirmation.Cancelled || cancellationToken.IsCancellationRequested) cancelled = true;
             record = ApplyOpenConfirmation(record, index, confirmation);
-            await progress(record, cancelled ? CancellationToken.None : cancellationToken);
+            await progress(record, CancellationToken.None);
             if (record.Legs[index].State != SyntheticExecutionLegState.Open) break;
         }
 
@@ -185,7 +187,7 @@ public sealed class SyntheticBasketExecutionService
             State = DetermineExecutionState(record, cancelled),
             UpdatedUtc = _clock.UtcNow,
         };
-        await progress(record, cancelled ? CancellationToken.None : cancellationToken);
+        await progress(record, mutationDispatched ? CancellationToken.None : cancellationToken);
         return record;
     }
 
@@ -205,6 +207,7 @@ public sealed class SyntheticBasketExecutionService
         var current = record with { State = SyntheticExecutionState.Closing, UpdatedUtc = _clock.UtcNow };
         await progress(current, cancellationToken);
         var cancelled = false;
+        var mutationDispatched = false;
 
         foreach (var index in openIndexes)
         {
@@ -219,11 +222,12 @@ public sealed class SyntheticBasketExecutionService
                 index,
                 leg => leg with { State = SyntheticExecutionLegState.Closing, Message = "", UpdatedUtc = _clock.UtcNow },
                 SyntheticExecutionState.Closing);
-            await progress(current, cancellationToken);
+            await progress(current, mutationDispatched ? CancellationToken.None : cancellationToken);
 
             CapitalDealAcknowledgement acknowledgement;
             try
             {
+                mutationDispatched = true;
                 acknowledgement = await _gateway.ClosePositionAsync(current.Legs[index].DealId, cancellationToken);
             }
             catch (CapitalMutationOutcomeUnknownException exception)
@@ -239,7 +243,7 @@ public sealed class SyntheticBasketExecutionService
             }
             catch (Exception exception)
             {
-                current = MarkLeg(current, index, SyntheticExecutionLegState.Open, $"{current.Legs[index].Epic} close failed: {exception.Message}");
+                current = MarkLeg(current, index, SyntheticExecutionLegState.Unknown, $"{current.Legs[index].Epic} close failed with an unknown outcome: {exception.Message}");
                 break;
             }
 
@@ -251,7 +255,7 @@ public sealed class SyntheticBasketExecutionService
 
             if (string.IsNullOrWhiteSpace(acknowledgement.DealReference))
             {
-                current = MarkLeg(current, index, SyntheticExecutionLegState.Open, $"{current.Legs[index].Epic} close returned no deal reference.");
+                current = MarkLeg(current, index, SyntheticExecutionLegState.Unknown, $"{current.Legs[index].Epic} close returned no deal reference; the outcome is unknown.");
                 break;
             }
 
@@ -259,17 +263,17 @@ public sealed class SyntheticBasketExecutionService
                 current,
                 index,
                 leg => leg with { CloseDealReference = acknowledgement.DealReference, UpdatedUtc = _clock.UtcNow });
-            await progress(current, cancellationToken);
+            await progress(current, CancellationToken.None);
 
             var confirmation = await PollConfirmationAsync(acknowledgement.DealReference, cancellationToken);
-            if (confirmation.Cancelled) cancelled = true;
+            if (confirmation.Cancelled || cancellationToken.IsCancellationRequested) cancelled = true;
             current = ApplyCloseConfirmation(current, index, confirmation);
-            await progress(current, cancelled ? CancellationToken.None : cancellationToken);
+            await progress(current, CancellationToken.None);
             if (current.Legs[index].State != SyntheticExecutionLegState.Closed) break;
         }
 
         current = current with { State = DetermineCloseState(current, cancelled), UpdatedUtc = _clock.UtcNow };
-        await progress(current, cancelled ? CancellationToken.None : cancellationToken);
+        await progress(current, mutationDispatched ? CancellationToken.None : cancellationToken);
         return current;
     }
 
