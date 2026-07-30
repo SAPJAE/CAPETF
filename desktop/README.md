@@ -10,6 +10,16 @@ Start the self-contained Windows executable directly:
 
 The package includes the .NET 8 Windows Desktop runtime. Microsoft Edge WebView2 Runtime remains an application prerequisite and is normally installed with current Windows releases. Browser state is stored per user under `%LOCALAPPDATA%\CAPETF\WebView2`, outside the unpacked release.
 
+## Verify the desktop build
+
+Run the full test entrypoint with no filter. It executes both the synthetic trading lifecycle suite and the basket/chart suite, and exits nonzero if either fails:
+
+```powershell
+dotnet run --project .\CAPETF.Desktop.Tests\CAPETF.Desktop.Tests.csproj -c Release
+```
+
+For a focused run, append `-- trading` or `-- builder`.
+
 The release stores credentials with Windows DPAPI for the current Windows user. On launch, it uses saved Capital.com credentials when they are available, loads the selected universe, and starts the applicable market-data stream after a basket is built.
 
 ## Terminal workflow

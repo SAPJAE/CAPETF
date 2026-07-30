@@ -12,6 +12,8 @@ public static class SyntheticTradingTests
 {
     public static void RunAll()
     {
+        DefaultTestSuiteSelectionRunsBothSuitesExactlyOnce();
+        TestSuiteSelectionPropagatesEitherSuiteFailure();
         AcceptedBasketSurvivesRestartReconcilesAndClosesWithoutDuplicateMutations();
         PartialExecutionSurvivesRestartWithoutSubmittingOrClosingRemainingLegs();
         SyntheticTradingWorkspaceHasProfessionalDemoContract();
@@ -92,22 +94,83 @@ public static class SyntheticTradingTests
         ReconciliationMapsRejectedOpenPendingToNeedsAttentionAndPersistsIt();
     }
 
+    private static void DefaultTestSuiteSelectionRunsBothSuitesExactlyOnce()
+    {
+        var calls = new List<string>();
+
+        var completed = TestSuiteRunner.Run(
+            [],
+            () => calls.Add("trading"),
+            () => calls.Add("builder"));
+
+        AssertEqual("trading|builder", string.Join("|", calls), "default test entrypoint executes both suites once");
+        AssertEqual("SyntheticTrading|SyntheticBasketBuilder", string.Join("|", completed), "default test entrypoint reports both suites");
+
+        calls.Clear();
+        completed = TestSuiteRunner.Run(
+            ["trading"],
+            () => calls.Add("trading"),
+            () => calls.Add("builder"));
+        AssertEqual("trading", string.Join("|", calls), "focused trading filter");
+        AssertEqual("SyntheticTrading", string.Join("|", completed), "focused trading completion");
+
+        calls.Clear();
+        completed = TestSuiteRunner.Run(
+            ["builder"],
+            () => calls.Add("trading"),
+            () => calls.Add("builder"));
+        AssertEqual("builder", string.Join("|", calls), "focused builder filter");
+        AssertEqual("SyntheticBasketBuilder", string.Join("|", completed), "focused builder completion");
+    }
+
+    private static void TestSuiteSelectionPropagatesEitherSuiteFailure()
+    {
+        var builderCalls = 0;
+        var tradingFailure = AssertThrows<InvalidOperationException>(
+            () => TestSuiteRunner.Run(
+                [],
+                () => throw new InvalidOperationException("trading failed"),
+                () => builderCalls++),
+            "default test entrypoint must fail when trading fails");
+        AssertEqual("trading failed", tradingFailure.Message, "trading suite failure identity");
+        AssertEqual(0, builderCalls, "a failed trading suite stops the full run");
+
+        var builderFailure = AssertThrows<InvalidOperationException>(
+            () => TestSuiteRunner.Run(
+                [],
+                () => { },
+                () => throw new InvalidOperationException("builder failed")),
+            "default test entrypoint must fail when builder fails");
+        AssertEqual("builder failed", builderFailure.Message, "builder suite failure identity");
+    }
+
     private static void AcceptedBasketSurvivesRestartReconcilesAndClosesWithoutDuplicateMutations()
     {
         using var directory = new TemporaryDirectory();
-        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "executions.json"));
+        var storePath = Path.Combine(directory.Path, "executions.json");
         var gateway = AcceptedExecutionGateway("ALPHA", "BETA", "GAMMA");
+        var lifecycleEvents = new List<string>();
+        gateway.ObserveCall = lifecycleEvents.Add;
         var preflight = SyntheticTradePreflight.Build(CreateThreeLegPreflightInput());
         AssertTrue(preflight.IsReady, "accepted lifecycle preflight must be ready");
         AssertTrue(preflight.Ticket is not null, "accepted lifecycle preflight ticket");
         var ticketId = Guid.Parse(preflight.Ticket!.TicketId);
         SyntheticExecutionRecord opened;
 
-        using (var coordinator = CreateHostCoordinator(directory.Path, gateway, store: store))
+        using (var coordinator = SyntheticTradingComposition.CreateCoordinator(
+                   gateway,
+                   storePath,
+                   () => true,
+                   _ => Task.FromResult<IReadOnlyList<CapitalOpenPosition>>([]),
+                   new TestExecutionClock()))
         {
             coordinator.RegisterPreflight(preflight);
             using var execution = coordinator.BeginExecution(ticketId);
-            opened = coordinator.ExecuteAsync(execution, _ => Task.CompletedTask, _ => Task.CompletedTask, default)
+            opened = coordinator.ExecuteAsync(
+                    execution,
+                    record => ObservePersistedProgress(storePath, record, lifecycleEvents),
+                    records => ObservePersistedExecutions(storePath, records, lifecycleEvents),
+                    default)
                 .GetAwaiter().GetResult();
 
             AssertThrows<InvalidOperationException>(
@@ -126,26 +189,54 @@ public static class SyntheticTradingTests
         AssertEqual("o_alpha|o_beta|o_gamma", string.Join("|", opened.Legs.Select(leg => leg.DealReference)), "accepted deal references");
         AssertEqual("d_alpha|d_beta|d_gamma", string.Join("|", opened.Legs.Select(leg => leg.DealId)), "accepted permanent deal IDs");
         AssertEqual(0, Directory.GetFiles(directory.Path, "executions.json.tmp*").Length, "atomic store leaves no temporary file");
-        var persistedOpen = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "accepted execution must persist");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:Submitting|Submitted,Pending,Pending", "POST:ALPHA");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:Submitting|Confirming,Pending,Pending", "CONFIRM:o_alpha");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:PartiallyOpen|Open,Submitted,Pending", "POST:BETA");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:PartiallyOpen|Open,Confirming,Pending", "CONFIRM:o_beta");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:PartiallyOpen|Open,Open,Submitted", "POST:GAMMA");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:PartiallyOpen|Open,Open,Confirming", "CONFIRM:o_gamma");
+        var persistedOpen = AssertSingle(
+            new SyntheticExecutionStore(storePath).LoadAsync(default).GetAwaiter().GetResult(),
+            "accepted execution must persist through a fresh store instance");
         AssertEqual(JsonSerializer.Serialize(opened), JsonSerializer.Serialize(persistedOpen), "open execution survives persistence unchanged");
 
         gateway.ClearCalls();
-        var openPositions = PositionsFor(opened, 0, 1, 2);
-        using var restarted = CreateHostCoordinator(
-            directory.Path,
+        lifecycleEvents.Clear();
+        var restartTime = DateTimeOffset.Parse("2026-07-30T13:00:00Z");
+        IReadOnlyList<CapitalOpenPosition> remotePositions =
+        [
+            new("d_alpha", "ALPHA", "BUY", 20m, 101.25m, 11.25m, "USD", "TRADEABLE"),
+            new("d_beta", "BETA", "SELL", 20m, 101.25m, 12.50m, "USD", "TRADEABLE"),
+            new("d_gamma", "GAMMA", "BUY", 20m, 101.25m, 13.75m, "USD", "TRADEABLE"),
+        ];
+        using var restarted = SyntheticTradingComposition.CreateCoordinator(
             gateway,
-            store: store,
-            getOpenPositions: _ => Task.FromResult(openPositions),
-            clock: new TestExecutionClock(DateTimeOffset.Parse("2026-07-30T13:00:00Z")));
+            storePath,
+            () => true,
+            _ => Task.FromResult(remotePositions),
+            new TestExecutionClock(restartTime));
         var reconciled = AssertSingle(
-            restarted.ReconnectAsync(_ => Task.CompletedTask, default).GetAwaiter().GetResult(),
+            restarted.ReconnectAsync(
+                    records => ObservePersistedExecutions(storePath, records, lifecycleEvents),
+                    default)
+                .GetAwaiter().GetResult(),
             "restart must reconcile the persisted execution");
 
-        AssertEqual(SyntheticExecutionState.Open, reconciled.State, "restart keeps confirmed open positions open");
-        AssertEqual("d_alpha|d_beta|d_gamma", string.Join("|", reconciled.Legs.Select(leg => leg.DealId)), "reconciliation preserves permanent deal IDs");
+        var expectedReconciled = persistedOpen with
+        {
+            UpdatedUtc = restartTime,
+            Legs = persistedOpen.Legs.Select((leg, index) => leg with
+            {
+                UpdatedUtc = restartTime,
+                CurrentUnrealizedProfitLoss = new[] { 11.25m, 12.50m, 13.75m }[index],
+            }).ToArray(),
+        };
+        AssertEqual(JsonSerializer.Serialize(expectedReconciled), JsonSerializer.Serialize(reconciled), "restart preserves every accepted execution field, timestamp, leg order, and deal identity");
         AssertEqual(0, gateway.CreateInvocations, "restart reconciliation must not resubmit positions");
         AssertEqual(0, gateway.CloseInvocations, "restart reconciliation must not close positions");
+        AssertEqual("LIST:Open|Open,Open,Open", string.Join("|", lifecycleEvents), "restart publishes only after reconciled state is persisted");
 
+        lifecycleEvents.Clear();
         foreach (var leg in reconciled.Legs)
         {
             var suffix = leg.Epic.ToLowerInvariant();
@@ -154,7 +245,11 @@ public static class SyntheticTradingTests
                 [() => Task.FromResult(ClosedConfirmation($"c_{suffix}", $"d_{suffix}"))]);
         }
 
-        var closed = restarted.CloseAsync(reconciled.ExecutionId, _ => Task.CompletedTask, _ => Task.CompletedTask, default)
+        var closed = restarted.CloseAsync(
+                reconciled.ExecutionId,
+                record => ObservePersistedProgress(storePath, record, lifecycleEvents),
+                records => ObservePersistedExecutions(storePath, records, lifecycleEvents),
+                default)
             .GetAwaiter().GetResult();
 
         AssertSequence(
@@ -165,15 +260,25 @@ public static class SyntheticTradingTests
         AssertEqual(3, gateway.CloseInvocations, "close submits each tracked position exactly once");
         AssertEqual(SyntheticExecutionState.Closed, closed.State, "accepted lifecycle closes after all confirmations");
         AssertTrue(closed.Legs.All(leg => leg.State == SyntheticExecutionLegState.Closed), "all accepted legs are durably closed");
-        var persistedClosed = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "closed execution must persist");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:Closing|Closing,Open,Open", "CLOSE:d_alpha");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:Closing|Closing,Open,Open", "CONFIRM:c_alpha");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:Closing|Closed,Closing,Open", "CLOSE:d_beta");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:Closing|Closed,Closing,Open", "CONFIRM:c_beta");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:Closing|Closed,Closed,Closing", "CLOSE:d_gamma");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:Closing|Closed,Closed,Closing", "CONFIRM:c_gamma");
+        var persistedClosed = AssertSingle(
+            new SyntheticExecutionStore(storePath).LoadAsync(default).GetAwaiter().GetResult(),
+            "closed execution must persist through a fresh store instance");
         AssertEqual(JsonSerializer.Serialize(closed), JsonSerializer.Serialize(persistedClosed), "closed execution survives persistence unchanged");
     }
 
     private static void PartialExecutionSurvivesRestartWithoutSubmittingOrClosingRemainingLegs()
     {
         using var directory = new TemporaryDirectory();
-        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "executions.json"));
+        var storePath = Path.Combine(directory.Path, "executions.json");
         var gateway = new ScriptedTradingGateway();
+        var lifecycleEvents = new List<string>();
+        gateway.ObserveCall = lifecycleEvents.Add;
         gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("partial-alpha")));
         gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("partial-beta")));
         gateway.ConfirmResults["partial-alpha"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
@@ -184,11 +289,20 @@ public static class SyntheticTradingTests
         var ticketId = Guid.Parse(preflight.Ticket?.TicketId ?? throw new Exception("partial lifecycle preflight ticket missing"));
         SyntheticExecutionRecord partial;
 
-        using (var coordinator = CreateHostCoordinator(directory.Path, gateway, store: store))
+        using (var coordinator = SyntheticTradingComposition.CreateCoordinator(
+                   gateway,
+                   storePath,
+                   () => true,
+                   _ => Task.FromResult<IReadOnlyList<CapitalOpenPosition>>([]),
+                   new TestExecutionClock()))
         {
             coordinator.RegisterPreflight(preflight);
             using var execution = coordinator.BeginExecution(ticketId);
-            partial = coordinator.ExecuteAsync(execution, _ => Task.CompletedTask, _ => Task.CompletedTask, default)
+            partial = coordinator.ExecuteAsync(
+                    execution,
+                    record => ObservePersistedProgress(storePath, record, lifecycleEvents),
+                    records => ObservePersistedExecutions(storePath, records, lifecycleEvents),
+                    default)
                 .GetAwaiter().GetResult();
         }
 
@@ -202,29 +316,53 @@ public static class SyntheticTradingTests
             "partial execution durable leg states");
         AssertEqual("partial-deal-alpha", partial.Legs[0].DealId, "accepted partial leg keeps its permanent deal ID");
         AssertEqual("", partial.Legs[2].DealReference, "unsent third leg has no mutation identity");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:Submitting|Submitted,Pending,Pending", "POST:ALPHA");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:Submitting|Confirming,Pending,Pending", "CONFIRM:partial-alpha");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:PartiallyOpen|Open,Submitted,Pending", "POST:BETA");
+        AssertImmediatelyBefore(lifecycleEvents, "PUBLISH:PartiallyOpen|Open,Confirming,Pending", "CONFIRM:partial-beta");
+        var persistedPartial = AssertSingle(
+            new SyntheticExecutionStore(storePath).LoadAsync(default).GetAwaiter().GetResult(),
+            "partial execution must persist through a fresh store instance");
+        AssertEqual(JsonSerializer.Serialize(partial), JsonSerializer.Serialize(persistedPartial), "complete partial execution survives persistence unchanged");
 
         gateway.ClearCalls();
-        var position = PositionsFor(partial, 0);
-        using var restarted = CreateHostCoordinator(
-            directory.Path,
+        lifecycleEvents.Clear();
+        var restartTime = DateTimeOffset.Parse("2026-07-30T13:00:00Z");
+        IReadOnlyList<CapitalOpenPosition> remotePositions =
+        [
+            new("partial-deal-alpha", "ALPHA", "BUY", 20m, 101.25m, 9.75m, "USD", "TRADEABLE"),
+        ];
+        using var restarted = SyntheticTradingComposition.CreateCoordinator(
             gateway,
-            store: store,
-            getOpenPositions: _ => Task.FromResult(position),
-            clock: new TestExecutionClock(DateTimeOffset.Parse("2026-07-30T13:00:00Z")));
+            storePath,
+            () => true,
+            _ => Task.FromResult(remotePositions),
+            new TestExecutionClock(restartTime));
         var reconciled = AssertSingle(
-            restarted.ReconnectAsync(_ => Task.CompletedTask, default).GetAwaiter().GetResult(),
+            restarted.ReconnectAsync(
+                    records => ObservePersistedExecutions(storePath, records, lifecycleEvents),
+                    default)
+                .GetAwaiter().GetResult(),
             "partial execution must survive restart");
 
-        AssertEqual(SyntheticExecutionState.NeedsAttention, reconciled.State, "restart preserves partial execution attention state");
-        AssertEqual(
-            "Open|Rejected|Pending",
-            string.Join("|", reconciled.Legs.Select(leg => leg.State)),
-            "restart preserves accepted, rejected, and unsent leg states");
-        AssertEqual("partial-deal-alpha", reconciled.Legs[0].DealId, "restart preserves the accepted deal ID");
+        var expectedReconciled = persistedPartial with
+        {
+            UpdatedUtc = restartTime,
+            Legs =
+            [
+                persistedPartial.Legs[0] with { UpdatedUtc = restartTime, CurrentUnrealizedProfitLoss = 9.75m },
+                persistedPartial.Legs[1],
+                persistedPartial.Legs[2],
+            ],
+        };
+        AssertEqual(JsonSerializer.Serialize(expectedReconciled), JsonSerializer.Serialize(reconciled), "restart preserves every partial execution field, timestamp, leg order, and deal reference");
         AssertEqual(0, gateway.Calls.Count, "reconciliation performs no create, confirm, or close mutation");
         AssertEqual(0, gateway.CreateInvocations, "restart does not retry rejected or unsent legs");
         AssertEqual(0, gateway.CloseInvocations, "restart does not auto-close the accepted leg");
-        var persisted = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "reconciled partial execution must persist");
+        AssertEqual("LIST:NeedsAttention|Open,Rejected,Pending", string.Join("|", lifecycleEvents), "partial restart publishes only after reconciled state is persisted");
+        var persisted = AssertSingle(
+            new SyntheticExecutionStore(storePath).LoadAsync(default).GetAwaiter().GetResult(),
+            "reconciled partial execution must persist through a fresh store instance");
         AssertEqual(JsonSerializer.Serialize(reconciled), JsonSerializer.Serialize(persisted), "reconciled partial state is durable");
     }
 
@@ -859,6 +997,10 @@ public static class SyntheticTradingTests
     {
         var source = ReadRepositoryFile("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs");
         var xaml = ReadRepositoryFile("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml");
+        AssertContains(source, "SyntheticTradingComposition.CreateCoordinator", "WPF host production trading composition root");
+        AssertFalse(
+            source.Contains("new SyntheticTradingHostCoordinator", StringComparison.Ordinal),
+            "WPF host must not reconstruct the trading service graph outside the production composition root");
         foreach (var callback in new[]
         {
             "setTerminalPreflight",
@@ -1834,6 +1976,49 @@ public static class SyntheticTradingTests
 
     private static string StateSignature(SyntheticExecutionRecord record) =>
         $"{record.State}|{string.Join(",", record.Legs.Select(leg => leg.State))}";
+
+    private static Task ObservePersistedProgress(
+        string storePath,
+        SyntheticExecutionRecord published,
+        ICollection<string> lifecycleEvents)
+    {
+        var persisted = AssertSingle(
+            new SyntheticExecutionStore(storePath).LoadAsync(default).GetAwaiter().GetResult(),
+            "progress publication requires one persisted execution");
+        AssertEqual(JsonSerializer.Serialize(published), JsonSerializer.Serialize(persisted), "progress must be persisted before publication");
+        lifecycleEvents.Add($"PUBLISH:{StateSignature(published)}");
+        return Task.CompletedTask;
+    }
+
+    private static Task ObservePersistedExecutions(
+        string storePath,
+        IReadOnlyList<SyntheticExecutionRecord> published,
+        ICollection<string> lifecycleEvents)
+    {
+        var persisted = new SyntheticExecutionStore(storePath).LoadAsync(default).GetAwaiter().GetResult();
+        AssertEqual(JsonSerializer.Serialize(published), JsonSerializer.Serialize(persisted), "execution list must be persisted before publication");
+        lifecycleEvents.Add($"LIST:{string.Join(";", published.Select(StateSignature))}");
+        return Task.CompletedTask;
+    }
+
+    private static void AssertImmediatelyBefore(
+        IReadOnlyList<string> events,
+        string expectedPrevious,
+        string target)
+    {
+        var targetIndex = -1;
+        for (var index = 0; index < events.Count; index++)
+        {
+            if (!events[index].Equals(target, StringComparison.Ordinal)) continue;
+            targetIndex = index;
+            break;
+        }
+        if (targetIndex <= 0)
+        {
+            throw new Exception($"lifecycle event '{target}' was missing or had no preceding persistence observation");
+        }
+        AssertEqual(expectedPrevious, events[targetIndex - 1], $"persistence event immediately before {target}");
+    }
 
     private static void AssertExecutionRoundTrips(
         SyntheticExecutionRecord record,
@@ -3220,12 +3405,13 @@ public static class SyntheticTradingTests
         public List<string> CloseCalls { get; } = [];
         public int CreateInvocations { get; private set; }
         public int CloseInvocations { get; private set; }
+        public Action<string>? ObserveCall { get; set; }
 
         public Task<CapitalDealAcknowledgement> CreatePositionAsync(CapitalPositionRequest request, CancellationToken cancellationToken)
         {
             CreateInvocations++;
             cancellationToken.ThrowIfCancellationRequested();
-            Calls.Add($"POST:{request.Epic}");
+            RecordCall($"POST:{request.Epic}");
             PostCalls.Add(request.Epic);
             PostRequests.Add(request);
             return PostResults.Dequeue()();
@@ -3234,7 +3420,7 @@ public static class SyntheticTradingTests
         public Task<CapitalDealConfirmation> GetDealConfirmationAsync(string dealReference, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Calls.Add($"CONFIRM:{dealReference}");
+            RecordCall($"CONFIRM:{dealReference}");
             ConfirmCalls.Add(dealReference);
             return ConfirmResults[dealReference].Dequeue()();
         }
@@ -3243,7 +3429,7 @@ public static class SyntheticTradingTests
         {
             CloseInvocations++;
             cancellationToken.ThrowIfCancellationRequested();
-            Calls.Add($"CLOSE:{dealId}");
+            RecordCall($"CLOSE:{dealId}");
             CloseCalls.Add(dealId);
             return CloseResults.Dequeue()();
         }
@@ -3257,6 +3443,12 @@ public static class SyntheticTradingTests
             CloseCalls.Clear();
             CreateInvocations = 0;
             CloseInvocations = 0;
+        }
+
+        private void RecordCall(string call)
+        {
+            Calls.Add(call);
+            ObserveCall?.Invoke(call);
         }
     }
 

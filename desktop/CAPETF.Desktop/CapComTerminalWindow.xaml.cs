@@ -49,10 +49,9 @@ public partial class CapComTerminalWindow : Window
         _history = new SyntheticHistoryService(_api);
         _marginPreview = new SyntheticMarginPreviewService(new CapitalApiSyntheticMarginDataSource(_api));
         _preflightMarketSnapshots = new SyntheticPreflightMarketSnapshotLoader(_api.GetMarketDetailsAsync);
-        _tradingCoordinator = new SyntheticTradingHostCoordinator(
-            new SyntheticBasketExecutionService(new CapitalTradingGateway(_api)),
-            new SyntheticExecutionStore(SyntheticExecutionStorePath()),
-            new SyntheticPositionReconciler(),
+        _tradingCoordinator = SyntheticTradingComposition.CreateCoordinator(
+            new CapitalTradingGateway(_api),
+            SyntheticTradingComposition.DefaultExecutionStorePath(),
             () => _api.IsDemoTradingSession,
             cancellationToken => _api.GetOpenPositionsAsync(cancellationToken));
         StrategyBox.ItemsSource = SyntheticStrategyCatalog.All;
@@ -1324,12 +1323,6 @@ public partial class CapComTerminalWindow : Window
 
     private static string SavedCredentialLabel(ApiCredentials credentials) =>
         credentials.UseDemo ? "Capital.com demo" : "Capital.com live";
-
-    private static string SyntheticExecutionStorePath() =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CAPETF",
-            "synthetic-executions.json");
 
     private void CancelMarginPreviewRequest()
     {
