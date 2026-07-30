@@ -103,6 +103,10 @@ public static class SyntheticTradingTests
             "id=\"confirmation-legs\"",
             "id=\"partial-execution-ack\"",
             "id=\"confirm-execution\"",
+            "id=\"close-confirmation\"",
+            "id=\"close-confirmation-legs\"",
+            "id=\"partial-close-ack\"",
+            "id=\"confirm-close\"",
             "id=\"refresh-executions\"",
             "setTerminalPreflight",
             "setTerminalExecutions",
@@ -272,6 +276,11 @@ public static class SyntheticTradingTests
             assert.equal(element('trade-readiness').textContent, 'Market closed');
             element('place-buy-basket').click();
             assert.deepEqual(messages.pop(), { type: 'preflightBasket', side: 'BUY', basketNotional: 300 });
+            setTerminalBusy(true, 'Preflighting synthetic basket');
+            setTerminalBusy(false, '');
+            assert.equal(element('place-buy-basket').disabled, false, 'host completion after failure must release the browser lock');
+            element('place-buy-basket').click();
+            assert.deepEqual(messages.pop(), { type: 'preflightBasket', side: 'BUY', basketNotional: 300 });
 
             setTerminalPreflight({
               IsReady: true,
@@ -292,8 +301,36 @@ public static class SyntheticTradingTests
             element('partial-execution-ack').checked = true;
             element('partial-execution-ack').dispatch('change');
             assert.equal(element('confirm-execution').disabled, false);
+            setTerminalData({
+              DrawingIdentity: 'basket-2', Symbol: 'SYN-2', Currency: 'USD', Candles: [],
+              Components: [{ Epic: 'ADBE' }, { Epic: 'CRM' }, { Epic: 'ORCL' }]
+            });
+            assert.equal(element('trade-confirmation').open, false, 'basket replacement must close the stale ticket dialog');
+            assert.equal(element('partial-execution-ack').checked, false, 'basket replacement must clear acknowledgement');
+            assert.equal(element('confirm-execution').disabled, true, 'basket replacement must revoke confirmation');
+            const messagesBeforeStaleConfirm = messages.length;
             element('confirm-execution').click();
-            assert.deepEqual(messages.pop(), { type: 'executeBasket', ticketId: 'host-ticket-1' });
+            assert.equal(messages.length, messagesBeforeStaleConfirm, 'revoked basket A ticket must not be emitted');
+
+            element('place-buy-basket').click();
+            assert.deepEqual(messages.pop(), { type: 'preflightBasket', side: 'BUY', basketNotional: 300 });
+            setTerminalPreflight({
+              IsReady: true,
+              Ticket: {
+                TicketId: 'host-ticket-2', BasketId: 'basket-2', Side: 'BUY', RequestedNotional: 300,
+                EstimatedMargin: 70, MarginCurrency: 'USDd', ExpiresUtc: '2026-07-30T12:04:00Z',
+                Legs: [
+                  { Direction: 'BUY', Epic: 'ADBE', Quantity: 0.1, ReferencePrice: 401.25 },
+                  { Direction: 'BUY', Epic: 'CRM', Quantity: 0.2, ReferencePrice: 252.5 },
+                  { Direction: 'SELL', Epic: 'ORCL', Quantity: 0.3, ReferencePrice: 180.75 }
+                ]
+              },
+              Failures: []
+            });
+            element('partial-execution-ack').checked = true;
+            element('partial-execution-ack').dispatch('change');
+            element('confirm-execution').click();
+            assert.deepEqual(messages.pop(), { type: 'executeBasket', ticketId: 'host-ticket-2' });
 
             setTerminalExecutionProgress({
               ExecutionId: 'host-execution-1', TicketId: 'host-ticket-1', BasketId: 'basket-1', Side: 'BUY',
@@ -310,13 +347,42 @@ public static class SyntheticTradingTests
 
             element('refresh-executions').click();
             assert.deepEqual(messages.pop(), { type: 'refreshExecutions' });
+            setTerminalExecutionProgress({});
+            assert.equal(element('refresh-executions').disabled, false, 'empty progress callback must release operation lock');
+            element('refresh-executions').click();
+            assert.deepEqual(messages.pop(), { type: 'refreshExecutions' });
+            setTerminalExecutionProgress({ Error: 'refresh failed' });
+            assert.equal(element('refresh-executions').disabled, false, 'error progress callback must release operation lock');
+            element('refresh-executions').click();
+            assert.deepEqual(messages.pop(), { type: 'refreshExecutions' });
+            setTerminalExecutions(null);
+            assert.equal(element('refresh-executions').disabled, false, 'empty executions callback must release operation lock');
             setTerminalExecutions([{
               ExecutionId: 'host-execution-1', TicketId: 'host-ticket-1', BasketId: 'basket-1', Side: 'BUY',
               State: 'NeedsAttention', UpdatedUtc: '2026-07-30T12:02:00Z',
-              Legs: [{ Epic: 'AAPL', Direction: 'BUY', Quantity: 0.1, State: 'Open', DealReference: 'REF-1', DealId: 'DEAL-1', Message: '' }]
+              Legs: [
+                { Epic: 'AAPL', Direction: 'BUY', Quantity: 0.1, State: 'Open', DealReference: 'REF-1', DealId: 'DEAL-1', Message: '' },
+                { Epic: 'MSFT', Direction: 'BUY', Quantity: 0.2, State: 'Unknown', DealReference: 'REF-2', DealId: '', Message: 'Confirmation timed out' },
+                { Epic: 'NVDA', Direction: 'SELL', Quantity: 0.3, State: 'Closed', DealReference: 'REF-3', DealId: 'DEAL-3', Message: '' }
+              ]
             }]);
             element('close-host-execution-1').click();
+            assert.equal(messages.length, 0, 'first close click must not send a mutation');
+            assert.equal(element('close-confirmation').open, true);
+            assert.equal(element('close-confirmation-legs').children.length, 1);
+            assert.match(element('close-confirmation-legs').children[0].textContent, /AAPL.*Open/i);
+            assert.equal(element('confirm-close').disabled, true);
+            element('partial-close-ack').checked = true;
+            element('partial-close-ack').dispatch('change');
+            assert.equal(element('confirm-close').disabled, false);
+            element('confirm-close').click();
             assert.deepEqual(messages.pop(), { type: 'closeBasket', executionId: 'host-execution-1' });
+            const mutationCountAfterClose = allMessages.filter(message => message.type === 'closeBasket').length;
+            element('confirm-close').click();
+            assert.equal(
+              allMessages.filter(message => message.type === 'closeBasket').length,
+              mutationCountAfterClose,
+              'a consumed close confirmation cannot submit twice');
 
             for (const message of allMessages) {
               for (const forbidden of ['epic', 'direction', 'quantity', 'price', 'dealId']) {

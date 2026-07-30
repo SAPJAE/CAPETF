@@ -751,7 +751,8 @@
       color: #fca5a5;
     }
 
-    #trade-confirmation {
+    #trade-confirmation,
+    #close-confirmation {
       width: min(660px, calc(100vw - 40px));
       max-height: calc(100vh - 56px);
       padding: 0;
@@ -762,35 +763,42 @@
       box-shadow: 0 22px 70px rgba(0, 0, 0, .68);
     }
 
-    #trade-confirmation::backdrop {
+    #trade-confirmation::backdrop,
+    #close-confirmation::backdrop {
       background: rgba(1, 5, 13, .78);
     }
 
-    #confirmation-form {
+    #confirmation-form,
+    #close-confirmation-form {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
       max-height: calc(100vh - 58px);
     }
 
     #confirmation-header,
-    #confirmation-footer {
+    #confirmation-footer,
+    #close-confirmation-header,
+    #close-confirmation-footer {
       padding: 12px 14px;
       border-bottom: 1px solid var(--line);
     }
 
-    #confirmation-header h2 {
+    #confirmation-header h2,
+    #close-confirmation-header h2 {
       margin: 0;
       font-size: 16px;
       letter-spacing: 0;
     }
 
-    #confirmation-header p {
+    #confirmation-header p,
+    #close-confirmation-header p {
       margin: 4px 0 0;
       color: var(--muted);
       font-size: 11px;
     }
 
-    #confirmation-legs {
+    #confirmation-legs,
+    #close-confirmation-legs {
       min-height: 0;
       padding: 4px 14px;
       overflow-y: auto;
@@ -808,14 +816,16 @@
       font-size: 12px;
     }
 
-    #confirmation-footer {
+    #confirmation-footer,
+    #close-confirmation-footer {
       display: grid;
       gap: 10px;
       border-top: 1px solid var(--line);
       border-bottom: 0;
     }
 
-    #partial-execution-label {
+    #partial-execution-label,
+    #partial-close-label {
       display: flex;
       align-items: flex-start;
       gap: 8px;
@@ -824,14 +834,16 @@
       line-height: 1.4;
     }
 
-    #partial-execution-ack {
+    #partial-execution-ack,
+    #partial-close-ack {
       flex: 0 0 auto;
       width: 15px;
       height: 15px;
       margin: 1px 0 0;
     }
 
-    #confirmation-actions {
+    #confirmation-actions,
+    #close-confirmation-actions {
       display: flex;
       justify-content: flex-end;
       gap: 8px;
@@ -840,6 +852,11 @@
     #confirm-execution {
       border-color: var(--green);
       background: #14532d;
+    }
+
+    #confirm-close {
+      border-color: var(--red);
+      background: #7f1d1d;
     }
 
     @media (max-width: 940px) {
@@ -1090,6 +1107,26 @@
         </footer>
       </form>
     </dialog>
+
+    <dialog id="close-confirmation" aria-labelledby="close-confirmation-title">
+      <form id="close-confirmation-form" method="dialog">
+        <header id="close-confirmation-header">
+          <h2 id="close-confirmation-title">Confirm basket close</h2>
+          <p id="close-confirmation-summary"></p>
+        </header>
+        <div id="close-confirmation-legs"></div>
+        <footer id="close-confirmation-footer">
+          <label id="partial-close-label">
+            <input id="partial-close-ack" type="checkbox">
+            <span>I understand that legs close sequentially, a partial close can leave demo positions open, and an unknown outcome requires refresh before further action.</span>
+          </label>
+          <div id="close-confirmation-actions">
+            <button type="button" id="cancel-close">Cancel</button>
+            <button type="button" id="confirm-close" disabled>Confirm Close Basket</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
   </div>
 
   <script>
@@ -1130,6 +1167,10 @@
     const confirmationLegs = document.getElementById('confirmation-legs');
     const partialExecutionAck = document.getElementById('partial-execution-ack');
     const confirmExecutionButton = document.getElementById('confirm-execution');
+    const closeConfirmation = document.getElementById('close-confirmation');
+    const closeConfirmationLegs = document.getElementById('close-confirmation-legs');
+    const partialCloseAck = document.getElementById('partial-close-ack');
+    const confirmCloseButton = document.getElementById('confirm-close');
 
     let chart = null;
     let candleSeries = null;
@@ -1162,6 +1203,7 @@
     let terminalTradingMode = { isDemo: false, executionEnabled: false, accountId: '', accountCurrency: '' };
     let terminalTradingOperation = '';
     let pendingExecutionTicket = null;
+    let pendingCloseExecution = null;
     let terminalExecutions = [];
     const INVALID_MARGIN_NOTIONAL = 'Enter a basket notional greater than 0.';
     const SYNTHETIC_PRICE_FLOOR = -10;
@@ -1272,6 +1314,7 @@
       refreshExecutionsButton.disabled = !connected || busy;
       quantity.disabled = busy;
       confirmExecutionButton.disabled = !connected || busy || !pendingExecutionTicket || !partialExecutionAck.checked;
+      confirmCloseButton.disabled = !connected || busy || !pendingCloseExecution || !partialCloseAck.checked;
       for (const button of Array.from(document.querySelectorAll('[data-close-execution]'))) {
         button.disabled = !connected || busy;
       }
@@ -1321,10 +1364,32 @@
       }
     }
 
+    function closeDialog(dialog) {
+      if (typeof dialog.close === 'function') dialog.close();
+      else if (typeof dialog.removeAttribute === 'function') dialog.removeAttribute('open');
+      else dialog.open = false;
+    }
+
     function closeTradeConfirmation() {
-      if (typeof tradeConfirmation.close === 'function') tradeConfirmation.close();
-      else if (typeof tradeConfirmation.removeAttribute === 'function') tradeConfirmation.removeAttribute('open');
-      else tradeConfirmation.open = false;
+      closeDialog(tradeConfirmation);
+    }
+
+    function closeBasketConfirmation() {
+      closeDialog(closeConfirmation);
+    }
+
+    function invalidatePendingExecutionTicket() {
+      pendingExecutionTicket = null;
+      partialExecutionAck.checked = false;
+      closeTradeConfirmation();
+      refreshTradingControls();
+    }
+
+    function invalidatePendingCloseExecution() {
+      pendingCloseExecution = null;
+      partialCloseAck.checked = false;
+      closeBasketConfirmation();
+      refreshTradingControls();
     }
 
     function showTradeConfirmation(ticket) {
@@ -1355,6 +1420,34 @@
       }
       if (typeof tradeConfirmation.showModal === 'function') tradeConfirmation.showModal();
       else tradeConfirmation.setAttribute('open', '');
+      refreshTradingControls();
+    }
+
+    function showCloseConfirmation(record) {
+      pendingCloseExecution = record;
+      partialCloseAck.checked = false;
+      const executionId = getField(record, 'ExecutionId', 'executionId', '');
+      const basketId = getField(record, 'BasketId', 'basketId', '');
+      const state = executionState(record);
+      document.getElementById('close-confirmation-title').textContent = 'Confirm demo basket close';
+      document.getElementById('close-confirmation-summary').textContent =
+        `${executionId} | basket ${basketId || 'n/a'} | ${state}`;
+      closeConfirmationLegs.replaceChildren();
+      for (const leg of getField(record, 'Legs', 'legs', [])) {
+        const stateText = legState(leg);
+        const dealId = getField(leg, 'DealId', 'dealId', '');
+        if (stateText !== 'Open' || !dealId) continue;
+        const row = document.createElement('div');
+        row.className = 'confirmation-leg';
+        const epic = getField(leg, 'Epic', 'epic', '');
+        const direction = getField(leg, 'Direction', 'direction', '');
+        const legQuantity = getField(leg, 'Quantity', 'quantity', null);
+        row.textContent = `${epic} | ${direction} ${formatMultiplier(legQuantity)} | ${stateText}` +
+          `${dealId ? ` | deal ${dealId}` : ''}`;
+        closeConfirmationLegs.appendChild(row);
+      }
+      if (typeof closeConfirmation.showModal === 'function') closeConfirmation.showModal();
+      else closeConfirmation.setAttribute('open', '');
       refreshTradingControls();
     }
 
@@ -1406,7 +1499,8 @@
         const recordState = executionState(record);
         const executionId = getField(record, 'ExecutionId', 'executionId', '');
         const basketId = getField(record, 'BasketId', 'basketId', '');
-        for (const leg of getField(record, 'Legs', 'legs', [])) {
+        const recordLegs = getField(record, 'Legs', 'legs', []);
+        for (const leg of recordLegs) {
           const state = legState(leg);
           const epic = getField(leg, 'Epic', 'epic', '');
           const direction = getField(leg, 'Direction', 'direction', '');
@@ -1421,7 +1515,9 @@
             `${upl === null || upl === undefined ? '' : ` | UPL ${Number(upl).toFixed(2)}`}`;
           container.appendChild(row);
         }
-        if (recordState !== 'Closed' && recordState !== 'Rejected') {
+        const hasCloseableLeg = recordLegs.some(leg =>
+          legState(leg) === 'Open' && !!getField(leg, 'DealId', 'dealId', ''));
+        if (recordState !== 'Closed' && recordState !== 'Rejected' && hasCloseableLeg) {
           const actions = document.createElement('div');
           actions.className = 'row-actions';
           const closeButton = document.createElement('button');
@@ -1430,7 +1526,7 @@
           closeButton.className = 'compact-button';
           closeButton.dataset.closeExecution = executionId;
           closeButton.textContent = 'Close Basket';
-          closeButton.addEventListener('click', () => requestCloseBasket(executionId));
+          closeButton.addEventListener('click', () => requestCloseBasket(record));
           actions.appendChild(closeButton);
           container.appendChild(actions);
         }
@@ -1471,15 +1567,10 @@
       }
     }
 
-    function requestCloseBasket(executionId) {
+    function requestCloseBasket(record) {
+      const executionId = getField(record, 'ExecutionId', 'executionId', '');
       if (!executionId || !terminalTradingMode.isDemo || !terminalTradingMode.executionEnabled || tradingIsBusy()) return;
-      terminalTradingOperation = 'Closing synthetic basket';
-      refreshTradingControls();
-      if (!postHostAction({ type: 'closeBasket', executionId })) {
-        terminalTradingOperation = '';
-        refreshTradingControls();
-        setTradeReadiness('Connection required', 'Desktop trading host unavailable.', 'danger');
-      }
+      showCloseConfirmation(record);
     }
 
     function resetMarginPreview(reason) {
@@ -2036,6 +2127,8 @@
     }
 
     window.setTerminalData = function(nextPayload) {
+      invalidatePendingExecutionTicket();
+      invalidatePendingCloseExecution();
       terminalPayloadGeneration += 1;
       activeTerminalIdentity = getField(nextPayload, 'DrawingIdentity', 'drawingIdentity',
         getField(nextPayload, 'Symbol', 'symbol', ''));
@@ -2130,6 +2223,7 @@
         if (terminalBusyLabel && status.textContent === terminalBusyLabel) setStatus(terminalStatusBeforeBusy);
         terminalBusyLabel = '';
         terminalStatusBeforeBusy = '';
+        terminalTradingOperation = '';
       }
       refreshTradingControls();
     };
@@ -2152,8 +2246,9 @@
         ? `${terminalTradingMode.accountId} | ${terminalTradingMode.accountCurrency || 'account currency n/a'}`
         : 'Connect a demo account';
       if (!enabled) {
-        pendingExecutionTicket = null;
-        closeTradeConfirmation();
+        terminalTradingOperation = '';
+        invalidatePendingExecutionTicket();
+        invalidatePendingCloseExecution();
       }
       refreshTradingControls();
     };
@@ -2177,8 +2272,7 @@
         return;
       }
 
-      pendingExecutionTicket = null;
-      closeTradeConfirmation();
+      invalidatePendingExecutionTicket();
       const label = classifyPreflightFailure(failures);
       summary.textContent = failures.length ? `${label}. ${failures.length} check${failures.length === 1 ? '' : 's'} failed.` : `${label}.`;
       for (const failure of failures) {
@@ -2194,6 +2288,7 @@
     };
 
     window.setTerminalExecutionProgress = function(record) {
+      invalidatePendingCloseExecution();
       const error = getField(record, 'Error', 'error', '');
       if (error) {
         terminalTradingOperation = '';
@@ -2203,7 +2298,11 @@
         return;
       }
       const executionId = getField(record, 'ExecutionId', 'executionId', '');
-      if (!executionId) return;
+      if (!executionId) {
+        terminalTradingOperation = '';
+        refreshTradingControls();
+        return;
+      }
       const index = terminalExecutions.findIndex(item => getField(item, 'ExecutionId', 'executionId', '') === executionId);
       if (index >= 0) terminalExecutions[index] = record;
       else terminalExecutions.unshift(record);
@@ -2214,6 +2313,7 @@
     };
 
     window.setTerminalExecutions = function(records) {
+      invalidatePendingCloseExecution();
       terminalTradingOperation = '';
       terminalExecutions = Array.isArray(records) ? records.slice() : [];
       terminalExecutions.sort((left, right) => String(getField(right, 'UpdatedUtc', 'updatedUtc', ''))
@@ -2228,9 +2328,8 @@
     window.clearTerminal = function() {
       window.setTerminalData({ Candles: [], Components: [] });
       resetMarginPreview('Build a synthetic basket to preview margin.');
-      pendingExecutionTicket = null;
-      closeTradeConfirmation();
-      refreshTradingControls();
+      invalidatePendingExecutionTicket();
+      invalidatePendingCloseExecution();
     };
 
     window.resetTerminalMarginPreview = resetMarginPreview;
@@ -2433,8 +2532,7 @@
     document.getElementById('fit-chart').addEventListener('click', window.fitTerminalChart);
     document.getElementById('components-toggle').addEventListener('click', window.toggleTerminalComponents);
     quantity.addEventListener('input', () => {
-      pendingExecutionTicket = null;
-      closeTradeConfirmation();
+      invalidatePendingExecutionTicket();
       scheduleMarginPreview();
       refreshTradingControls();
     });
@@ -2475,6 +2573,23 @@
       }
     });
     confirmationForm.addEventListener('submit', event => event.preventDefault());
+    partialCloseAck.addEventListener('change', refreshTradingControls);
+    document.getElementById('cancel-close').addEventListener('click', invalidatePendingCloseExecution);
+    confirmCloseButton.addEventListener('click', () => {
+      if (!terminalTradingMode.isDemo || !terminalTradingMode.executionEnabled ||
+          !pendingCloseExecution || !partialCloseAck.checked || tradingIsBusy()) return;
+      const executionId = getField(pendingCloseExecution, 'ExecutionId', 'executionId', '');
+      if (!executionId) return;
+      invalidatePendingCloseExecution();
+      terminalTradingOperation = 'Closing synthetic basket';
+      refreshTradingControls();
+      if (!postHostAction({ type: 'closeBasket', executionId })) {
+        terminalTradingOperation = '';
+        refreshTradingControls();
+        setTradeReadiness('Connection required', 'Desktop trading host unavailable.', 'danger');
+      }
+    });
+    document.getElementById('close-confirmation-form').addEventListener('submit', event => event.preventDefault());
     componentSplitter.addEventListener('pointerdown', beginRailResize);
     componentSplitter.addEventListener('pointermove', resizeRail);
     componentSplitter.addEventListener('pointerup', endRailResize);
