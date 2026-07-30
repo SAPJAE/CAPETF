@@ -382,18 +382,30 @@ public sealed class SyntheticBasketExecutionService
         var epic = record.Legs[index].Epic;
         if (result.Confirmation is null)
         {
-            return MarkLeg(record, index, SyntheticExecutionLegState.Unknown, $"{epic} confirmation: {result.Message}");
+            return MarkOpenLegTerminalOutcome(
+                record,
+                index,
+                SyntheticExecutionLegState.Unknown,
+                $"{epic} confirmation: {result.Message}");
         }
 
         if (IsRejected(result.Confirmation.DealStatus))
         {
-            return MarkLeg(record, index, SyntheticExecutionLegState.Rejected, FormatReason(epic, "confirmation", result.Confirmation.Reason));
+            return MarkOpenLegTerminalOutcome(
+                record,
+                index,
+                SyntheticExecutionLegState.Rejected,
+                FormatReason(epic, "confirmation", result.Confirmation.Reason));
         }
 
         var dealId = FindAffectedDealId(result.Confirmation, "OPENED");
         if (string.IsNullOrWhiteSpace(dealId))
         {
-            return MarkLeg(record, index, SyntheticExecutionLegState.Unknown, $"{epic} confirmation was accepted without a permanent deal ID.");
+            return MarkOpenLegTerminalOutcome(
+                record,
+                index,
+                SyntheticExecutionLegState.Unknown,
+                $"{epic} confirmation was accepted without a permanent deal ID.");
         }
 
         return UpdateLeg(
@@ -411,6 +423,16 @@ public sealed class SyntheticBasketExecutionService
             record.Legs.Count(leg => leg.State == SyntheticExecutionLegState.Open) + 1 == record.Legs.Count
                 ? SyntheticExecutionState.Open
                 : SyntheticExecutionState.PartiallyOpen);
+    }
+
+    private SyntheticExecutionRecord MarkOpenLegTerminalOutcome(
+        SyntheticExecutionRecord record,
+        int index,
+        SyntheticExecutionLegState state,
+        string message)
+    {
+        var updated = MarkLeg(record, index, state, message);
+        return updated with { State = DetermineExecutionState(updated, cancelled: false) };
     }
 
     private SyntheticExecutionRecord ApplyCloseConfirmation(

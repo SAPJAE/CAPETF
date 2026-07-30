@@ -310,7 +310,6 @@ public sealed class SyntheticExecutionStore
                 SyntheticExecutionLegState.Open,
                 SyntheticExecutionLegState.Unknown,
                 SyntheticExecutionLegState.Closed)
-                && !legs.All(leg => leg.State == SyntheticExecutionLegState.Open)
                 && !legs.All(leg => leg.State == SyntheticExecutionLegState.Rejected),
             SyntheticExecutionState.Closing => Only(
                 SyntheticExecutionLegState.Pending,

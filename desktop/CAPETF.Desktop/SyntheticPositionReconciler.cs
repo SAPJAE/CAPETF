@@ -35,7 +35,9 @@ public sealed class SyntheticPositionReconciler
             return leg with
             {
                 State = SyntheticExecutionLegState.Open,
+                CloseDealReference = "",
                 CurrentUnrealizedProfitLoss = position.UnrealizedProfitLoss,
+                ClosedUtc = null,
                 UpdatedUtc = now,
             };
         }
@@ -47,6 +49,16 @@ public sealed class SyntheticPositionReconciler
                 State = SyntheticExecutionLegState.Closed,
                 CurrentUnrealizedProfitLoss = null,
                 ClosedUtc = leg.ClosedUtc ?? now,
+                UpdatedUtc = now,
+            };
+        }
+
+        if (leg.State is SyntheticExecutionLegState.Submitted or SyntheticExecutionLegState.Confirming)
+        {
+            return leg with
+            {
+                State = SyntheticExecutionLegState.Unknown,
+                CurrentUnrealizedProfitLoss = null,
                 UpdatedUtc = now,
             };
         }

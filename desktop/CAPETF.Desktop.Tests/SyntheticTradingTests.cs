@@ -61,8 +61,12 @@ public static class SyntheticTradingTests
         ExecutionStoreQuarantinesNegativeTemporalOrdering();
         ExecutionStoreAcceptsStateMachineProgressSnapshots();
         ExecutionStoreAcceptsClosedPartialExecutionState();
+        EmittedExecutionAndReconciliationStatesSatisfyPersistenceContract();
         ReconciliationMatchesOpenPositionsByDealIdAndUpdatesUpl();
         ReconciliationMarksMissingOpenPositionsClosed();
+        ReconciliationNormalizesSubmittedLegWhenOpenPositionDisappearsAndPersistsIt();
+        ReconciliationNormalizesConfirmingLegWhenOpenPositionDisappearsAndPersistsIt();
+        ReconciliationReopensClosedLegWithoutClosureMetadataAndPersistsIt();
         ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
         ReconciliationMapsRejectedOpenPendingToNeedsAttentionAndPersistsIt();
     }
@@ -429,6 +433,470 @@ public static class SyntheticTradingTests
         AssertEqual(SyntheticExecutionLegState.Pending, restored.Legs[2].State, "unsent leg remains pending");
     }
 
+    private static void EmittedExecutionAndReconciliationStatesSatisfyPersistenceContract()
+    {
+        using var directory = new TemporaryDirectory();
+        var executionCases = new[]
+        {
+            new ExecutionEmissionContractCase(
+                "accepted execution",
+                () => CaptureExecutionContract(OpenContractOutcome.Accepted, OpenContractOutcome.Accepted),
+                [
+                    "Submitting|Pending,Pending",
+                    "Submitting|Submitted,Pending",
+                    "Submitting|Confirming,Pending",
+                    "PartiallyOpen|Open,Pending",
+                    "PartiallyOpen|Open,Submitted",
+                    "PartiallyOpen|Open,Confirming",
+                    "Open|Open,Open",
+                ]),
+            new ExecutionEmissionContractCase(
+                "first-leg rejection",
+                () => CaptureExecutionContract(OpenContractOutcome.Rejected, OpenContractOutcome.Accepted),
+                [
+                    "Submitting|Pending,Pending",
+                    "Submitting|Submitted,Pending",
+                    "Submitting|Confirming,Pending",
+                    "Rejected|Rejected,Pending",
+                ]),
+            new ExecutionEmissionContractCase(
+                "later-leg rejection",
+                () => CaptureExecutionContract(OpenContractOutcome.Accepted, OpenContractOutcome.Rejected, OpenContractOutcome.Accepted),
+                [
+                    "Submitting|Pending,Pending,Pending",
+                    "Submitting|Submitted,Pending,Pending",
+                    "Submitting|Confirming,Pending,Pending",
+                    "PartiallyOpen|Open,Pending,Pending",
+                    "PartiallyOpen|Open,Submitted,Pending",
+                    "PartiallyOpen|Open,Confirming,Pending",
+                    "NeedsAttention|Open,Rejected,Pending",
+                ]),
+            new ExecutionEmissionContractCase(
+                "first-leg unknown confirmation",
+                () => CaptureExecutionContract(OpenContractOutcome.Unknown, OpenContractOutcome.Accepted),
+                [
+                    "Submitting|Pending,Pending",
+                    "Submitting|Submitted,Pending",
+                    "Submitting|Confirming,Pending",
+                    "NeedsAttention|Unknown,Pending",
+                ]),
+            new ExecutionEmissionContractCase(
+                "later-leg unknown confirmation",
+                () => CaptureExecutionContract(OpenContractOutcome.Accepted, OpenContractOutcome.Unknown, OpenContractOutcome.Accepted),
+                [
+                    "Submitting|Pending,Pending,Pending",
+                    "Submitting|Submitted,Pending,Pending",
+                    "Submitting|Confirming,Pending,Pending",
+                    "PartiallyOpen|Open,Pending,Pending",
+                    "PartiallyOpen|Open,Submitted,Pending",
+                    "PartiallyOpen|Open,Confirming,Pending",
+                    "NeedsAttention|Open,Unknown,Pending",
+                ]),
+            new ExecutionEmissionContractCase(
+                "cancelled execution before dispatch",
+                CaptureCancelledExecutionContract,
+                [
+                    "Submitting|Pending,Pending",
+                    "NeedsAttention|Pending,Pending",
+                ]),
+            new ExecutionEmissionContractCase(
+                "accepted close",
+                () => CaptureCloseContract(CloseContractOutcome.Accepted, CloseContractOutcome.Accepted),
+                [
+                    "Closing|Open,Open",
+                    "Closing|Closing,Open",
+                    "Closing|Closed,Open",
+                    "Closing|Closed,Closing",
+                    "Closing|Closed,Closed",
+                    "Closed|Closed,Closed",
+                ]),
+            new ExecutionEmissionContractCase(
+                "rejected close before any closure",
+                () => CaptureCloseContract(CloseContractOutcome.Rejected, CloseContractOutcome.Accepted),
+                [
+                    "Closing|Open,Open",
+                    "Closing|Closing,Open",
+                    "NeedsAttention|Open,Open",
+                ]),
+            new ExecutionEmissionContractCase(
+                "rejected close after a confirmed closure",
+                () => CaptureCloseContract(CloseContractOutcome.Accepted, CloseContractOutcome.Rejected, CloseContractOutcome.Accepted),
+                [
+                    "Closing|Open,Open,Open",
+                    "Closing|Closing,Open,Open",
+                    "Closing|Closed,Open,Open",
+                    "Closing|Closed,Closing,Open",
+                    "PartiallyClosed|Closed,Open,Open",
+                ]),
+            new ExecutionEmissionContractCase(
+                "unknown close confirmation",
+                () => CaptureCloseContract(CloseContractOutcome.Unknown, CloseContractOutcome.Accepted),
+                [
+                    "Closing|Open,Open",
+                    "Closing|Closing,Open",
+                    "Closing|Unknown,Open",
+                    "NeedsAttention|Unknown,Open",
+                ]),
+            new ExecutionEmissionContractCase(
+                "cancelled close before dispatch",
+                CaptureCancelledCloseContract,
+                [
+                    "Closing|Open",
+                    "NeedsAttention|Open",
+                ]),
+            new ExecutionEmissionContractCase(
+                "close partially opened execution",
+                CapturePartialExecutionCloseContract,
+                [
+                    "Closing|Open,Rejected,Pending",
+                    "Closing|Closing,Rejected,Pending",
+                    "Closing|Closed,Rejected,Pending",
+                    "Closed|Closed,Rejected,Pending",
+                ]),
+        };
+        var pathIndex = 0;
+        foreach (var testCase in executionCases)
+        {
+            var emitted = testCase.Emit();
+            var actualSignatures = emitted.Select(StateSignature).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal);
+            var expectedSignatures = testCase.ExpectedSignatures.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal);
+            AssertEqual(
+                string.Join(";", expectedSignatures),
+                string.Join(";", actualSignatures),
+                $"{testCase.Name} emitted state contract");
+
+            foreach (var record in emitted)
+            {
+                AssertExecutionRoundTrips(record, directory.Path, pathIndex++, $"{testCase.Name} emitted record");
+            }
+        }
+
+        var submittingPending = CreateContractRecord(SyntheticExecutionState.Submitting, SyntheticExecutionLegState.Pending);
+        var submittingSubmitted = CreateContractRecord(SyntheticExecutionState.Submitting, SyntheticExecutionLegState.Submitted);
+        var submittingConfirming = CreateContractRecord(SyntheticExecutionState.Submitting, SyntheticExecutionLegState.Confirming);
+        var partiallyOpenPending = CreateContractRecord(
+            SyntheticExecutionState.PartiallyOpen,
+            SyntheticExecutionLegState.Open,
+            SyntheticExecutionLegState.Pending);
+        var partiallyOpenSubmitted = CreateContractRecord(
+            SyntheticExecutionState.PartiallyOpen,
+            SyntheticExecutionLegState.Open,
+            SyntheticExecutionLegState.Submitted);
+        var partiallyOpenConfirming = CreateContractRecord(
+            SyntheticExecutionState.PartiallyOpen,
+            SyntheticExecutionLegState.Open,
+            SyntheticExecutionLegState.Confirming);
+        var open = CreateContractRecord(
+            SyntheticExecutionState.Open,
+            SyntheticExecutionLegState.Open,
+            SyntheticExecutionLegState.Open);
+        var needsAttentionOpenRejectedPending = CreateContractRecord(
+            SyntheticExecutionState.NeedsAttention,
+            SyntheticExecutionLegState.Open,
+            SyntheticExecutionLegState.Rejected,
+            SyntheticExecutionLegState.Pending);
+        var needsAttentionOpenUnknown = CreateContractRecord(
+            SyntheticExecutionState.NeedsAttention,
+            SyntheticExecutionLegState.Open,
+            SyntheticExecutionLegState.Unknown);
+        var needsAttentionOpenPending = CreateContractRecord(
+            SyntheticExecutionState.NeedsAttention,
+            SyntheticExecutionLegState.Open,
+            SyntheticExecutionLegState.Pending);
+        var needsAttentionClosedPending = CreateContractRecord(
+            SyntheticExecutionState.NeedsAttention,
+            SyntheticExecutionLegState.Closed,
+            SyntheticExecutionLegState.Pending);
+        var needsAttentionRejectedPending = CreateContractRecord(
+            SyntheticExecutionState.NeedsAttention,
+            SyntheticExecutionLegState.Rejected,
+            SyntheticExecutionLegState.Pending);
+        var needsAttentionPending = CreateContractRecord(
+            SyntheticExecutionState.NeedsAttention,
+            SyntheticExecutionLegState.Pending);
+        var closingOpen = CreateContractRecord(SyntheticExecutionState.Closing, SyntheticExecutionLegState.Closing);
+        var closingPending = CreateContractRecord(SyntheticExecutionState.Closing, SyntheticExecutionLegState.Pending);
+        var partiallyClosedOpen = CreateContractRecord(
+            SyntheticExecutionState.PartiallyClosed,
+            SyntheticExecutionLegState.Closed,
+            SyntheticExecutionLegState.Open);
+        var partiallyClosedUnknown = CreateContractRecord(
+            SyntheticExecutionState.PartiallyClosed,
+            SyntheticExecutionLegState.Closed,
+            SyntheticExecutionLegState.Unknown);
+        var closed = CreateContractRecord(SyntheticExecutionState.Closed, SyntheticExecutionLegState.Closed);
+        var closedPartial = CreateContractRecord(
+            SyntheticExecutionState.Closed,
+            SyntheticExecutionLegState.Closed,
+            SyntheticExecutionLegState.Rejected,
+            SyntheticExecutionLegState.Pending);
+        var rejected = CreateContractRecord(
+            SyntheticExecutionState.Rejected,
+            SyntheticExecutionLegState.Rejected,
+            SyntheticExecutionLegState.Pending);
+        var reconciliationCases = new[]
+        {
+            new ReconciliationEmissionContractCase("submitting pending remains in flight", submittingPending, [], "Submitting|Pending"),
+            new ReconciliationEmissionContractCase("submitted normalizes to unknown", submittingSubmitted, [], "NeedsAttention|Unknown"),
+            new ReconciliationEmissionContractCase("confirming normalizes to unknown", submittingConfirming, [], "NeedsAttention|Unknown"),
+            new ReconciliationEmissionContractCase("partially open pending remains live", partiallyOpenPending, PositionsFor(partiallyOpenPending, 0), "PartiallyOpen|Open,Pending"),
+            new ReconciliationEmissionContractCase("partially open submitted normalizes", partiallyOpenSubmitted, PositionsFor(partiallyOpenSubmitted, 0), "NeedsAttention|Open,Unknown"),
+            new ReconciliationEmissionContractCase("missing open with confirming normalizes", partiallyOpenConfirming, [], "NeedsAttention|Closed,Unknown"),
+            new ReconciliationEmissionContractCase("all current open positions remain open", open, PositionsFor(open, 0, 1), "Open|Open,Open"),
+            new ReconciliationEmissionContractCase("missing one open position partially closes", open, PositionsFor(open, 0), "PartiallyClosed|Open,Closed"),
+            new ReconciliationEmissionContractCase("missing all open positions closes", open, [], "Closed|Closed,Closed"),
+            new ReconciliationEmissionContractCase("open rejected pending needs attention", needsAttentionOpenRejectedPending, PositionsFor(needsAttentionOpenRejectedPending, 0), "NeedsAttention|Open,Rejected,Pending"),
+            new ReconciliationEmissionContractCase("open unknown needs attention", needsAttentionOpenUnknown, PositionsFor(needsAttentionOpenUnknown, 0), "NeedsAttention|Open,Unknown"),
+            new ReconciliationEmissionContractCase("open pending remains partially open", needsAttentionOpenPending, PositionsFor(needsAttentionOpenPending, 0), "PartiallyOpen|Open,Pending"),
+            new ReconciliationEmissionContractCase("closed pending resolves closed", needsAttentionClosedPending, [], "Closed|Closed,Pending"),
+            new ReconciliationEmissionContractCase("rejected pending resolves rejected", needsAttentionRejectedPending, [], "Rejected|Rejected,Pending"),
+            new ReconciliationEmissionContractCase("pending attention remains visible", needsAttentionPending, [], "NeedsAttention|Pending"),
+            new ReconciliationEmissionContractCase("closing deal still present reopens", closingOpen, PositionsFor(closingOpen, 0), "Open|Open"),
+            new ReconciliationEmissionContractCase("closing pending remains closing", closingPending, [], "Closing|Pending"),
+            new ReconciliationEmissionContractCase("partially closed remains partial", partiallyClosedOpen, PositionsFor(partiallyClosedOpen, 1), "PartiallyClosed|Closed,Open"),
+            new ReconciliationEmissionContractCase("partially closed unknown needs attention", partiallyClosedUnknown, [], "NeedsAttention|Closed,Unknown"),
+            new ReconciliationEmissionContractCase("closed deal reappears open", closed, PositionsFor(closed, 0), "Open|Open"),
+            new ReconciliationEmissionContractCase("closed partial audit remains closed", closedPartial, [], "Closed|Closed,Rejected,Pending"),
+            new ReconciliationEmissionContractCase("rejected execution remains rejected", rejected, [], "Rejected|Rejected,Pending"),
+        };
+        var reconciler = new SyntheticPositionReconciler();
+        foreach (var testCase in reconciliationCases)
+        {
+            AssertExecutionRoundTrips(testCase.Input, directory.Path, pathIndex++, $"{testCase.Name} input");
+            var reconciled = reconciler.Reconcile(
+                testCase.Input,
+                testCase.Positions,
+                DateTimeOffset.Parse("2026-07-30T13:00:00Z"));
+
+            AssertEqual(testCase.ExpectedSignature, StateSignature(reconciled), $"{testCase.Name} normalized state contract");
+            AssertExecutionRoundTrips(reconciled, directory.Path, pathIndex++, $"{testCase.Name} output");
+        }
+    }
+
+    private static IReadOnlyList<SyntheticExecutionRecord> CaptureExecutionContract(params OpenContractOutcome[] outcomes)
+    {
+        var epics = Enumerable.Range(0, outcomes.Length).Select(index => $"OPEN-{index}").ToArray();
+        var gateway = new ScriptedTradingGateway();
+        for (var index = 0; index < outcomes.Length; index++)
+        {
+            var reference = $"open-reference-{index}";
+            var dealId = $"open-deal-{index}";
+            gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement(reference)));
+            gateway.ConfirmResults[reference] = outcomes[index] switch
+            {
+                OpenContractOutcome.Accepted => new Queue<Func<Task<CapitalDealConfirmation>>>(
+                    [() => Task.FromResult(AcceptedConfirmation(reference, dealId))]),
+                OpenContractOutcome.Rejected => new Queue<Func<Task<CapitalDealConfirmation>>>(
+                    [() => Task.FromResult(RejectedConfirmation(reference, "CONTRACT_REJECTED"))]),
+                OpenContractOutcome.Unknown => new Queue<Func<Task<CapitalDealConfirmation>>>(
+                    Enumerable.Range(0, 15).Select(_ => (Func<Task<CapitalDealConfirmation>>)(
+                        () => Task.FromResult(PendingConfirmation(reference))))),
+                _ => throw new ArgumentOutOfRangeException(),
+            };
+        }
+
+        var snapshots = new List<SyntheticExecutionRecord>();
+        CreateExecutionService(gateway).ExecuteAsync(
+            CreateExecutionTicket(epics),
+            Capture(snapshots),
+            default).GetAwaiter().GetResult();
+        return snapshots;
+    }
+
+    private static IReadOnlyList<SyntheticExecutionRecord> CaptureCancelledExecutionContract()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var snapshots = new List<SyntheticExecutionRecord>();
+        CreateExecutionService(new ScriptedTradingGateway()).ExecuteAsync(
+            CreateExecutionTicket("CANCEL-0", "CANCEL-1"),
+            Capture(snapshots),
+            cancellation.Token).GetAwaiter().GetResult();
+        return snapshots;
+    }
+
+    private static IReadOnlyList<SyntheticExecutionRecord> CaptureCloseContract(params CloseContractOutcome[] outcomes)
+    {
+        var epics = Enumerable.Range(0, outcomes.Length).Select(index => $"CLOSE-{index}").ToArray();
+        var gateway = AcceptedExecutionGateway(epics);
+        var service = CreateExecutionService(gateway);
+        var open = service.ExecuteAsync(CreateExecutionTicket(epics), IgnoreProgress, default).GetAwaiter().GetResult();
+        gateway.ClearCalls();
+        for (var index = 0; index < outcomes.Length; index++)
+        {
+            var reference = $"close-reference-{index}";
+            var dealId = $"d_{epics[index].ToLowerInvariant()}";
+            gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement(reference)));
+            gateway.ConfirmResults[reference] = outcomes[index] switch
+            {
+                CloseContractOutcome.Accepted => new Queue<Func<Task<CapitalDealConfirmation>>>(
+                    [() => Task.FromResult(ClosedConfirmation(reference, dealId))]),
+                CloseContractOutcome.Rejected => new Queue<Func<Task<CapitalDealConfirmation>>>(
+                    [() => Task.FromResult(RejectedConfirmation(reference, "CONTRACT_REJECTED"))]),
+                CloseContractOutcome.Unknown => new Queue<Func<Task<CapitalDealConfirmation>>>(
+                    Enumerable.Range(0, 15).Select(_ => (Func<Task<CapitalDealConfirmation>>)(
+                        () => Task.FromResult(PendingConfirmation(reference))))),
+                _ => throw new ArgumentOutOfRangeException(),
+            };
+        }
+
+        var snapshots = new List<SyntheticExecutionRecord>();
+        service.CloseAsync(open, Capture(snapshots), default).GetAwaiter().GetResult();
+        return snapshots;
+    }
+
+    private static IReadOnlyList<SyntheticExecutionRecord> CaptureCancelledCloseContract()
+    {
+        var gateway = AcceptedExecutionGateway("CANCEL-CLOSE");
+        var service = CreateExecutionService(gateway);
+        var open = service.ExecuteAsync(CreateExecutionTicket("CANCEL-CLOSE"), IgnoreProgress, default).GetAwaiter().GetResult();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var snapshots = new List<SyntheticExecutionRecord>();
+        service.CloseAsync(open, Capture(snapshots), cancellation.Token).GetAwaiter().GetResult();
+        return snapshots;
+    }
+
+    private static IReadOnlyList<SyntheticExecutionRecord> CapturePartialExecutionCloseContract()
+    {
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("partial-open-0")));
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("partial-open-1")));
+        gateway.ConfirmResults["partial-open-0"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(AcceptedConfirmation("partial-open-0", "partial-deal-0"))]);
+        gateway.ConfirmResults["partial-open-1"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(RejectedConfirmation("partial-open-1", "CONTRACT_REJECTED"))]);
+        var service = CreateExecutionService(gateway);
+        var partial = service.ExecuteAsync(
+            CreateExecutionTicket("PARTIAL-0", "PARTIAL-1", "PARTIAL-2"),
+            IgnoreProgress,
+            default).GetAwaiter().GetResult();
+        gateway.ClearCalls();
+        gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("partial-close-0")));
+        gateway.ConfirmResults["partial-close-0"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(ClosedConfirmation("partial-close-0", "partial-deal-0"))]);
+        var snapshots = new List<SyntheticExecutionRecord>();
+
+        service.CloseAsync(partial, Capture(snapshots), default).GetAwaiter().GetResult();
+        return snapshots;
+    }
+
+    private static SyntheticExecutionRecord CreateContractRecord(
+        SyntheticExecutionState state,
+        params SyntheticExecutionLegState[] legStates)
+    {
+        var baseRecord = CreatePersistedExecutionRecord();
+        return baseRecord with
+        {
+            ExecutionId = $"contract-{state}-{string.Join("-", legStates)}",
+            State = state,
+            Legs = legStates.Select((legState, index) => CreateContractLeg(baseRecord, legState, index)).ToArray(),
+        };
+    }
+
+    private static SyntheticExecutionLegRecord CreateContractLeg(
+        SyntheticExecutionRecord record,
+        SyntheticExecutionLegState state,
+        int index)
+    {
+        var common = record.Legs[0] with
+        {
+            Epic = $"CONTRACT-{index}",
+            State = state,
+            DealReference = "",
+            DealId = "",
+            CloseDealReference = "",
+            FillLevel = null,
+            Message = $"{state} contract leg.",
+            SubmittedUtc = null,
+            ConfirmedUtc = null,
+            ClosedUtc = null,
+            CurrentUnrealizedProfitLoss = null,
+        };
+        var submittedUtc = record.CreatedUtc.AddMinutes(1);
+        var confirmedUtc = record.CreatedUtc.AddMinutes(2);
+        return state switch
+        {
+            SyntheticExecutionLegState.Pending => common,
+            SyntheticExecutionLegState.Submitted => common with { SubmittedUtc = submittedUtc },
+            SyntheticExecutionLegState.Confirming => common with
+            {
+                DealReference = $"confirm-reference-{index}",
+                SubmittedUtc = submittedUtc,
+            },
+            SyntheticExecutionLegState.Open => common with
+            {
+                DealReference = $"open-reference-{index}",
+                DealId = $"open-deal-{index}",
+                FillLevel = 101.25m,
+                SubmittedUtc = submittedUtc,
+                ConfirmedUtc = confirmedUtc,
+            },
+            SyntheticExecutionLegState.Rejected => common with
+            {
+                DealReference = $"rejected-reference-{index}",
+                SubmittedUtc = submittedUtc,
+            },
+            SyntheticExecutionLegState.Unknown => common with
+            {
+                DealReference = $"unknown-reference-{index}",
+                SubmittedUtc = submittedUtc,
+            },
+            SyntheticExecutionLegState.Closing => common with
+            {
+                DealReference = $"open-reference-{index}",
+                DealId = $"open-deal-{index}",
+                CloseDealReference = $"close-reference-{index}",
+                FillLevel = 101.25m,
+                SubmittedUtc = submittedUtc,
+                ConfirmedUtc = confirmedUtc,
+            },
+            SyntheticExecutionLegState.Closed => common with
+            {
+                DealReference = $"open-reference-{index}",
+                DealId = $"open-deal-{index}",
+                CloseDealReference = $"close-reference-{index}",
+                FillLevel = 101.25m,
+                SubmittedUtc = submittedUtc,
+                ConfirmedUtc = confirmedUtc,
+                ClosedUtc = record.CreatedUtc.AddMinutes(4),
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(state)),
+        };
+    }
+
+    private static IReadOnlyList<CapitalOpenPosition> PositionsFor(
+        SyntheticExecutionRecord record,
+        params int[] legIndexes) =>
+        legIndexes.Select(index => new CapitalOpenPosition(
+            record.Legs[index].DealId,
+            record.Legs[index].Epic,
+            record.Legs[index].Direction,
+            record.Legs[index].Quantity,
+            record.Legs[index].FillLevel,
+            17.25m + index,
+            record.Legs[index].MarginCurrency,
+            "TRADEABLE")).ToArray();
+
+    private static string StateSignature(SyntheticExecutionRecord record) =>
+        $"{record.State}|{string.Join(",", record.Legs.Select(leg => leg.State))}";
+
+    private static void AssertExecutionRoundTrips(
+        SyntheticExecutionRecord record,
+        string directory,
+        int pathIndex,
+        string message)
+    {
+        var store = new SyntheticExecutionStore(Path.Combine(directory, $"contract-{pathIndex}.json"));
+        store.SaveAsync([record], default).GetAwaiter().GetResult();
+        var restored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), message);
+
+        AssertEqual(
+            JsonSerializer.Serialize(record),
+            JsonSerializer.Serialize(restored),
+            $"{message} round-trip");
+    }
+
     private static void ReconciliationMatchesOpenPositionsByDealIdAndUpdatesUpl()
     {
         var record = CreatePersistedExecutionRecord() with
@@ -464,6 +932,106 @@ public static class SyntheticTradingTests
         AssertEqual(SyntheticExecutionState.Closed, reconciled.State, "all missing known positions close the execution");
         AssertEqual(now, reconciled.Legs[0].ClosedUtc, "reconciliation records when the closure was observed");
         AssertEqual(null, reconciled.Legs[0].CurrentUnrealizedProfitLoss, "closed positions have no current UPL");
+    }
+
+    private static void ReconciliationNormalizesSubmittedLegWhenOpenPositionDisappearsAndPersistsIt()
+    {
+        AssertMissingOpenWithInFlightLegRoundTrips(
+            SyntheticExecutionLegState.Submitted,
+            "",
+            "submitted sibling is normalized after the tracked open position disappears");
+    }
+
+    private static void ReconciliationNormalizesConfirmingLegWhenOpenPositionDisappearsAndPersistsIt()
+    {
+        AssertMissingOpenWithInFlightLegRoundTrips(
+            SyntheticExecutionLegState.Confirming,
+            "confirm-reference-456",
+            "confirming sibling is normalized after the tracked open position disappears");
+    }
+
+    private static void AssertMissingOpenWithInFlightLegRoundTrips(
+        SyntheticExecutionLegState inFlightState,
+        string dealReference,
+        string message)
+    {
+        using var directory = new TemporaryDirectory();
+        var baseRecord = CreatePersistedExecutionRecord();
+        var inFlight = baseRecord.Legs[0] with
+        {
+            Epic = "MSFT",
+            State = inFlightState,
+            DealReference = dealReference,
+            DealId = "",
+            CloseDealReference = "",
+            FillLevel = null,
+            Message = message,
+            ConfirmedUtc = null,
+            ClosedUtc = null,
+            CurrentUnrealizedProfitLoss = null,
+        };
+        var record = baseRecord with
+        {
+            State = SyntheticExecutionState.PartiallyOpen,
+            Legs = [baseRecord.Legs[0], inFlight],
+        };
+        var reconciled = new SyntheticPositionReconciler().Reconcile(
+            record,
+            [],
+            DateTimeOffset.Parse("2026-07-30T13:00:00Z"));
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, $"{inFlightState}.json"));
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, reconciled.State, "unresolved in-flight work keeps the execution visible");
+        AssertEqual(SyntheticExecutionLegState.Closed, reconciled.Legs[0].State, "missing tracked position is closed");
+        AssertEqual(SyntheticExecutionLegState.Unknown, reconciled.Legs[1].State, "orphaned in-flight leg becomes an explicit unknown outcome");
+        AssertEqual(dealReference, reconciled.Legs[1].DealReference, "available in-flight deal reference is preserved");
+        AssertEqual(message, reconciled.Legs[1].Message, "in-flight audit message is preserved");
+
+        store.SaveAsync([reconciled], default).GetAwaiter().GetResult();
+        var restored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "normalized in-flight reconciliation must round-trip");
+
+        AssertEqual(reconciled.ExecutionId, restored.ExecutionId, "normalized in-flight execution identity survives save and load");
+        AssertEqual(reconciled.State, restored.State, "normalized in-flight execution state survives save and load");
+        AssertTrue(reconciled.Legs.SequenceEqual(restored.Legs), "normalized in-flight legs survive save and load exactly");
+    }
+
+    private static void ReconciliationReopensClosedLegWithoutClosureMetadataAndPersistsIt()
+    {
+        using var directory = new TemporaryDirectory();
+        var baseRecord = CreatePersistedExecutionRecord();
+        var closed = baseRecord.Legs[0] with
+        {
+            State = SyntheticExecutionLegState.Closed,
+            CloseDealReference = "close-reference-123",
+            Message = "Capital previously reported the position closed.",
+            ClosedUtc = baseRecord.CreatedUtc.AddMinutes(4),
+        };
+        var record = baseRecord with
+        {
+            State = SyntheticExecutionState.Closed,
+            Legs = [closed],
+        };
+        var position = new CapitalOpenPosition("deal-123", "AAPL", "BUY", 3m, 99m, 21.5m, "USD", "TRADEABLE");
+        var reconciled = new SyntheticPositionReconciler().Reconcile(
+            record,
+            [position],
+            DateTimeOffset.Parse("2026-07-30T13:00:00Z"));
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "reopened.json"));
+
+        AssertEqual(SyntheticExecutionState.Open, reconciled.State, "a currently reported tracked deal reopens its execution");
+        AssertEqual(SyntheticExecutionLegState.Open, reconciled.Legs[0].State, "a currently reported tracked deal reopens its leg");
+        AssertEqual(null, reconciled.Legs[0].ClosedUtc, "a reopened leg has no closure timestamp");
+        AssertEqual("", reconciled.Legs[0].CloseDealReference, "a reopened leg has no stale close reference");
+        AssertEqual("open-reference-123", reconciled.Legs[0].DealReference, "reopening preserves original open reference");
+        AssertEqual("deal-123", reconciled.Legs[0].DealId, "reopening preserves permanent deal identity");
+        AssertEqual("Capital previously reported the position closed.", reconciled.Legs[0].Message, "reopening preserves audit history");
+
+        store.SaveAsync([reconciled], default).GetAwaiter().GetResult();
+        var restored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "reopened reconciliation must round-trip");
+
+        AssertEqual(reconciled.ExecutionId, restored.ExecutionId, "reopened execution identity survives save and load");
+        AssertEqual(reconciled.State, restored.State, "reopened execution state survives save and load");
+        AssertTrue(reconciled.Legs.SequenceEqual(restored.Legs), "reopened legs survive save and load exactly");
     }
 
     private static void ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched()
@@ -1608,6 +2176,31 @@ public static class SyntheticTradingTests
             return Task.CompletedTask;
         }
     }
+
+    private enum OpenContractOutcome
+    {
+        Accepted,
+        Rejected,
+        Unknown,
+    }
+
+    private enum CloseContractOutcome
+    {
+        Accepted,
+        Rejected,
+        Unknown,
+    }
+
+    private sealed record ExecutionEmissionContractCase(
+        string Name,
+        Func<IReadOnlyList<SyntheticExecutionRecord>> Emit,
+        IReadOnlyList<string> ExpectedSignatures);
+
+    private sealed record ReconciliationEmissionContractCase(
+        string Name,
+        SyntheticExecutionRecord Input,
+        IReadOnlyList<CapitalOpenPosition> Positions,
+        string ExpectedSignature);
 
     private sealed record RecordedRequest(HttpMethod Method, string Host, string Path, string Body);
 }
