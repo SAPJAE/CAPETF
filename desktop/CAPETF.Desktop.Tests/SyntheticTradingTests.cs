@@ -48,7 +48,12 @@ public static class SyntheticTradingTests
         DemoCloseRedirectDoesNotReachRedirectTarget();
         ExecutionStoreRoundTripsVersionedRecordsAndDealIdentity();
         ExecutionStoreUpsertsAtomicallyWithoutCredentials();
+        ExecutionStoreCoordinatesConcurrentInstancesWithoutLosingDealIdentity();
         ExecutionStoreQuarantinesMalformedFiles();
+        ExecutionStoreQuarantinesStructurallyInvalidExecutions();
+        ExecutionStoreQuarantinesInvalidLegs();
+        ExecutionStoreQuarantinesLegsWithMissingDirection();
+        ExecutionStoreQuarantinesDuplicateTrackedDealIds();
         ReconciliationMatchesOpenPositionsByDealIdAndUpdatesUpl();
         ReconciliationMarksMissingOpenPositionsClosed();
         ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
@@ -108,6 +113,148 @@ public static class SyntheticTradingTests
         AssertEqual(0, restored.Count, "malformed persistence must not create execution records");
         AssertFalse(File.Exists(path), "malformed persistence must be moved away from the active path");
         AssertEqual(1, Directory.GetFiles(directory.Path, "executions.json.corrupt-*").Length, "malformed file must be quarantined with a UTC suffix");
+    }
+
+    private static void ExecutionStoreCoordinatesConcurrentInstancesWithoutLosingDealIdentity()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "executions.json");
+        var firstStore = new SyntheticExecutionStore(path);
+        var secondStore = new SyntheticExecutionStore(Path.GetFullPath(path));
+        var auditPayload = new string('x', 128 * 1024);
+        var seeds = Enumerable.Range(0, 32)
+            .Select(index => CreatePersistedExecutionRecord() with
+            {
+                ExecutionId = $"seed-{index}",
+                Legs = [CreatePersistedExecutionRecord().Legs[0] with
+                {
+                    DealId = $"deal-seed-{index}",
+                    Message = auditPayload,
+                }],
+            })
+            .ToArray();
+        var firstRecord = CreatePersistedExecutionRecord() with
+        {
+            ExecutionId = "execution-first",
+            Legs = [CreatePersistedExecutionRecord().Legs[0] with { DealId = "deal-first" }],
+        };
+        var secondRecord = CreatePersistedExecutionRecord() with
+        {
+            ExecutionId = "execution-second",
+            Legs = [CreatePersistedExecutionRecord().Legs[0] with { DealId = "deal-second" }],
+        };
+        firstStore.SaveAsync(seeds, default).GetAwaiter().GetResult();
+        var abandonedTemporaryPath = path + ".tmp";
+        File.WriteAllText(abandonedTemporaryPath, "abandoned");
+        File.SetLastWriteTimeUtc(abandonedTemporaryPath, DateTime.UtcNow.AddMinutes(-2));
+
+        using var start = new Barrier(3);
+        var first = Task.Factory.StartNew(() =>
+        {
+            start.SignalAndWait();
+            firstStore.UpsertAsync(firstRecord, default).GetAwaiter().GetResult();
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        var second = Task.Factory.StartNew(() =>
+        {
+            start.SignalAndWait();
+            secondStore.UpsertAsync(secondRecord, default).GetAwaiter().GetResult();
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        start.SignalAndWait();
+        Task.WaitAll(first, second);
+
+        var restored = firstStore.LoadAsync(default).GetAwaiter().GetResult();
+
+        AssertTrue(restored.Any(record => record.ExecutionId == "execution-first" && record.Legs[0].DealId == "deal-first"), "concurrent first upsert must retain deal identity");
+        AssertTrue(restored.Any(record => record.ExecutionId == "execution-second" && record.Legs[0].DealId == "deal-second"), "concurrent second upsert must retain deal identity");
+        AssertEqual(0, Directory.GetFiles(directory.Path, "executions.json.tmp*").Length, "concurrent persistence must clean temporary files");
+    }
+
+    private static void ExecutionStoreQuarantinesStructurallyInvalidExecutions()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "executions.json");
+        File.WriteAllText(path, "{\"schemaVersion\":1,\"executions\":[{}]}");
+        var store = new SyntheticExecutionStore(path);
+
+        var restored = store.LoadAsync(default).GetAwaiter().GetResult();
+
+        AssertEqual(0, restored.Count, "structurally invalid executions must not load");
+        AssertFalse(File.Exists(path), "structurally invalid executions must be quarantined");
+        AssertEqual(1, Directory.GetFiles(directory.Path, "executions.json.corrupt-*").Length, "structurally invalid execution file must be quarantined");
+    }
+
+    private static void ExecutionStoreQuarantinesInvalidLegs()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "executions.json");
+        var invalidLeg = CreatePersistedExecutionRecord().Legs[0] with
+        {
+            Epic = "",
+            State = (SyntheticExecutionLegState)999,
+        };
+        var document = new
+        {
+            schemaVersion = 1,
+            executions = new[] { CreatePersistedExecutionRecord() with { Legs = [invalidLeg] } },
+        };
+        File.WriteAllText(path, JsonSerializer.Serialize(document, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        }));
+        var store = new SyntheticExecutionStore(path);
+
+        var restored = store.LoadAsync(default).GetAwaiter().GetResult();
+
+        AssertEqual(0, restored.Count, "invalid leg identity or state must not load");
+        AssertFalse(File.Exists(path), "invalid leg persistence must be quarantined");
+        AssertEqual(1, Directory.GetFiles(directory.Path, "executions.json.corrupt-*").Length, "invalid leg file must be quarantined");
+    }
+
+    private static void ExecutionStoreQuarantinesLegsWithMissingDirection()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "executions.json");
+        var invalidLeg = CreatePersistedExecutionRecord().Legs[0] with { Direction = null! };
+        var document = new
+        {
+            schemaVersion = 1,
+            executions = new[] { CreatePersistedExecutionRecord() with { Legs = [invalidLeg] } },
+        };
+        File.WriteAllText(path, JsonSerializer.Serialize(document, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        }));
+        var store = new SyntheticExecutionStore(path);
+
+        var restored = store.LoadAsync(default).GetAwaiter().GetResult();
+
+        AssertEqual(0, restored.Count, "legs with missing direction must not load");
+        AssertFalse(File.Exists(path), "legs with missing direction must be quarantined");
+        AssertEqual(1, Directory.GetFiles(directory.Path, "executions.json.corrupt-*").Length, "missing-direction leg file must be quarantined");
+    }
+
+    private static void ExecutionStoreQuarantinesDuplicateTrackedDealIds()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "executions.json");
+        var first = CreatePersistedExecutionRecord();
+        var second = CreatePersistedExecutionRecord() with { ExecutionId = "execution-duplicate-deal" };
+        var document = new
+        {
+            schemaVersion = 1,
+            executions = new[] { first, second },
+        };
+        File.WriteAllText(path, JsonSerializer.Serialize(document, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        }));
+        var store = new SyntheticExecutionStore(path);
+
+        var restored = store.LoadAsync(default).GetAwaiter().GetResult();
+
+        AssertEqual(0, restored.Count, "duplicate tracked deal IDs must not load");
+        AssertFalse(File.Exists(path), "duplicate tracked deal IDs must be quarantined");
+        AssertEqual(1, Directory.GetFiles(directory.Path, "executions.json.corrupt-*").Length, "duplicate deal ID file must be quarantined");
     }
 
     private static void ReconciliationMatchesOpenPositionsByDealIdAndUpdatesUpl()
