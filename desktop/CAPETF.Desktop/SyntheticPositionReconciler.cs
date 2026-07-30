@@ -62,10 +62,14 @@ public sealed class SyntheticPositionReconciler
     {
         if (legs.All(leg => leg.State == SyntheticExecutionLegState.Closed)) return SyntheticExecutionState.Closed;
         if (legs.Any(leg => leg.State == SyntheticExecutionLegState.Unknown)) return SyntheticExecutionState.NeedsAttention;
+        if (legs.Any(leg => leg.State == SyntheticExecutionLegState.Rejected)
+            && legs.Any(leg => leg.State == SyntheticExecutionLegState.Open)) return SyntheticExecutionState.NeedsAttention;
         if (legs.All(leg => leg.State == SyntheticExecutionLegState.Open)) return SyntheticExecutionState.Open;
         if (legs.Any(leg => leg.State == SyntheticExecutionLegState.Closed)
             && legs.Any(leg => leg.State == SyntheticExecutionLegState.Open)) return SyntheticExecutionState.PartiallyClosed;
         if (legs.Any(leg => leg.State == SyntheticExecutionLegState.Open)) return SyntheticExecutionState.PartiallyOpen;
+        if (legs.Any(leg => leg.State == SyntheticExecutionLegState.Closed)) return SyntheticExecutionState.Closed;
+        if (legs.Any(leg => leg.State == SyntheticExecutionLegState.Rejected)) return SyntheticExecutionState.Rejected;
         return previousState;
     }
 }

@@ -64,6 +64,7 @@ public static class SyntheticTradingTests
         ReconciliationMatchesOpenPositionsByDealIdAndUpdatesUpl();
         ReconciliationMarksMissingOpenPositionsClosed();
         ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
+        ReconciliationMapsRejectedOpenPendingToNeedsAttentionAndPersistsIt();
     }
 
     private static void ExecutionStoreRoundTripsVersionedRecordsAndDealIdentity()
@@ -484,6 +485,101 @@ public static class SyntheticTradingTests
         AssertEqual(SyntheticExecutionLegState.Unknown, reconciled.Legs[0].State, "unmatched unknown outcomes must remain unknown");
         AssertEqual(SyntheticExecutionState.NeedsAttention, reconciled.State, "unresolved execution must remain visible for review");
         AssertEqual("No permanent deal ID was received.", reconciled.Legs[0].Message, "unresolved audit message must remain intact");
+    }
+
+    private static void ReconciliationMapsRejectedOpenPendingToNeedsAttentionAndPersistsIt()
+    {
+        using var directory = new TemporaryDirectory();
+        var baseRecord = CreatePersistedExecutionRecord();
+        var open = baseRecord.Legs[0] with
+        {
+            DealId = "deal-open",
+            Message = "AAPL open audit.",
+        };
+        var rejected = baseRecord.Legs[0] with
+        {
+            Epic = "MSFT",
+            State = SyntheticExecutionLegState.Rejected,
+            DealReference = "reject-reference",
+            DealId = "",
+            CloseDealReference = "",
+            FillLevel = null,
+            Message = "MSFT rejected audit.",
+            ConfirmedUtc = null,
+            ClosedUtc = null,
+            CurrentUnrealizedProfitLoss = null,
+        };
+        var pending = baseRecord.Legs[0] with
+        {
+            Epic = "NVDA",
+            State = SyntheticExecutionLegState.Pending,
+            DealReference = "",
+            DealId = "",
+            CloseDealReference = "",
+            FillLevel = null,
+            Message = "NVDA pending audit.",
+            SubmittedUtc = null,
+            ConfirmedUtc = null,
+            ClosedUtc = null,
+            UpdatedUtc = baseRecord.CreatedUtc,
+            CurrentUnrealizedProfitLoss = null,
+        };
+        var record = baseRecord with
+        {
+            State = SyntheticExecutionState.NeedsAttention,
+            Legs = [open, rejected, pending],
+        };
+        var now = DateTimeOffset.Parse("2026-07-30T13:00:00Z");
+        var reconciled = new SyntheticPositionReconciler().Reconcile(
+            record,
+            [new CapitalOpenPosition("deal-open", "AAPL", "BUY", 3m, 99m, 17.25m, "USD", "TRADEABLE")],
+            now);
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "reconciled.json"));
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, reconciled.State, "rejected plus open and pending legs need attention");
+        store.SaveAsync([reconciled], default).GetAwaiter().GetResult();
+        var restored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "reconciled mixture must round-trip");
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, restored.State, "reconciled execution state survives persistence");
+        AssertEqual(SyntheticExecutionLegState.Open, restored.Legs[0].State, "open leg state survives persistence");
+        AssertEqual("deal-open", restored.Legs[0].DealId, "open permanent deal identity survives persistence");
+        AssertEqual(17.25m, restored.Legs[0].CurrentUnrealizedProfitLoss, "Capital UPL survives persistence");
+        AssertEqual("AAPL open audit.", restored.Legs[0].Message, "open audit survives persistence");
+        AssertEqual(SyntheticExecutionLegState.Rejected, restored.Legs[1].State, "rejected leg state survives persistence");
+        AssertEqual("reject-reference", restored.Legs[1].DealReference, "rejected audit deal reference survives persistence");
+        AssertEqual("MSFT rejected audit.", restored.Legs[1].Message, "rejected audit survives persistence");
+        AssertEqual(SyntheticExecutionLegState.Pending, restored.Legs[2].State, "pending leg state survives persistence");
+        AssertEqual("NVDA pending audit.", restored.Legs[2].Message, "pending audit survives persistence");
+
+        var observedClosed = baseRecord.Legs[0] with
+        {
+            Epic = "TSLA",
+            DealId = "deal-observed-closed",
+            Message = "TSLA open audit.",
+        };
+        var recordWithObservedClosure = record with { Legs = [open, observedClosed, rejected, pending] };
+        var reconciledWithObservedClosure = new SyntheticPositionReconciler().Reconcile(
+            recordWithObservedClosure,
+            [new CapitalOpenPosition("deal-open", "AAPL", "BUY", 3m, 99m, 17.25m, "USD", "TRADEABLE")],
+            now);
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, reconciledWithObservedClosure.State, "rejected live mixture remains needs attention after an observed closure");
+        store.SaveAsync([reconciledWithObservedClosure], default).GetAwaiter().GetResult();
+        var observedClosureRestored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "observed closure reconciled mixture must round-trip");
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, observedClosureRestored.State, "observed closure mixture state survives persistence");
+        AssertEqual(SyntheticExecutionLegState.Closed, observedClosureRestored.Legs[1].State, "missing Capital deal is preserved as closed");
+        AssertEqual("deal-observed-closed", observedClosureRestored.Legs[1].DealId, "closed permanent deal identity survives persistence");
+        AssertEqual("TSLA open audit.", observedClosureRestored.Legs[1].Message, "closed audit survives persistence");
+
+        var closed = new SyntheticPositionReconciler().Reconcile(record, [], now);
+        store.SaveAsync([closed], default).GetAwaiter().GetResult();
+        var closedRestored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "closed reconciled mixture must round-trip");
+
+        AssertEqual(SyntheticExecutionState.Closed, closedRestored.State, "no remaining Capital position closes the execution");
+        AssertEqual(SyntheticExecutionLegState.Closed, closedRestored.Legs[0].State, "absent Capital deal closes the tracked open leg");
+        AssertEqual(SyntheticExecutionLegState.Rejected, closedRestored.Legs[1].State, "rejected leg remains terminal after reconciliation");
+        AssertEqual(SyntheticExecutionLegState.Pending, closedRestored.Legs[2].State, "unsent leg remains terminal audit context after reconciliation");
     }
 
     private static void PreflightRejectsNonDemoSessions()
