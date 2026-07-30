@@ -125,6 +125,20 @@ public sealed class SyntheticBasketExecutionService
                     ? SyntheticExecutionState.PartiallyOpen
                     : SyntheticExecutionState.Submitting);
             await progress(record, mutationDispatched ? CancellationToken.None : cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                cancelled = true;
+                record = UpdateLeg(
+                    record,
+                    index,
+                    leg => leg with
+                    {
+                        State = SyntheticExecutionLegState.Pending,
+                        SubmittedUtc = null,
+                        UpdatedUtc = _clock.UtcNow,
+                    });
+                break;
+            }
 
             CapitalDealAcknowledgement acknowledgement;
             try
@@ -223,6 +237,15 @@ public sealed class SyntheticBasketExecutionService
                 leg => leg with { State = SyntheticExecutionLegState.Closing, Message = "", UpdatedUtc = _clock.UtcNow },
                 SyntheticExecutionState.Closing);
             await progress(current, mutationDispatched ? CancellationToken.None : cancellationToken);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                cancelled = true;
+                current = UpdateLeg(
+                    current,
+                    index,
+                    leg => leg with { State = SyntheticExecutionLegState.Open, UpdatedUtc = _clock.UtcNow });
+                break;
+            }
 
             CapitalDealAcknowledgement acknowledgement;
             try

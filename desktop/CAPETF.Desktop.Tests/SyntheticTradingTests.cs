@@ -35,6 +35,8 @@ public static class SyntheticTradingTests
         AcceptedCreatePersistenceIgnoresCallerCancellation();
         CloseAcknowledgementPersistenceIgnoresCallerCancellation();
         AcceptedClosePersistenceIgnoresCallerCancellation();
+        CancellationDuringLaterCreatePersistenceStopsBeforeGateway();
+        CancellationDuringLaterClosePersistenceStopsBeforeGateway();
         ProductionTransportDisablesAutomaticRedirects();
         LiveMutationIsRejectedBeforeItIsSent();
         DemoPositionRequestUsesCapitalContract();
@@ -497,6 +499,74 @@ public static class SyntheticTradingTests
         AssertSequence(gateway.Calls, "CLOSE:d_aapl", "CONFIRM:c_aapl");
     }
 
+    private static void CancellationDuringLaterCreatePersistenceStopsBeforeGateway()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("o_aapl")));
+        gateway.ConfirmResults["o_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(AcceptedConfirmation("o_aapl", "d_aapl"))]);
+        var persisted = new List<SyntheticExecutionRecord>();
+        SyntheticExecutionProgress progress = (record, persistenceToken) =>
+        {
+            persistenceToken.ThrowIfCancellationRequested();
+            persisted.Add(record);
+            if (record.Legs[0].State == SyntheticExecutionLegState.Open
+                && record.Legs[1].State == SyntheticExecutionLegState.Submitted)
+            {
+                cancellation.Cancel();
+            }
+            return Task.CompletedTask;
+        };
+
+        var result = CreateExecutionService(gateway).ExecuteAsync(
+            CreateExecutionTicket("AAPL", "MSFT"),
+            progress,
+            cancellation.Token).GetAwaiter().GetResult();
+
+        AssertEqual(1, gateway.CreateInvocations, "cancellation after later create persistence must stop before gateway entry");
+        AssertSequence(gateway.Calls, "POST:AAPL", "CONFIRM:o_aapl");
+        AssertEqual(SyntheticExecutionState.NeedsAttention, result.State, "cancelled later create basket state");
+        AssertEqual(SyntheticExecutionLegState.Open, result.Legs[0].State, "earlier open state remains durable");
+        AssertEqual("d_aapl", result.Legs[0].DealId, "earlier open deal ID remains durable");
+        AssertEqual(SyntheticExecutionLegState.Pending, result.Legs[1].State, "unsent later create leg remains pending");
+        AssertEqual(result, persisted[^1], "final execute state must be durably persisted");
+    }
+
+    private static void CancellationDuringLaterClosePersistenceStopsBeforeGateway()
+    {
+        var gateway = AcceptedExecutionGateway("AAPL", "MSFT");
+        var service = CreateExecutionService(gateway);
+        var open = service.ExecuteAsync(CreateExecutionTicket("AAPL", "MSFT"), IgnoreProgress, default).GetAwaiter().GetResult();
+        gateway.ClearCalls();
+        gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_aapl")));
+        gateway.ConfirmResults["c_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(ClosedConfirmation("c_aapl", "d_aapl"))]);
+        using var cancellation = new CancellationTokenSource();
+        var persisted = new List<SyntheticExecutionRecord>();
+        SyntheticExecutionProgress progress = (record, persistenceToken) =>
+        {
+            persistenceToken.ThrowIfCancellationRequested();
+            persisted.Add(record);
+            if (record.Legs[0].State == SyntheticExecutionLegState.Closed
+                && record.Legs[1].State == SyntheticExecutionLegState.Closing)
+            {
+                cancellation.Cancel();
+            }
+            return Task.CompletedTask;
+        };
+
+        var result = service.CloseAsync(open, progress, cancellation.Token).GetAwaiter().GetResult();
+
+        AssertEqual(1, gateway.CloseInvocations, "cancellation after later close persistence must stop before gateway entry");
+        AssertSequence(gateway.Calls, "CLOSE:d_aapl", "CONFIRM:c_aapl");
+        AssertEqual(SyntheticExecutionState.PartiallyClosed, result.State, "cancelled later close basket state");
+        AssertEqual(SyntheticExecutionLegState.Closed, result.Legs[0].State, "earlier closed state remains durable");
+        AssertTrue(result.Legs[0].ClosedUtc is not null, "earlier close timestamp remains durable");
+        AssertEqual(SyntheticExecutionLegState.Open, result.Legs[1].State, "unsent later close leg remains open");
+        AssertEqual(result, persisted[^1], "final close state must be durably persisted");
+    }
+
     private static SyntheticPreflightInput CreatePreflightInput(
         SyntheticBasket? basket = null,
         DateTimeOffset? now = null) =>
@@ -892,9 +962,12 @@ public static class SyntheticTradingTests
         public List<string> PostCalls { get; } = [];
         public List<string> ConfirmCalls { get; } = [];
         public List<string> CloseCalls { get; } = [];
+        public int CreateInvocations { get; private set; }
+        public int CloseInvocations { get; private set; }
 
         public Task<CapitalDealAcknowledgement> CreatePositionAsync(CapitalPositionRequest request, CancellationToken cancellationToken)
         {
+            CreateInvocations++;
             cancellationToken.ThrowIfCancellationRequested();
             Calls.Add($"POST:{request.Epic}");
             PostCalls.Add(request.Epic);
@@ -911,6 +984,7 @@ public static class SyntheticTradingTests
 
         public Task<CapitalDealAcknowledgement> ClosePositionAsync(string dealId, CancellationToken cancellationToken)
         {
+            CloseInvocations++;
             cancellationToken.ThrowIfCancellationRequested();
             Calls.Add($"CLOSE:{dealId}");
             CloseCalls.Add(dealId);
@@ -923,6 +997,8 @@ public static class SyntheticTradingTests
             PostCalls.Clear();
             ConfirmCalls.Clear();
             CloseCalls.Clear();
+            CreateInvocations = 0;
+            CloseInvocations = 0;
         }
     }
 
