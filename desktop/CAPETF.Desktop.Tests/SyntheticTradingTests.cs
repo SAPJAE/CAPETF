@@ -12,6 +12,8 @@ public static class SyntheticTradingTests
 {
     public static void RunAll()
     {
+        AcceptedBasketSurvivesRestartReconcilesAndClosesWithoutDuplicateMutations();
+        PartialExecutionSurvivesRestartWithoutSubmittingOrClosingRemainingLegs();
         SyntheticTradingWorkspaceHasProfessionalDemoContract();
         SyntheticTradingWorkspaceRuntimeUsesHostOwnedTicketsAndOperationLocks();
         TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs();
@@ -88,6 +90,142 @@ public static class SyntheticTradingTests
         ReconciliationReopensClosedLegWithoutClosureMetadataAndPersistsIt();
         ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
         ReconciliationMapsRejectedOpenPendingToNeedsAttentionAndPersistsIt();
+    }
+
+    private static void AcceptedBasketSurvivesRestartReconcilesAndClosesWithoutDuplicateMutations()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "executions.json"));
+        var gateway = AcceptedExecutionGateway("ALPHA", "BETA", "GAMMA");
+        var preflight = SyntheticTradePreflight.Build(CreateThreeLegPreflightInput());
+        AssertTrue(preflight.IsReady, "accepted lifecycle preflight must be ready");
+        AssertTrue(preflight.Ticket is not null, "accepted lifecycle preflight ticket");
+        var ticketId = Guid.Parse(preflight.Ticket!.TicketId);
+        SyntheticExecutionRecord opened;
+
+        using (var coordinator = CreateHostCoordinator(directory.Path, gateway, store: store))
+        {
+            coordinator.RegisterPreflight(preflight);
+            using var execution = coordinator.BeginExecution(ticketId);
+            opened = coordinator.ExecuteAsync(execution, _ => Task.CompletedTask, _ => Task.CompletedTask, default)
+                .GetAwaiter().GetResult();
+
+            AssertThrows<InvalidOperationException>(
+                () => coordinator.BeginExecution(ticketId),
+                "an executed preflight ticket must remain one-time only");
+        }
+
+        AssertEqual(SyntheticExecutionState.Open, opened.State, "three accepted legs open the basket");
+        AssertSequence(
+            gateway.Calls,
+            "POST:ALPHA", "CONFIRM:o_alpha",
+            "POST:BETA", "CONFIRM:o_beta",
+            "POST:GAMMA", "CONFIRM:o_gamma");
+        AssertEqual("BUY|SELL|BUY", string.Join("|", gateway.PostRequests.Select(request => request.Direction)), "frozen ticket leg directions");
+        AssertEqual(3, gateway.CreateInvocations, "accepted lifecycle submits each leg exactly once");
+        AssertEqual("o_alpha|o_beta|o_gamma", string.Join("|", opened.Legs.Select(leg => leg.DealReference)), "accepted deal references");
+        AssertEqual("d_alpha|d_beta|d_gamma", string.Join("|", opened.Legs.Select(leg => leg.DealId)), "accepted permanent deal IDs");
+        AssertEqual(0, Directory.GetFiles(directory.Path, "executions.json.tmp*").Length, "atomic store leaves no temporary file");
+        var persistedOpen = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "accepted execution must persist");
+        AssertEqual(JsonSerializer.Serialize(opened), JsonSerializer.Serialize(persistedOpen), "open execution survives persistence unchanged");
+
+        gateway.ClearCalls();
+        var openPositions = PositionsFor(opened, 0, 1, 2);
+        using var restarted = CreateHostCoordinator(
+            directory.Path,
+            gateway,
+            store: store,
+            getOpenPositions: _ => Task.FromResult(openPositions),
+            clock: new TestExecutionClock(DateTimeOffset.Parse("2026-07-30T13:00:00Z")));
+        var reconciled = AssertSingle(
+            restarted.ReconnectAsync(_ => Task.CompletedTask, default).GetAwaiter().GetResult(),
+            "restart must reconcile the persisted execution");
+
+        AssertEqual(SyntheticExecutionState.Open, reconciled.State, "restart keeps confirmed open positions open");
+        AssertEqual("d_alpha|d_beta|d_gamma", string.Join("|", reconciled.Legs.Select(leg => leg.DealId)), "reconciliation preserves permanent deal IDs");
+        AssertEqual(0, gateway.CreateInvocations, "restart reconciliation must not resubmit positions");
+        AssertEqual(0, gateway.CloseInvocations, "restart reconciliation must not close positions");
+
+        foreach (var leg in reconciled.Legs)
+        {
+            var suffix = leg.Epic.ToLowerInvariant();
+            gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement($"c_{suffix}")));
+            gateway.ConfirmResults[$"c_{suffix}"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+                [() => Task.FromResult(ClosedConfirmation($"c_{suffix}", $"d_{suffix}"))]);
+        }
+
+        var closed = restarted.CloseAsync(reconciled.ExecutionId, _ => Task.CompletedTask, _ => Task.CompletedTask, default)
+            .GetAwaiter().GetResult();
+
+        AssertSequence(
+            gateway.Calls,
+            "CLOSE:d_alpha", "CONFIRM:c_alpha",
+            "CLOSE:d_beta", "CONFIRM:c_beta",
+            "CLOSE:d_gamma", "CONFIRM:c_gamma");
+        AssertEqual(3, gateway.CloseInvocations, "close submits each tracked position exactly once");
+        AssertEqual(SyntheticExecutionState.Closed, closed.State, "accepted lifecycle closes after all confirmations");
+        AssertTrue(closed.Legs.All(leg => leg.State == SyntheticExecutionLegState.Closed), "all accepted legs are durably closed");
+        var persistedClosed = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "closed execution must persist");
+        AssertEqual(JsonSerializer.Serialize(closed), JsonSerializer.Serialize(persistedClosed), "closed execution survives persistence unchanged");
+    }
+
+    private static void PartialExecutionSurvivesRestartWithoutSubmittingOrClosingRemainingLegs()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "executions.json"));
+        var gateway = new ScriptedTradingGateway();
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("partial-alpha")));
+        gateway.PostResults.Enqueue(() => Task.FromResult(Acknowledgement("partial-beta")));
+        gateway.ConfirmResults["partial-alpha"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(AcceptedConfirmation("partial-alpha", "partial-deal-alpha"))]);
+        gateway.ConfirmResults["partial-beta"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(RejectedConfirmation("partial-beta", "MARKET_CLOSED"))]);
+        var preflight = SyntheticTradePreflight.Build(CreateThreeLegPreflightInput());
+        var ticketId = Guid.Parse(preflight.Ticket?.TicketId ?? throw new Exception("partial lifecycle preflight ticket missing"));
+        SyntheticExecutionRecord partial;
+
+        using (var coordinator = CreateHostCoordinator(directory.Path, gateway, store: store))
+        {
+            coordinator.RegisterPreflight(preflight);
+            using var execution = coordinator.BeginExecution(ticketId);
+            partial = coordinator.ExecuteAsync(execution, _ => Task.CompletedTask, _ => Task.CompletedTask, default)
+                .GetAwaiter().GetResult();
+        }
+
+        AssertSequence(gateway.Calls, "POST:ALPHA", "CONFIRM:partial-alpha", "POST:BETA", "CONFIRM:partial-beta");
+        AssertEqual(2, gateway.CreateInvocations, "rejection stops before the third create mutation");
+        AssertEqual(0, gateway.CloseInvocations, "partial execution must never auto-rollback the accepted leg");
+        AssertEqual(SyntheticExecutionState.NeedsAttention, partial.State, "partial execution requires attention");
+        AssertEqual(
+            "Open|Rejected|Pending",
+            string.Join("|", partial.Legs.Select(leg => leg.State)),
+            "partial execution durable leg states");
+        AssertEqual("partial-deal-alpha", partial.Legs[0].DealId, "accepted partial leg keeps its permanent deal ID");
+        AssertEqual("", partial.Legs[2].DealReference, "unsent third leg has no mutation identity");
+
+        gateway.ClearCalls();
+        var position = PositionsFor(partial, 0);
+        using var restarted = CreateHostCoordinator(
+            directory.Path,
+            gateway,
+            store: store,
+            getOpenPositions: _ => Task.FromResult(position),
+            clock: new TestExecutionClock(DateTimeOffset.Parse("2026-07-30T13:00:00Z")));
+        var reconciled = AssertSingle(
+            restarted.ReconnectAsync(_ => Task.CompletedTask, default).GetAwaiter().GetResult(),
+            "partial execution must survive restart");
+
+        AssertEqual(SyntheticExecutionState.NeedsAttention, reconciled.State, "restart preserves partial execution attention state");
+        AssertEqual(
+            "Open|Rejected|Pending",
+            string.Join("|", reconciled.Legs.Select(leg => leg.State)),
+            "restart preserves accepted, rejected, and unsent leg states");
+        AssertEqual("partial-deal-alpha", reconciled.Legs[0].DealId, "restart preserves the accepted deal ID");
+        AssertEqual(0, gateway.Calls.Count, "reconciliation performs no create, confirm, or close mutation");
+        AssertEqual(0, gateway.CreateInvocations, "restart does not retry rejected or unsent legs");
+        AssertEqual(0, gateway.CloseInvocations, "restart does not auto-close the accepted leg");
+        var persisted = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "reconciled partial execution must persist");
+        AssertEqual(JsonSerializer.Serialize(reconciled), JsonSerializer.Serialize(persisted), "reconciled partial state is durable");
     }
 
     private static void SyntheticTradingWorkspaceHasProfessionalDemoContract()
@@ -2498,6 +2636,13 @@ public static class SyntheticTradingTests
             now ?? DateTimeOffset.Parse("2026-07-30T12:00:00Z"),
             CreateMarginSummary());
 
+    private static SyntheticPreflightInput CreateThreeLegPreflightInput() =>
+        CreatePreflightInput(CreateBasket([
+            CreateComponent("ALPHA", 1m, 100m / 3m),
+            CreateComponent("BETA", -1m, 100m / 3m),
+            CreateComponent("GAMMA", 1m, 100m / 3m),
+        ]));
+
     private static SyntheticExecutionRecord Execute(ScriptedTradingGateway gateway, params string[] epics) =>
         CreateExecutionService(gateway).ExecuteAsync(CreateExecutionTicket(epics), IgnoreProgress, default).GetAwaiter().GetResult();
 
@@ -2512,16 +2657,17 @@ public static class SyntheticTradingTests
         Func<bool>? isDemo = null,
         Func<DateTimeOffset>? utcNow = null,
         SyntheticExecutionStore? store = null,
-        Func<CancellationToken, Task<IReadOnlyList<CapitalOpenPosition>>>? getOpenPositions = null)
+        Func<CancellationToken, Task<IReadOnlyList<CapitalOpenPosition>>>? getOpenPositions = null,
+        ISyntheticExecutionClock? clock = null)
     {
-        var clock = new TestExecutionClock();
+        var executionClock = clock ?? new TestExecutionClock();
         return new SyntheticTradingHostCoordinator(
-            new SyntheticBasketExecutionService(gateway, clock),
+            new SyntheticBasketExecutionService(gateway, executionClock),
             store ?? new SyntheticExecutionStore(Path.Combine(directory, "executions.json")),
             new SyntheticPositionReconciler(),
             isDemo ?? (() => true),
             getOpenPositions ?? (_ => Task.FromResult<IReadOnlyList<CapitalOpenPosition>>([])),
-            utcNow ?? (() => clock.UtcNow));
+            utcNow ?? (() => executionClock.UtcNow));
     }
 
     private static SyntheticExecutionTicket CreateHostTicket(
@@ -3116,7 +3262,12 @@ public static class SyntheticTradingTests
 
     private sealed class TestExecutionClock : ISyntheticExecutionClock
     {
-        public DateTimeOffset UtcNow { get; private set; } = DateTimeOffset.Parse("2026-07-30T12:00:00Z");
+        public TestExecutionClock(DateTimeOffset? start = null)
+        {
+            UtcNow = start ?? DateTimeOffset.Parse("2026-07-30T12:00:00Z");
+        }
+
+        public DateTimeOffset UtcNow { get; private set; }
         public List<TimeSpan> Delays { get; } = [];
 
         public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
