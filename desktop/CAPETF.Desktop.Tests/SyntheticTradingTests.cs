@@ -10,6 +10,15 @@ public static class SyntheticTradingTests
 {
     public static void RunAll()
     {
+        PreflightRejectsNonDemoSessions();
+        PreflightRejectsInvalidComponentCounts();
+        PreflightRejectsDuplicateEpics();
+        PreflightReturnsLegFailuresInEpicOrder();
+        PreflightRejectsZeroAndStaleQuotes();
+        PreflightRejectsInvalidRoundedSize();
+        PreflightRejectsMissingMargin();
+        PreflightRejectsInsufficientFunds();
+        PreflightCreatesFrozenTicketWithReversedNegativeLeg();
         ProductionTransportDisablesAutomaticRedirects();
         LiveMutationIsRejectedBeforeItIsSent();
         DemoPositionRequestUsesCapitalContract();
@@ -18,6 +27,191 @@ public static class SyntheticTradingTests
         OpenPositionsParseRequiredFields();
         DemoClosePositionUsesDeleteWithoutRetry();
         DemoCloseRedirectDoesNotReachRedirectTarget();
+    }
+
+    private static void PreflightRejectsNonDemoSessions()
+    {
+        var result = SyntheticTradePreflight.Build(CreatePreflightInput() with { IsDemoSession = false });
+
+        AssertFalse(result.IsReady, "live sessions must fail preflight");
+        AssertContainsFailure(result, "", "Demo trading session is required.");
+    }
+
+    private static void PreflightRejectsInvalidComponentCounts()
+    {
+        var basket = CreateBasket().Components.Take(2).ToList();
+        var result = SyntheticTradePreflight.Build(CreatePreflightInput(CreateBasket(basket)));
+
+        AssertFalse(result.IsReady, "two-leg baskets must fail preflight");
+        AssertContainsFailure(result, "", "Synthetic baskets must contain 3 or 4 components.");
+    }
+
+    private static void PreflightRejectsDuplicateEpics()
+    {
+        var components = CreateBasket().Components.ToList();
+        components[1] = CreateComponent("alpha", -1m);
+        var result = SyntheticTradePreflight.Build(CreatePreflightInput(CreateBasket(components)));
+
+        AssertFalse(result.IsReady, "duplicate epics must fail preflight");
+        AssertContainsFailure(result, "ALPHA", "Duplicate epic.");
+    }
+
+    private static void PreflightReturnsLegFailuresInEpicOrder()
+    {
+        var basket = CreateBasket();
+        basket.Components.Single(component => component.Instrument.Epic == "ALPHA").Instrument.Status = "SUSPENDED";
+        basket.Components.Single(component => component.Instrument.Epic == "ZETA").Instrument.Status = "CLOSED";
+
+        var result = SyntheticTradePreflight.Build(CreatePreflightInput(basket));
+
+        AssertFalse(result.IsReady, "untradeable legs must fail preflight");
+        AssertEqual(
+            "ALPHA|ZETA",
+            string.Join("|", result.Failures.Where(failure => failure.Reason == "Market is not TRADEABLE.").Select(failure => failure.Epic)),
+            "leg failures must be reported in deterministic epic order");
+    }
+
+    private static void PreflightRejectsZeroAndStaleQuotes()
+    {
+        var now = DateTimeOffset.Parse("2026-07-30T12:00:00Z");
+        var basket = CreateBasket();
+        basket.Components.Single(component => component.Instrument.Epic == "BETA").Instrument.Bid = 0m;
+        basket.Components.Single(component => component.Instrument.Epic == "GAMMA").Instrument.LastTickAt = now.AddMinutes(-5).AddTicks(-1);
+
+        var result = SyntheticTradePreflight.Build(CreatePreflightInput(basket, now));
+
+        AssertFalse(result.IsReady, "zero and stale quotes must fail preflight");
+        AssertContainsFailure(result, "BETA", "Bid and offer prices must be positive.");
+        AssertContainsFailure(result, "GAMMA", "Quote is older than five minutes.");
+    }
+
+    private static void PreflightRejectsInvalidRoundedSize()
+    {
+        var components = CreateBasket().Components.ToList();
+        components[0] = CreateComponent("ALPHA", 1m, 0m);
+        components[0].Instrument.MinDealSize = null;
+        components[0].Instrument.MinSizeIncrement = null;
+        var basket = CreateBasket(components);
+
+        var result = SyntheticTradePreflight.Build(CreatePreflightInput(basket));
+
+        AssertFalse(result.IsReady, "zero rounded quantities must fail preflight");
+        AssertContainsFailure(result, "ALPHA", "Rounded size is invalid.");
+    }
+
+    private static void PreflightRejectsMissingMargin()
+    {
+        var result = SyntheticTradePreflight.Build(CreatePreflightInput() with { Margin = null });
+
+        AssertFalse(result.IsReady, "missing margin must fail preflight");
+        AssertContainsFailure(result, "", "Margin preview is unavailable.");
+    }
+
+    private static void PreflightRejectsInsufficientFunds()
+    {
+        var result = SyntheticTradePreflight.Build(CreatePreflightInput() with { Margin = CreateMarginSummary(available: 119m) });
+
+        AssertFalse(result.IsReady, "insufficient available funds must fail preflight");
+        AssertContainsFailure(result, "", "Estimated margin exceeds available funds.");
+    }
+
+    private static void PreflightCreatesFrozenTicketWithReversedNegativeLeg()
+    {
+        var now = DateTimeOffset.Parse("2026-07-30T12:00:00Z");
+        var basket = CreateBasket();
+        var result = SyntheticTradePreflight.Build(CreatePreflightInput(basket, now));
+
+        AssertTrue(result.IsReady, "valid demo basket must be ready");
+        var ticket = result.Ticket ?? throw new Exception("ready preflight must create a ticket");
+        AssertTrue(!string.IsNullOrWhiteSpace(ticket.TicketId), "ticket must have an ID");
+        AssertEqual("basket-123", ticket.BasketId, "ticket basket ID");
+        AssertEqual("BUY", ticket.Side, "ticket side");
+        AssertEqual(600m, ticket.RequestedNotional, "ticket requested notional");
+        AssertEqual(now, ticket.CreatedUtc, "ticket creation time");
+        AssertEqual(now.AddMinutes(2), ticket.ExpiresUtc, "ticket expiry");
+        AssertEqual(120m, ticket.EstimatedMargin, "ticket estimated margin");
+        var negativeLeg = ticket.Legs.Single(leg => leg.Multiplier < 0m);
+        AssertEqual("SELL", negativeLeg.Direction, "negative leg reverses BUY basket");
+        AssertEqual(15m, negativeLeg.Quantity, "ticket copies executable quantity");
+        AssertEqual(10m, negativeLeg.ReferencePrice, "ticket copies executable price");
+        AssertEqual(30m, negativeLeg.EstimatedMargin, "ticket copies executable margin");
+
+        basket.Components.Single(component => component.Instrument.Epic == negativeLeg.Epic).Instrument.Bid = 99m;
+        AssertEqual(10m, negativeLeg.ReferencePrice, "chart updates must not mutate a frozen ticket");
+    }
+
+    private static SyntheticPreflightInput CreatePreflightInput(
+        SyntheticBasket? basket = null,
+        DateTimeOffset? now = null) =>
+        new(
+            true,
+            "basket-123",
+            basket ?? CreateBasket(),
+            "BUY",
+            600m,
+            now ?? DateTimeOffset.Parse("2026-07-30T12:00:00Z"),
+            CreateMarginSummary());
+
+    private static SyntheticBasket CreateBasket(IEnumerable<SyntheticComponent>? components = null)
+    {
+        var basket = new SyntheticBasket { Symbol = "SYN-TEST-01" };
+        foreach (var component in components ?? new[]
+        {
+            CreateComponent("ALPHA", 1m),
+            CreateComponent("BETA", -1m),
+            CreateComponent("GAMMA", 1m),
+            CreateComponent("ZETA", 1m),
+        })
+        {
+            basket.Components.Add(component);
+        }
+        return basket;
+    }
+
+    private static SyntheticComponent CreateComponent(string epic, decimal multiplier, decimal weight = 25m) =>
+        new(
+            new MarketInstrument
+            {
+                Epic = epic,
+                Currency = "USD",
+                Bid = 10m,
+                Offer = 10m,
+                LastTickAt = DateTimeOffset.Parse("2026-07-30T12:00:00Z"),
+                Status = "TRADEABLE",
+                LotSize = 1m,
+                MinDealSize = 1m,
+                MinSizeIncrement = 1m,
+            },
+            weight,
+            10m,
+            20m)
+        {
+            FormulaMultiplier = multiplier,
+        };
+
+    private static SyntheticMarginSummary CreateMarginSummary(decimal available = 500m)
+    {
+        var legs = new[]
+        {
+            CreateMarginLeg("BUY", "ALPHA"),
+            CreateMarginLeg("SELL", "BETA"),
+            CreateMarginLeg("BUY", "GAMMA"),
+            CreateMarginLeg("BUY", "ZETA"),
+        };
+        var buy = new SyntheticMarginSidePreview("BUY", "USD", true, "", 120m, legs);
+        var sell = new SyntheticMarginSidePreview("SELL", "USD", true, "", 120m, legs);
+        return new SyntheticMarginSummary("USD", available, available - 120m, available - 120m, buy, sell);
+    }
+
+    private static SyntheticMarginLegPreview CreateMarginLeg(string side, string epic) =>
+        new(side, epic, 10m, 15m, 150m, "USD", 30m, "USD", 30m);
+
+    private static void AssertContainsFailure(SyntheticPreflightResult result, string epic, string reason)
+    {
+        if (!result.Failures.Any(failure => failure.Epic == epic && failure.Reason == reason))
+        {
+            throw new Exception($"preflight failure missing: {epic} {reason}");
+        }
     }
 
     private static void ProductionTransportDisablesAutomaticRedirects()
