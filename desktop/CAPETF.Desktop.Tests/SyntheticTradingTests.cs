@@ -10,11 +10,21 @@ public static class SyntheticTradingTests
 {
     public static void RunAll()
     {
+        ProductionTransportDisablesAutomaticRedirects();
         LiveMutationIsRejectedBeforeItIsSent();
         DemoPositionRequestUsesCapitalContract();
+        DemoPositionRedirectDoesNotReachRedirectTarget();
         DealConfirmationParsesRequiredFields();
         OpenPositionsParseRequiredFields();
         DemoClosePositionUsesDeleteWithoutRetry();
+        DemoCloseRedirectDoesNotReachRedirectTarget();
+    }
+
+    private static void ProductionTransportDisablesAutomaticRedirects()
+    {
+        using var handler = CapitalApiClient.CreateProductionHttpHandler();
+
+        AssertFalse(handler.AllowAutoRedirect, "production transport must not follow redirects");
     }
 
     private static void LiveMutationIsRejectedBeforeItIsSent()
@@ -63,6 +73,20 @@ public static class SyntheticTradingTests
         AssertEqual("DEAL-OTHER", confirmation.AffectedDeals[1].DealId, "confirmation affected deal");
     }
 
+    private static void DemoPositionRedirectDoesNotReachRedirectTarget()
+    {
+        var handler = new RedirectingTradingHandler();
+        using var client = Login(handler, useDemo: true);
+
+        var exception = AssertThrows<CapitalApiException>(
+            () => client.CreatePositionAsync(new CapitalPositionRequest("AAPL", "BUY", 2.5m), default).GetAwaiter().GetResult(),
+            "redirected position request must fail without a follow-up request");
+
+        AssertEqual(HttpStatusCode.TemporaryRedirect, exception.StatusCode, "position redirect status");
+        AssertEqual(1, handler.MutationRequests.Count, "position redirect must issue one mutation request");
+        AssertEqual("demo-api-capital.backend-capital.com", handler.MutationRequests[0].Host, "position must never reach the redirect target");
+    }
+
     private static void OpenPositionsParseRequiredFields()
     {
         var handler = new TradingHandler();
@@ -95,7 +119,21 @@ public static class SyntheticTradingTests
         AssertEqual(1, handler.Requests.Count(request => request.Path == "/api/v1/positions/DEAL-123"), "close must not retry");
     }
 
-    private static CapitalApiClient Login(TradingHandler handler, bool useDemo)
+    private static void DemoCloseRedirectDoesNotReachRedirectTarget()
+    {
+        var handler = new RedirectingTradingHandler();
+        using var client = Login(handler, useDemo: true);
+
+        var exception = AssertThrows<CapitalApiException>(
+            () => client.ClosePositionAsync("DEAL-123", default).GetAwaiter().GetResult(),
+            "redirected close request must fail without a follow-up request");
+
+        AssertEqual(HttpStatusCode.TemporaryRedirect, exception.StatusCode, "close redirect status");
+        AssertEqual(1, handler.MutationRequests.Count, "close redirect must issue one mutation request");
+        AssertEqual("demo-api-capital.backend-capital.com", handler.MutationRequests[0].Host, "close must never reach the redirect target");
+    }
+
+    private static CapitalApiClient Login(HttpMessageHandler handler, bool useDemo)
     {
         var client = new CapitalApiClient(handler);
         client.LoginAsync(new ApiCredentials
@@ -144,7 +182,11 @@ public static class SyntheticTradingTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
-            Requests.Add(new RecordedRequest(request.Method, request.RequestUri?.AbsolutePath ?? "", body));
+            Requests.Add(new RecordedRequest(
+                request.Method,
+                request.RequestUri?.Host ?? "",
+                request.RequestUri?.AbsolutePath ?? "",
+                body));
 
             var response = request.RequestUri?.AbsolutePath switch
             {
@@ -173,5 +215,44 @@ public static class SyntheticTradingTests
         }
     }
 
-    private sealed record RecordedRequest(HttpMethod Method, string Path, string Body);
+    private sealed class RedirectingTradingHandler : HttpMessageHandler
+    {
+        public List<RecordedRequest> Requests { get; } = [];
+        public IReadOnlyList<RecordedRequest> MutationRequests => Requests.Where(request => request.Path != "/api/v1/session").ToList();
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
+            Requests.Add(new RecordedRequest(
+                request.Method,
+                request.RequestUri?.Host ?? "",
+                request.RequestUri?.AbsolutePath ?? "",
+                body));
+
+            if (request.RequestUri?.AbsolutePath == "/api/v1/session")
+            {
+                return JsonResponse(HttpStatusCode.OK, "{}", includeSessionHeaders: true);
+            }
+
+            var response = JsonResponse(HttpStatusCode.TemporaryRedirect, "{}");
+            response.Headers.Location = new Uri("https://api-capital.backend-capital.com/api/v1/positions");
+            return response;
+        }
+
+        private static HttpResponseMessage JsonResponse(HttpStatusCode status, string body, bool includeSessionHeaders = false)
+        {
+            var response = new HttpResponseMessage(status)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            };
+            if (includeSessionHeaders)
+            {
+                response.Headers.Add("CST", "cst-token");
+                response.Headers.Add("X-SECURITY-TOKEN", "security-token");
+            }
+            return response;
+        }
+    }
+
+    private sealed record RecordedRequest(HttpMethod Method, string Host, string Path, string Body);
 }

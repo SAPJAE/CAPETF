@@ -63,9 +63,14 @@ public sealed partial class CapitalApiClient : IDisposable
 
     public CapitalApiClient()
     {
-        _http = new HttpClient();
+        _http = new HttpClient(CreateProductionHttpHandler());
         _disposeHttp = true;
     }
+
+    internal static HttpClientHandler CreateProductionHttpHandler() => new()
+    {
+        AllowAutoRedirect = false,
+    };
 
     internal CapitalApiClient(HttpMessageHandler handler)
     {
