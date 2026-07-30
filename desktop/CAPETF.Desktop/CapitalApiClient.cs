@@ -51,7 +51,7 @@ internal sealed class CapitalApiException(HttpStatusCode statusCode, string reas
     }
 }
 
-public sealed class CapitalApiClient : IDisposable
+public sealed partial class CapitalApiClient : IDisposable
 {
     private readonly HttpClient _http;
     private readonly bool _disposeHttp;

@@ -13,6 +13,7 @@ public static class SyntheticBasketBuilderTests
 {
     public static void RunAll()
     {
+        SyntheticTradingTests.RunAll();
         TerminalOperationStateRejectsDuplicatesAndTracksProgress();
         TerminalOperationStageResetsCompletedTotalsForIndeterminateWork();
         TerminalProgressPercentUsesOneWayBinding();
