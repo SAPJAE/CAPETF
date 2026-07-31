@@ -124,6 +124,7 @@
     #workspace {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 6px var(--rail-width);
+      grid-template-rows: minmax(0, 1fr) 4px auto;
       min-height: 0;
     }
 
@@ -132,6 +133,8 @@
     }
 
     #component-splitter {
+      grid-column: 2;
+      grid-row: 1;
       width: 6px;
       min-width: 6px;
       cursor: col-resize;
@@ -152,6 +155,8 @@
 
     #chart-panel {
       display: grid;
+      grid-column: 1;
+      grid-row: 1;
       grid-template-rows: minmax(0, 1fr) auto;
       container-type: inline-size;
       min-width: 0;
@@ -172,6 +177,179 @@
       min-width: 0;
       min-height: 0;
       overflow: hidden;
+    }
+
+    #trade-dock-splitter {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      height: 4px;
+      cursor: row-resize;
+      touch-action: none;
+      background: var(--line);
+      outline: none;
+    }
+
+    #trade-dock-splitter:hover,
+    #trade-dock-splitter:focus-visible,
+    #trade-dock-splitter.dragging {
+      background: var(--blue);
+    }
+
+    #trade-dock {
+      display: grid;
+      grid-column: 1 / -1;
+      grid-row: 3;
+      grid-template-rows: 34px minmax(0, 1fr);
+      min-width: 0;
+      height: 210px;
+      min-height: 0;
+      border-top: 1px solid #28364c;
+      background: #070d18;
+      overflow: hidden;
+    }
+
+    #trade-dock.minimized {
+      height: 34px;
+    }
+
+    #trade-dock-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto 32px;
+      align-items: stretch;
+      min-width: 0;
+      border-bottom: 1px solid #202d40;
+      background: #09111f;
+    }
+
+    #trade-dock-tabs {
+      display: flex;
+      align-items: stretch;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    #trade-dock-tabs::-webkit-scrollbar {
+      display: none;
+    }
+
+    #trade-dock-tabs button {
+      height: 33px;
+      flex: 0 0 auto;
+      padding: 0 10px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    #trade-dock-tabs button.active {
+      border-bottom-color: #60a5fa;
+      background: #101a2b;
+      color: #f8fafc;
+    }
+
+    #trade-dock-account-strip {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      padding: 0 8px;
+      color: var(--muted);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    #trade-dock-account-strip strong {
+      margin-left: 3px;
+      color: #dbe4f2;
+      font-weight: 600;
+    }
+
+    #trade-dock-minimize {
+      width: 32px;
+      min-width: 32px;
+      height: 33px;
+      min-height: 33px;
+      border: 0;
+      border-left: 1px solid #202d40;
+      border-radius: 0;
+    }
+
+    #trade-dock-minimize svg {
+      transition: transform 120ms ease;
+    }
+
+    #trade-dock-minimize.minimized svg {
+      transform: rotate(180deg);
+    }
+
+    #trade-dock-table-scroll {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+    }
+
+    #trade-dock.minimized #trade-dock-table-scroll {
+      display: none;
+    }
+
+    #trade-dock-table {
+      width: 100%;
+      min-width: max-content;
+      border-collapse: collapse;
+      color: #cbd5e1;
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0;
+    }
+
+    #trade-dock-table th,
+    #trade-dock-table td {
+      height: 25px;
+      box-sizing: border-box;
+      padding: 4px 8px;
+      border-right: 1px solid #172337;
+      border-bottom: 1px solid #172337;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    #trade-dock-table th {
+      position: sticky;
+      z-index: 2;
+      top: 0;
+      background: #0d1728;
+      color: #91a3bb;
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    #trade-dock-table tbody tr.selectable {
+      cursor: pointer;
+    }
+
+    #trade-dock-table tbody tr:hover {
+      background: #101a2b;
+    }
+
+    #trade-dock-table tbody tr.selected {
+      background: #17345b;
+      color: #f8fafc;
+    }
+
+    #trade-dock-table td.numeric {
+      text-align: right;
+    }
+
+    #trade-dock-table .dock-empty {
+      height: 42px;
+      color: var(--muted);
+      text-align: center;
     }
 
     #drawing-tool-rail {
@@ -406,6 +584,8 @@
 
     #side-rail {
       display: flex;
+      grid-column: 3;
+      grid-row: 1;
       flex-direction: column;
       min-width: 0;
       min-height: 0;
@@ -1138,6 +1318,29 @@
           </div>
         </details>
       </aside>
+
+      <div id="trade-dock-splitter" role="separator" aria-label="Resize trade dock" aria-orientation="horizontal" aria-valuemin="118" aria-valuemax="360" aria-valuenow="210" tabindex="0"></div>
+      <section id="trade-dock" aria-label="Trade dock">
+        <header id="trade-dock-header">
+          <nav id="trade-dock-tabs" aria-label="Trade dock views" role="tablist">
+            <button type="button" id="trade-tab-positions" role="tab" aria-selected="true">Positions</button>
+            <button type="button" id="trade-tab-pending" role="tab" aria-selected="false">Pending Orders</button>
+            <button type="button" id="trade-tab-baskets" role="tab" aria-selected="false">Synthetic Baskets</button>
+            <button type="button" id="trade-tab-history" role="tab" aria-selected="false">History</button>
+          </nav>
+          <div id="trade-dock-account-strip" aria-live="polite">
+            <span>Funds<strong>n/a</strong></span>
+            <span>Equity<strong>n/a</strong></span>
+            <span>P/L<strong>n/a</strong></span>
+            <span>Available<strong>n/a</strong></span>
+            <span>Margin<strong>n/a</strong></span>
+          </div>
+          <button type="button" id="trade-dock-minimize" class="icon-button" title="Minimize trade dock" aria-label="Minimize trade dock" aria-expanded="true"><i id="trade-dock-minimize-icon" data-lucide="chevron-down"></i></button>
+        </header>
+        <div id="trade-dock-table-scroll">
+          <table id="trade-dock-table" aria-label="Positions"></table>
+        </div>
+      </section>
     </main>
 
     <footer id="bottom">
@@ -1229,6 +1432,17 @@
     const closeConfirmationLegs = document.getElementById('close-confirmation-legs');
     const partialCloseAck = document.getElementById('partial-close-ack');
     const confirmCloseButton = document.getElementById('confirm-close');
+    const tradeDock = document.getElementById('trade-dock');
+    const tradeDockSplitter = document.getElementById('trade-dock-splitter');
+    const tradeDockMinimizeButton = document.getElementById('trade-dock-minimize');
+    const tradeDockTable = document.getElementById('trade-dock-table');
+    const tradeDockAccountStrip = document.getElementById('trade-dock-account-strip');
+    const tradeDockTabs = {
+      positions: document.getElementById('trade-tab-positions'),
+      pending: document.getElementById('trade-tab-pending'),
+      baskets: document.getElementById('trade-tab-baskets'),
+      history: document.getElementById('trade-tab-history')
+    };
 
     let chart = null;
     let candleSeries = null;
@@ -1264,11 +1478,19 @@
     let pendingCloseExecution = null;
     let terminalExecutions = [];
     let terminalBrokerSnapshot = null;
+    let terminalRiskPlans = [];
+    let selectedDockExecutionId = '';
+    let selectedDockRow = null;
+    let tradeDockPointerId = null;
+    let tradeDockState = { height: 210, minimized: false, activeTab: 'positions' };
     const INVALID_MARGIN_NOTIONAL = 'Enter a basket notional greater than 0.';
     const SYNTHETIC_PRICE_FLOOR = -10;
     const RAIL_WIDTH_KEY = 'capcom-terminal-rail-width';
     const RAIL_MIN_WIDTH = 260;
     const RAIL_MAX_WIDTH = 620;
+    const TRADE_DOCK_STORAGE_KEY = 'capetf.tradeDock.v1';
+    const TRADE_DOCK_MIN_HEIGHT = 118;
+    const TRADE_DOCK_MINIMIZED_HEIGHT = 34;
 
     // Contract markers for automated tests and future upgrades.
     const CandlestickSeries = 'CandlestickSeries';
@@ -1550,6 +1772,306 @@
       return `${currency || ''} ${numeric.toFixed(2)}`.trim();
     }
 
+    function dockNumber(value) {
+      const numeric = optionalNumber(value);
+      return numeric === null ? 'n/a' : numeric.toFixed(4);
+    }
+
+    function dockQuantity(value) {
+      const numeric = optionalNumber(value);
+      return numeric === null ? 'n/a' : String(numeric);
+    }
+
+    function dockProfitLoss(value) {
+      const numeric = optionalNumber(value);
+      return numeric === null ? 'n/a' : numeric.toFixed(2);
+    }
+
+    function dockAmount(value, currency) {
+      const numeric = optionalNumber(value);
+      return numeric === null ? 'n/a' : `${currency || 'n/a'} ${numeric.toFixed(2)}`;
+    }
+
+    function optionalNumber(value) {
+      if (value === null || value === undefined || value === '') return null;
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? numeric : null;
+    }
+
+    function executionProfitLoss(record) {
+      const values = getField(record, 'Legs', 'legs', [])
+        .map(leg => optionalNumber(getField(leg, 'CurrentUnrealizedProfitLoss', 'currentUnrealizedProfitLoss', null)))
+        .filter(value => value !== null);
+      return values.length ? values.reduce((total, value) => total + value, 0) : null;
+    }
+
+    function executionEntry(record) {
+      let total = 0;
+      const legs = getField(record, 'Legs', 'legs', []);
+      if (!legs.length) return null;
+      for (const leg of legs) {
+        const multiplier = optionalNumber(getField(leg, 'Multiplier', 'multiplier', null));
+        const fill = getField(leg, 'FillLevel', 'fillLevel', null);
+        const reference = getField(leg, 'ReferencePrice', 'referencePrice', null);
+        const level = optionalNumber(fill === null || fill === undefined ? reference : fill);
+        if (multiplier === null || level === null) return null;
+        total += multiplier * level;
+      }
+      return total;
+    }
+
+    function uniquePositionsByDeal(snapshot) {
+      const matches = new Map();
+      for (const position of getField(snapshot, 'Positions', 'positions', [])) {
+        const dealId = getField(position, 'DealId', 'dealId', '');
+        if (!dealId) continue;
+        if (!matches.has(dealId)) matches.set(dealId, []);
+        matches.get(dealId).push(position);
+      }
+      const unique = new Map();
+      for (const [dealId, positions] of matches) {
+        if (positions.length === 1) unique.set(dealId, positions[0]);
+      }
+      return unique;
+    }
+
+    function executionQuote(record, snapshot, side) {
+      const positions = uniquePositionsByDeal(snapshot);
+      const legs = getField(record, 'Legs', 'legs', []);
+      if (!legs.length) return null;
+      let total = 0;
+      for (const leg of legs) {
+        const dealId = getField(leg, 'DealId', 'dealId', '');
+        const multiplier = optionalNumber(getField(leg, 'Multiplier', 'multiplier', null));
+        const position = dealId ? positions.get(dealId) : null;
+        if (!position || multiplier === null) return null;
+        const useBid = side === 'bid' ? multiplier >= 0 : multiplier < 0;
+        const quote = optionalNumber(useBid
+          ? getField(position, 'Bid', 'bid', null)
+          : getField(position, 'Offer', 'offer', null));
+        if (quote === null) return null;
+        total += multiplier * quote;
+      }
+      return total;
+    }
+
+    function brokerPositionRows(snapshot, executions) {
+      const links = new Map();
+      for (const execution of Array.isArray(executions) ? executions : []) {
+        for (const leg of getField(execution, 'Legs', 'legs', [])) {
+          const dealId = getField(leg, 'DealId', 'dealId', '');
+          if (!dealId) continue;
+          if (!links.has(dealId)) links.set(dealId, []);
+          links.get(dealId).push({ execution, leg });
+        }
+      }
+      return getField(snapshot, 'Positions', 'positions', []).map(position => {
+        const dealId = getField(position, 'DealId', 'dealId', '');
+        const candidates = links.get(dealId) || [];
+        const link = candidates.length === 1 ? candidates[0] : null;
+        return {
+          executionId: link ? getField(link.execution, 'ExecutionId', 'executionId', '') : '',
+          symbol: getField(position, 'Epic', 'epic', 'n/a') || 'n/a',
+          basket: link ? getField(link.execution, 'BasketId', 'basketId', 'n/a') || 'n/a' : 'n/a',
+          side: getField(position, 'Direction', 'direction', 'n/a') || 'n/a',
+          quantity: getField(position, 'Size', 'size', null),
+          entry: getField(position, 'Level', 'level', null),
+          bid: getField(position, 'Bid', 'bid', null),
+          ask: getField(position, 'Offer', 'offer', null),
+          brokerStopLoss: getField(position, 'StopLevel', 'stopLevel', null),
+          brokerTakeProfit: getField(position, 'ProfitLevel', 'profitLevel', null),
+          profitLoss: getField(position, 'UnrealizedProfitLoss', 'unrealizedProfitLoss', null),
+          status: link ? legState(link.leg) : 'Open'
+        };
+      });
+    }
+
+    function pendingOrderRows(snapshot) {
+      return getField(snapshot, 'WorkingOrders', 'workingOrders', []).map(order => ({
+        symbol: getField(order, 'Epic', 'epic', 'n/a') || 'n/a',
+        side: getField(order, 'Direction', 'direction', 'n/a') || 'n/a',
+        quantity: getField(order, 'Size', 'size', null),
+        type: getField(order, 'OrderType', 'orderType', 'ORDER') || 'ORDER',
+        orderLevel: getField(order, 'OrderLevel', 'orderLevel', null),
+        brokerStopLoss: getField(order, 'StopLevel', 'stopLevel', null),
+        brokerTakeProfit: getField(order, 'ProfitLevel', 'profitLevel', null),
+        dealId: getField(order, 'DealId', 'dealId', 'n/a') || 'n/a'
+      }));
+    }
+
+    function syntheticBasketRows(executions, snapshot, riskPlans) {
+      const plans = new Map((Array.isArray(riskPlans) ? riskPlans : []).map(plan =>
+        [getField(plan, 'ExecutionId', 'executionId', ''), plan]));
+      return (Array.isArray(executions) ? executions : [])
+        .filter(record => !['Closed', 'Rejected'].includes(executionState(record)))
+        .map(record => {
+          const executionId = getField(record, 'ExecutionId', 'executionId', '');
+          const plan = plans.get(executionId);
+          return {
+            executionId,
+            basket: getField(record, 'BasketId', 'basketId', 'n/a') || 'n/a',
+            side: getField(record, 'Side', 'side', 'n/a') || 'n/a',
+            legs: getField(record, 'Legs', 'legs', []).length,
+            syntheticEntry: executionEntry(record),
+            bid: executionQuote(record, snapshot, 'bid'),
+            ask: executionQuote(record, snapshot, 'ask'),
+            planStopLoss: plan ? getField(plan, 'StopLoss', 'stopLoss', null) : null,
+            planTakeProfit: plan ? getField(plan, 'TakeProfit', 'takeProfit', null) : null,
+            margin: getField(record, 'EstimatedMargin', 'estimatedMargin', null),
+            currency: getField(record, 'MarginCurrency', 'marginCurrency', ''),
+            profitLoss: executionProfitLoss(record),
+            state: executionState(record)
+          };
+        });
+    }
+
+    function historyRows(executions) {
+      return (Array.isArray(executions) ? executions : [])
+        .filter(record => ['Closed', 'Rejected'].includes(executionState(record)))
+        .map(record => ({
+          updated: getField(record, 'UpdatedUtc', 'updatedUtc', 'n/a') || 'n/a',
+          basket: getField(record, 'BasketId', 'basketId', 'n/a') || 'n/a',
+          side: getField(record, 'Side', 'side', 'n/a') || 'n/a',
+          legs: getField(record, 'Legs', 'legs', []).length,
+          margin: getField(record, 'EstimatedMargin', 'estimatedMargin', null),
+          currency: getField(record, 'MarginCurrency', 'marginCurrency', ''),
+          profitLoss: executionProfitLoss(record),
+          state: executionState(record),
+          message: getField(record, 'Legs', 'legs', [])
+            .map(leg => getField(leg, 'Message', 'message', ''))
+            .filter(Boolean)
+            .join(' | ') || 'n/a'
+        }));
+    }
+
+    const dockViews = {
+      positions: {
+        label: 'Positions',
+        empty: 'No open broker positions.',
+        columns: [
+          ['Symbol', 'symbol'], ['Basket', 'basket'], ['Side', 'side'], ['Quantity', 'quantity', dockQuantity],
+          ['Entry', 'entry', dockNumber], ['Bid', 'bid', dockNumber], ['Ask', 'ask', dockNumber],
+          ['Broker SL', 'brokerStopLoss', dockNumber], ['Broker TP', 'brokerTakeProfit', dockNumber],
+          ['P/L', 'profitLoss', dockProfitLoss], ['Status', 'status']
+        ],
+        rows: () => brokerPositionRows(terminalBrokerSnapshot || {}, terminalExecutions)
+      },
+      pending: {
+        label: 'Pending Orders',
+        empty: 'No pending orders.',
+        columns: [
+          ['Symbol', 'symbol'], ['Side', 'side'], ['Quantity', 'quantity', dockQuantity], ['Type', 'type'],
+          ['Order', 'orderLevel', dockNumber], ['Broker SL', 'brokerStopLoss', dockNumber],
+          ['Broker TP', 'brokerTakeProfit', dockNumber], ['Deal', 'dealId']
+        ],
+        rows: () => pendingOrderRows(terminalBrokerSnapshot || {})
+      },
+      baskets: {
+        label: 'Synthetic Baskets',
+        empty: 'No active synthetic baskets.',
+        columns: [
+          ['Basket', 'basket'], ['Side', 'side'], ['Legs', 'legs', dockQuantity],
+          ['Synthetic entry', 'syntheticEntry', dockNumber], ['Bid', 'bid', dockNumber], ['Ask', 'ask', dockNumber],
+          ['PLAN SL', 'planStopLoss', dockNumber], ['PLAN TP', 'planTakeProfit', dockNumber],
+          ['Margin', 'margin', (value, row) => dockAmount(value, row.currency)],
+          ['P/L', 'profitLoss', dockProfitLoss], ['State', 'state']
+        ],
+        rows: () => syntheticBasketRows(terminalExecutions, terminalBrokerSnapshot || {}, terminalRiskPlans)
+      },
+      history: {
+        label: 'History',
+        empty: 'No closed or rejected executions.',
+        columns: [
+          ['Updated', 'updated'], ['Basket', 'basket'], ['Side', 'side'], ['Legs', 'legs', dockQuantity],
+          ['Margin', 'margin', (value, row) => dockAmount(value, row.currency)],
+          ['P/L', 'profitLoss', dockProfitLoss], ['State', 'state'], ['Message', 'message']
+        ],
+        rows: () => historyRows(terminalExecutions)
+      }
+    };
+
+    function renderTradeDockAccount() {
+      const account = getField(terminalBrokerSnapshot, 'Account', 'account', {});
+      const currency = getField(account, 'Currency', 'currency', '');
+      const balance = optionalNumber(getField(account, 'Balance', 'balance', null));
+      const available = optionalNumber(getField(account, 'Available', 'available', null));
+      const values = [
+        ['Funds', getField(account, 'Deposit', 'deposit', null)],
+        ['Equity', balance],
+        ['P/L', getField(account, 'ProfitLoss', 'profitLoss', null)],
+        ['Available', available],
+        ['Margin', balance === null || available === null ? null : balance - available]
+      ];
+      tradeDockAccountStrip.replaceChildren(...values.map(([label, value]) => {
+        const item = document.createElement('span');
+        item.textContent = label;
+        const strong = document.createElement('strong');
+        strong.textContent = dockAmount(value, currency);
+        item.appendChild(strong);
+        return item;
+      }));
+    }
+
+    function selectDockExecution(executionId, row) {
+      if (!executionId) return;
+      selectedDockExecutionId = executionId;
+      if (selectedDockRow && selectedDockRow !== row) selectedDockRow.classList.remove('selected');
+      selectedDockRow = row;
+      row.classList.add('selected');
+      postHostAction({ type: 'showExecutionBasket', executionId });
+    }
+
+    function renderTradeDock() {
+      renderTradeDockAccount();
+      const view = dockViews[tradeDockState.activeTab] || dockViews.positions;
+      for (const [name, button] of Object.entries(tradeDockTabs)) {
+        const active = name === tradeDockState.activeTab;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', String(active));
+      }
+      tradeDockTable.setAttribute('aria-label', view.label);
+      const headerRow = document.createElement('tr');
+      for (const [label] of view.columns) {
+        const heading = document.createElement('th');
+        heading.textContent = label;
+        headerRow.appendChild(heading);
+      }
+      const head = document.createElement('thead');
+      head.appendChild(headerRow);
+      const body = document.createElement('tbody');
+      selectedDockRow = null;
+      const rows = view.rows();
+      if (!rows.length) {
+        const emptyRow = document.createElement('tr');
+        const emptyCell = document.createElement('td');
+        emptyCell.className = 'dock-empty';
+        emptyCell.colSpan = view.columns.length;
+        emptyCell.textContent = view.empty;
+        emptyRow.appendChild(emptyCell);
+        body.appendChild(emptyRow);
+      }
+      for (const data of rows) {
+        const row = document.createElement('tr');
+        if (data.state) row.className = stateClass(data.state);
+        for (const [, key, formatter] of view.columns) {
+          const cell = document.createElement('td');
+          cell.textContent = formatter ? formatter(data[key], data) : String(data[key] ?? 'n/a');
+          if (formatter) cell.classList.add('numeric');
+          row.appendChild(cell);
+        }
+        if (data.executionId) {
+          row.classList.add('selectable');
+          row.addEventListener('click', () => selectDockExecution(data.executionId, row));
+          if (data.executionId === selectedDockExecutionId) {
+            row.classList.add('selected');
+            selectedDockRow = row;
+          }
+        }
+        body.appendChild(row);
+      }
+      tradeDockTable.replaceChildren(head, body);
+    }
+
     function renderBrokerSnapshot(snapshot) {
       const error = getField(snapshot, 'Error', 'error', '');
       if (error) {
@@ -1626,6 +2148,7 @@
           `Take profit ${money(getField(order, 'ProfitLevel', 'profitLevel', null))} | deal ${getField(order, 'DealId', 'dealId', 'n/a')}`;
         orderList.appendChild(row);
       }
+      renderTradeDock();
       renderPriceLines();
     }
 
@@ -2233,6 +2756,102 @@
       componentSplitter.classList.remove('dragging');
     }
 
+    function tradeDockMaxHeight() {
+      const viewportHeight = Number(window.innerHeight);
+      const fortyFiveVh = Number.isFinite(viewportHeight) ? Math.floor(viewportHeight * .45) : TRADE_DOCK_MIN_HEIGHT;
+      return Math.max(TRADE_DOCK_MIN_HEIGHT, fortyFiveVh);
+    }
+
+    function clampTradeDockHeight(height) {
+      const numeric = Number(height);
+      const fallback = Number.isFinite(numeric) ? numeric : 210;
+      return Math.max(TRADE_DOCK_MIN_HEIGHT, Math.min(tradeDockMaxHeight(), Math.round(fallback)));
+    }
+
+    function persistTradeDockState() {
+      try {
+        localStorage.setItem(TRADE_DOCK_STORAGE_KEY, JSON.stringify({
+          height: tradeDockState.height,
+          minimized: tradeDockState.minimized,
+          activeTab: tradeDockState.activeTab
+        }));
+      } catch (_) {
+        // Dock preferences are optional when WebView storage is unavailable.
+      }
+    }
+
+    function applyTradeDockState() {
+      tradeDockState.height = clampTradeDockHeight(tradeDockState.height);
+      const displayedHeight = tradeDockState.minimized ? TRADE_DOCK_MINIMIZED_HEIGHT : tradeDockState.height;
+      tradeDock.style.height = `${displayedHeight}px`;
+      tradeDock.classList.toggle('minimized', tradeDockState.minimized);
+      tradeDockMinimizeButton.classList.toggle('minimized', tradeDockState.minimized);
+      tradeDockMinimizeButton.setAttribute('aria-expanded', String(!tradeDockState.minimized));
+      tradeDockMinimizeButton.setAttribute('aria-label', tradeDockState.minimized ? 'Restore trade dock' : 'Minimize trade dock');
+      tradeDockMinimizeButton.setAttribute('title', tradeDockState.minimized ? 'Restore trade dock' : 'Minimize trade dock');
+      tradeDockSplitter.setAttribute('aria-valuemax', String(tradeDockMaxHeight()));
+      tradeDockSplitter.setAttribute('aria-valuenow', String(displayedHeight));
+      requestAnimationFrame(() => window.resizeTerminal());
+    }
+
+    function restoreTradeDockState() {
+      try {
+        const stored = JSON.parse(localStorage.getItem(TRADE_DOCK_STORAGE_KEY) || 'null');
+        if (stored && typeof stored === 'object') {
+          tradeDockState = {
+            height: clampTradeDockHeight(stored.height),
+            minimized: stored.minimized === true,
+            activeTab: Object.prototype.hasOwnProperty.call(dockViews, stored.activeTab) ? stored.activeTab : 'positions'
+          };
+        }
+      } catch (_) {
+        tradeDockState = { height: 210, minimized: false, activeTab: 'positions' };
+      }
+      applyTradeDockState();
+    }
+
+    function setTradeDockTab(tab) {
+      if (!Object.prototype.hasOwnProperty.call(dockViews, tab)) return;
+      tradeDockState.activeTab = tab;
+      persistTradeDockState();
+      renderTradeDock();
+    }
+
+    function toggleTradeDock() {
+      tradeDockState.minimized = !tradeDockState.minimized;
+      applyTradeDockState();
+      persistTradeDockState();
+    }
+
+    function tradeDockHeightFromPointer(event) {
+      const bounds = workspace.getBoundingClientRect();
+      const bottom = Number.isFinite(bounds.bottom) ? bounds.bottom : Number(bounds.top) + Number(bounds.height);
+      return clampTradeDockHeight(bottom - event.clientY);
+    }
+
+    function beginTradeDockResize(event) {
+      tradeDockPointerId = event.pointerId;
+      tradeDockState.minimized = false;
+      tradeDockSplitter.setPointerCapture(event.pointerId);
+      tradeDockSplitter.classList.add('dragging');
+      applyTradeDockState();
+      event.preventDefault();
+    }
+
+    function resizeTradeDock(event) {
+      if (event.pointerId !== tradeDockPointerId) return;
+      tradeDockState.height = tradeDockHeightFromPointer(event);
+      applyTradeDockState();
+    }
+
+    function endTradeDockResize(event) {
+      if (event.pointerId !== tradeDockPointerId) return;
+      if (tradeDockSplitter.hasPointerCapture(event.pointerId)) tradeDockSplitter.releasePointerCapture(event.pointerId);
+      tradeDockPointerId = null;
+      tradeDockSplitter.classList.remove('dragging');
+      persistTradeDockState();
+    }
+
     function refreshButtons() {
       intervalButtons.forEach(button => button.classList.toggle('active', button.dataset.interval === activeInterval));
       modeButtons.forEach(button => button.classList.toggle('active', button.dataset.mode === chartMode));
@@ -2506,6 +3125,7 @@
       renderExecutionProgress(record);
       renderPositions(terminalExecutions);
       renderAudit(terminalExecutions);
+      renderTradeDock();
       refreshTradingControls();
     };
 
@@ -2518,12 +3138,18 @@
       renderExecutionProgress(terminalExecutions[0] || null);
       renderPositions(terminalExecutions);
       renderAudit(terminalExecutions);
+      renderTradeDock();
       if (terminalExecutions.length && workspace.classList.contains('ticket-hidden')) setRailCollapsed(false);
       refreshTradingControls();
     };
 
     window.setTerminalBrokerSnapshot = function(snapshot) {
       renderBrokerSnapshot(snapshot || {});
+    };
+
+    window.setTerminalRiskPlans = function(plans) {
+      terminalRiskPlans = Array.isArray(plans) ? plans.slice() : [];
+      renderTradeDock();
     };
 
     window.clearTerminal = function() {
@@ -2803,9 +3429,29 @@
       else return;
       event.preventDefault();
     });
+    for (const [tab, button] of Object.entries(tradeDockTabs)) {
+      button.addEventListener('click', () => setTradeDockTab(tab));
+    }
+    tradeDockMinimizeButton.addEventListener('click', toggleTradeDock);
+    tradeDockSplitter.addEventListener('pointerdown', beginTradeDockResize);
+    tradeDockSplitter.addEventListener('pointermove', resizeTradeDock);
+    tradeDockSplitter.addEventListener('pointerup', endTradeDockResize);
+    tradeDockSplitter.addEventListener('pointercancel', endTradeDockResize);
+    tradeDockSplitter.addEventListener('keydown', event => {
+      if (event.key === 'ArrowUp') tradeDockState.height = clampTradeDockHeight(tradeDockState.height + 20);
+      else if (event.key === 'ArrowDown') tradeDockState.height = clampTradeDockHeight(tradeDockState.height - 20);
+      else if (event.key === 'Home') tradeDockState.height = TRADE_DOCK_MIN_HEIGHT;
+      else if (event.key === 'End') tradeDockState.height = tradeDockMaxHeight();
+      else return;
+      tradeDockState.minimized = false;
+      applyTradeDockState();
+      persistTradeDockState();
+      event.preventDefault();
+    });
     window.addEventListener('resize', window.resizeTerminal);
 
     restoreRailWidth();
+    restoreTradeDockState();
     ensureChart();
     refreshTradingControls();
     if (window.lucide && typeof window.lucide.createIcons === 'function') {

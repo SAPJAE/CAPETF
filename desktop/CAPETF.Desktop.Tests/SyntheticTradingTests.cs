@@ -441,6 +441,15 @@ public static class SyntheticTradingTests
             "<summary>Execution</summary>",
             "Open Positions",
             "Pending Orders",
+            "id=\"trade-dock\"",
+            "id=\"trade-dock-splitter\"",
+            "id=\"trade-dock-minimize\"",
+            "id=\"trade-tab-positions\"",
+            "id=\"trade-tab-pending\"",
+            "id=\"trade-tab-baskets\"",
+            "id=\"trade-tab-history\"",
+            "id=\"trade-dock-table\"",
+            "id=\"trade-dock-account-strip\"",
             "Running P/L",
             "Funds",
             "Equity",
@@ -541,7 +550,12 @@ public static class SyntheticTradingTests
               getElementById: element,
               querySelectorAll() { return []; }
             };
-            global.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+            const storedValues = new Map();
+            global.localStorage = {
+              getItem(key) { return storedValues.has(key) ? storedValues.get(key) : null; },
+              setItem(key, value) { storedValues.set(key, String(value)); },
+              removeItem(key) { storedValues.delete(key); }
+            };
             global.confirm = () => true;
             global.addEventListener = () => {};
             global.removeEventListener = () => {};
@@ -549,6 +563,9 @@ public static class SyntheticTradingTests
             global.cancelAnimationFrame = () => {};
             global.setTimeout = () => 1;
             global.clearTimeout = () => {};
+            global.innerHeight = 800;
+
+            const descendantText = node => [node.textContent, ...node.children.map(descendantText)].filter(Boolean).join(' ');
 
             const messages = [];
             const allMessages = [];
@@ -699,13 +716,71 @@ public static class SyntheticTradingTests
             assert.equal(element('refresh-executions').disabled, false, 'empty executions callback must release operation lock');
             setTerminalExecutions([{
               ExecutionId: 'host-execution-1', TicketId: 'host-ticket-1', BasketId: 'basket-1', Side: 'BUY',
+              RequestedNotional: 300, EstimatedMargin: 72.5, MarginCurrency: 'USDd',
               State: 'NeedsAttention', UpdatedUtc: '2026-07-30T12:02:00Z',
               Legs: [
-                { Epic: 'AAPL', Direction: 'BUY', Quantity: 0.1, State: 'Open', DealReference: 'REF-1', DealId: 'DEAL-1', Message: '' },
-                { Epic: 'MSFT', Direction: 'BUY', Quantity: 0.2, State: 'Unknown', DealReference: 'REF-2', DealId: '', Message: 'Confirmation timed out' },
-                { Epic: 'NVDA', Direction: 'SELL', Quantity: 0.3, State: 'Closed', DealReference: 'REF-3', DealId: 'DEAL-3', Message: '' }
+                { Epic: 'AAPL', Direction: 'BUY', Multiplier: 1, ReferencePrice: 120, FillLevel: 123.45, Quantity: 0.9, State: 'Open', DealReference: 'REF-1', DealId: 'DEAL-AAPL', CurrentUnrealizedProfitLoss: -2.26, Message: '' },
+                { Epic: 'MSFT', Direction: 'BUY', Multiplier: -0.5, ReferencePrice: 500, Quantity: 0.2, State: 'Unknown', DealReference: 'REF-2', DealId: '', Message: 'Confirmation timed out' },
+                { Epic: 'NVDA', Direction: 'SELL', Multiplier: 2, ReferencePrice: 180, FillLevel: 181, Quantity: 0.3, State: 'Closed', DealReference: 'REF-3', DealId: 'DEAL-3', Message: '' }
               ]
+            }, {
+              ExecutionId: 'host-execution-closed', TicketId: 'host-ticket-closed', BasketId: 'basket-closed', Side: 'SELL',
+              RequestedNotional: 450, EstimatedMargin: 90, MarginCurrency: 'USDd', State: 'Closed', UpdatedUtc: '2026-07-29T12:02:00Z',
+              Legs: [{ Epic: 'TSLA', Direction: 'SELL', Multiplier: 1, ReferencePrice: 220, FillLevel: 219.5, Quantity: 0.4, State: 'Closed', DealReference: 'REF-4', DealId: 'DEAL-4', CurrentUnrealizedProfitLoss: 7.5, Message: '' }]
+            }, {
+              ExecutionId: 'host-execution-rejected', TicketId: 'host-ticket-rejected', BasketId: 'basket-rejected', Side: 'BUY',
+              RequestedNotional: 300, EstimatedMargin: 0, MarginCurrency: 'USDd', State: 'Rejected', UpdatedUtc: '2026-07-28T12:02:00Z',
+              Legs: [{ Epic: 'META', Direction: 'BUY', Multiplier: 1, ReferencePrice: 600, Quantity: 0.1, State: 'Rejected', DealReference: '', DealId: '', Message: 'Market closed' }]
             }]);
+            setTerminalRiskPlans([{
+              ExecutionId: 'host-execution-1', BasketId: 'basket-1', Side: 'BUY', StopLoss: 220, TakeProfit: 260, UpdatedUtc: '2026-07-30T12:03:00Z'
+            }]);
+
+            const tableText = () => descendantText(element('trade-dock-table'));
+            assert.match(tableText(), /Symbol.*Basket.*Side.*Quantity.*Entry.*Bid.*Ask.*Broker SL.*Broker TP.*P\/L.*Status/);
+            assert.match(tableText(), /AAPL.*basket-1.*BUY.*0\.9.*123\.4500.*123\.4000.*123\.5000.*118\.0000.*140\.0000.*-2\.26.*Open/);
+            messages.length = 0;
+            const linkedPositionRow = element('trade-dock-table').children[1].children[0];
+            linkedPositionRow.click();
+            assert.deepEqual(messages, [{ type: 'showExecutionBasket', executionId: 'host-execution-1' }]);
+            assert.equal(linkedPositionRow.classList.contains('selected'), true);
+
+            element('trade-tab-pending').click();
+            assert.match(tableText(), /Symbol.*Side.*Quantity.*Type.*Order.*Broker SL.*Broker TP.*Deal/);
+            assert.match(tableText(), /AAPL.*SELL.*1.*LIMIT.*130\.0000.*140\.0000.*110\.0000.*ORDER-AAPL/);
+
+            element('trade-tab-baskets').click();
+            assert.match(tableText(), /Basket.*Side.*Legs.*Synthetic entry.*Bid.*Ask.*PLAN SL.*PLAN TP.*Margin.*P\/L.*State/);
+            assert.match(tableText(), /basket-1.*BUY.*3.*235\.4500.*n\/a.*n\/a.*220\.0000.*260\.0000.*USDd 72\.50.*-2\.26.*Needs attention/);
+            assert.doesNotMatch(tableText(), /basket-closed/);
+            messages.length = 0;
+            const basketRow = element('trade-dock-table').children[1].children[0];
+            basketRow.click();
+            assert.deepEqual(messages, [{ type: 'showExecutionBasket', executionId: 'host-execution-1' }]);
+            assert.equal(basketRow.classList.contains('selected'), true);
+            assert.equal(JSON.parse(storedValues.get('capetf.tradeDock.v1')).activeTab, 'baskets');
+
+            element('trade-tab-history').click();
+            assert.match(tableText(), /Updated.*Basket.*Side.*Legs.*Margin.*P\/L.*State.*Message/);
+            assert.match(tableText(), /basket-closed.*SELL.*1.*USDd 90\.00.*7\.50.*Closed/);
+            assert.match(tableText(), /basket-rejected.*BUY.*1.*USDd 0\.00.*n\/a.*Rejected.*Market closed/);
+            assert.doesNotMatch(tableText(), /basket-1/);
+
+            element('trade-dock-minimize').click();
+            assert.equal(element('trade-dock').classList.contains('minimized'), true);
+            assert.match(descendantText(element('trade-dock-account-strip')), /Funds.*USDd 21000\.00.*Equity.*USDd 20993\.11.*P\/L.*USDd -6\.89/);
+            assert.equal(JSON.parse(storedValues.get('capetf.tradeDock.v1')).minimized, true);
+            element('trade-dock-minimize').click();
+            assert.equal(element('trade-dock').classList.contains('minimized'), false);
+
+            element('trade-dock-splitter').dispatch('pointerdown', { pointerId: 9, clientY: 400 });
+            element('trade-dock-splitter').dispatch('pointermove', { pointerId: 9, clientY: 590 });
+            assert.equal(element('trade-dock').style.height, '118px');
+            element('trade-dock-splitter').dispatch('pointermove', { pointerId: 9, clientY: 0 });
+            assert.equal(element('trade-dock').style.height, '360px');
+            element('trade-dock-splitter').dispatch('pointerup', { pointerId: 9 });
+
+            messages.length = 0;
             element('close-host-execution-1').click();
             assert.equal(messages.length, 0, 'first close click must not send a mutation');
             assert.equal(element('close-confirmation').open, true);
