@@ -179,6 +179,75 @@
       overflow: hidden;
     }
 
+    #synthetic-trade-overlay {
+      position: absolute;
+      z-index: 5;
+      top: 50px;
+      left: 8px;
+      display: none;
+      width: min(420px, 36vw);
+      box-sizing: border-box;
+      padding: 8px 36px 8px 10px;
+      border: 1px solid #2c3d58;
+      border-radius: 4px;
+      background: rgba(7, 13, 24, .92);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, .28);
+      color: #dbe4f2;
+      font-size: 11px;
+      line-height: 1.35;
+      pointer-events: none;
+    }
+
+    #synthetic-trade-overlay.visible {
+      display: block;
+    }
+
+    #synthetic-trade-overlay.collapsed {
+      width: auto;
+      min-width: 150px;
+      padding-bottom: 8px;
+    }
+
+    #synthetic-trade-overlay.collapsed .trade-overlay-detail,
+    #synthetic-trade-overlay.collapsed #trade-overlay-formula {
+      display: none;
+    }
+
+    #trade-overlay-collapse {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 26px;
+      min-width: 26px;
+      height: 26px;
+      min-height: 26px;
+      pointer-events: auto;
+    }
+
+    #trade-overlay-title {
+      color: #f8fafc;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    #trade-overlay-summary,
+    #trade-overlay-metrics {
+      margin-top: 2px;
+      color: #aebdd1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #trade-overlay-formula {
+      display: -webkit-box;
+      margin-top: 4px;
+      color: #dbeafe;
+      font-family: Consolas, monospace;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+    }
+
     #trade-dock-splitter {
       grid-column: 1 / -1;
       grid-row: 2;
@@ -291,6 +360,46 @@
       min-width: 0;
       min-height: 0;
       overflow: auto;
+    }
+
+    #risk-plan-controls {
+      position: sticky;
+      z-index: 3;
+      top: 0;
+      display: none;
+      grid-template-columns: auto 120px auto 120px auto auto minmax(220px, 1fr);
+      gap: 6px;
+      align-items: center;
+      min-height: 34px;
+      box-sizing: border-box;
+      padding: 3px 8px;
+      border-bottom: 1px solid #26364d;
+      background: #0a1424;
+      color: #9fb0c7;
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    #risk-plan-controls label {
+      font-weight: 700;
+    }
+
+    #risk-plan-controls input {
+      width: 120px;
+      height: 25px;
+      padding: 0 6px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #risk-plan-controls button {
+      height: 25px;
+    }
+
+    #risk-plan-copy {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     #trade-dock.minimized #trade-dock-table-scroll {
@@ -1176,6 +1285,13 @@
             </div>
           </nav>
           <div id="chart-root">
+            <section id="synthetic-trade-overlay" aria-label="Active synthetic trade">
+              <button type="button" id="trade-overlay-collapse" class="icon-button" title="Collapse trade overlay" aria-label="Collapse trade overlay" aria-expanded="true"><i data-lucide="chevron-up"></i></button>
+              <div id="trade-overlay-title">No active synthetic trade</div>
+              <div id="trade-overlay-summary" class="trade-overlay-detail"></div>
+              <div id="trade-overlay-metrics" class="trade-overlay-detail"></div>
+              <div id="trade-overlay-formula"></div>
+            </section>
             <div id="drawing-history-bar" aria-label="Drawing history" data-drawing-ui>
               <button type="button" class="icon-button" id="undo-drawing" title="Undo drawing change" aria-label="Undo drawing change" disabled><i data-lucide="undo-2"></i></button>
               <button type="button" class="icon-button" id="redo-drawing" title="Redo drawing change" aria-label="Redo drawing change" disabled><i data-lucide="redo-2"></i></button>
@@ -1338,6 +1454,15 @@
           <button type="button" id="trade-dock-minimize" class="icon-button" title="Minimize trade dock" aria-label="Minimize trade dock" aria-expanded="true"><i id="trade-dock-minimize-icon" data-lucide="chevron-down"></i></button>
         </header>
         <div id="trade-dock-table-scroll">
+          <div id="risk-plan-controls" aria-label="Synthetic risk plan">
+            <label for="plan-stop-loss">PLAN SL</label>
+            <input id="plan-stop-loss" type="number" min="0" step="any" inputmode="decimal">
+            <label for="plan-take-profit">PLAN TP</label>
+            <input id="plan-take-profit" type="number" min="0" step="any" inputmode="decimal">
+            <button type="button" id="apply-risk-plan">Apply</button>
+            <button type="button" id="clear-risk-plan">Clear</button>
+            <span id="risk-plan-copy">Visual plan only; not a Capital.com stop.</span>
+          </div>
           <table id="trade-dock-table" aria-label="Positions"></table>
         </div>
       </section>
@@ -1437,6 +1562,11 @@
     const tradeDockMinimizeButton = document.getElementById('trade-dock-minimize');
     const tradeDockTable = document.getElementById('trade-dock-table');
     const tradeDockAccountStrip = document.getElementById('trade-dock-account-strip');
+    const riskPlanControls = document.getElementById('risk-plan-controls');
+    const planStopLossInput = document.getElementById('plan-stop-loss');
+    const planTakeProfitInput = document.getElementById('plan-take-profit');
+    const syntheticTradeOverlay = document.getElementById('synthetic-trade-overlay');
+    const tradeOverlayCollapseButton = document.getElementById('trade-overlay-collapse');
     const tradeDockTabs = {
       positions: document.getElementById('trade-tab-positions'),
       pending: document.getElementById('trade-tab-pending'),
@@ -1481,6 +1611,7 @@
     let terminalRiskPlans = [];
     let selectedDockExecutionId = '';
     let selectedDockRow = null;
+    let tradeOverlayCollapsed = false;
     let tradeDockPointerId = null;
     let tradeDockState = { height: 210, minimized: false, activeTab: 'positions' };
     const INVALID_MARGIN_NOTIONAL = 'Enter a basket notional greater than 0.';
@@ -1539,6 +1670,13 @@
       const raw = String(value ?? '').trim();
       const numeric = Number(raw);
       return raw && Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    }
+
+    function parseRiskPlanLevel(value) {
+      const raw = String(value ?? '').trim();
+      if (!raw) return null;
+      const numeric = Number(raw);
+      return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
     }
 
     function postHostAction(message) {
@@ -1854,6 +1992,114 @@
       return unique;
     }
 
+    function activeExecutionRecord() {
+      const identity = String(getField(payload, 'DrawingIdentity', 'drawingIdentity', ''));
+      if (!identity.startsWith('execution-')) return null;
+      const executionId = identity.slice('execution-'.length);
+      const matches = terminalExecutions.filter(record =>
+        String(getField(record, 'ExecutionId', 'executionId', '')) === executionId);
+      return matches.length === 1 ? matches[0] : null;
+    }
+
+    function uniqueRiskPlan(executionId) {
+      const matches = terminalRiskPlans.filter(plan =>
+        String(getField(plan, 'ExecutionId', 'executionId', '')) === executionId);
+      return matches.length === 1 ? matches[0] : null;
+    }
+
+    function matchExecutionPositions(record, snapshot) {
+      const positions = getField(snapshot, 'Positions', 'positions', []);
+      const legs = getField(record, 'Legs', 'legs', []);
+      if (!legs.length || !positions.length) return null;
+      const byDeal = new Map();
+      const byEpic = new Map();
+      for (const position of positions) {
+        const dealId = String(getField(position, 'DealId', 'dealId', ''));
+        const epic = String(getField(position, 'Epic', 'epic', '')).toUpperCase();
+        if (dealId) {
+          if (!byDeal.has(dealId)) byDeal.set(dealId, []);
+          byDeal.get(dealId).push(position);
+        }
+        if (epic) {
+          if (!byEpic.has(epic)) byEpic.set(epic, []);
+          byEpic.get(epic).push(position);
+        }
+      }
+
+      const used = new Set();
+      const matches = [];
+      for (const leg of legs) {
+        const dealId = String(getField(leg, 'DealId', 'dealId', ''));
+        const epic = String(getField(leg, 'Epic', 'epic', '')).toUpperCase();
+        const candidates = dealId ? (byDeal.get(dealId) || []) : (byEpic.get(epic) || []);
+        if (candidates.length !== 1 || used.has(candidates[0])) return null;
+        const multiplier = optionalNumber(getField(leg, 'Multiplier', 'multiplier', null));
+        if (multiplier === null) return null;
+        used.add(candidates[0]);
+        matches.push({ leg, position: candidates[0], multiplier });
+      }
+      return matches;
+    }
+
+    function aggregateBrokerLevel(matches, pascal, camel) {
+      let total = 0;
+      for (const match of matches) {
+        const level = optionalNumber(getField(match.position, pascal, camel, null));
+        if (level === null || level <= 0) return null;
+        total += match.multiplier * level;
+      }
+      return Number.isFinite(total) && total > 0 ? total : null;
+    }
+
+    function activeSyntheticTradeView() {
+      const record = activeExecutionRecord();
+      if (!record || !terminalBrokerSnapshot) return null;
+      const matches = matchExecutionPositions(record, terminalBrokerSnapshot);
+      if (!matches) return null;
+
+      let entry = 0;
+      let currentBid = 0;
+      let currentAsk = 0;
+      let runningProfitLoss = 0;
+      for (const match of matches) {
+        const level = optionalNumber(getField(match.position, 'Level', 'level', null));
+        const bid = optionalNumber(getField(match.position, 'Bid', 'bid', null));
+        const offer = optionalNumber(getField(match.position, 'Offer', 'offer', null));
+        const profitLoss = optionalNumber(getField(match.position, 'UnrealizedProfitLoss', 'unrealizedProfitLoss', null));
+        if (level === null || bid === null || offer === null || profitLoss === null) return null;
+        entry += match.multiplier * level;
+        currentBid += match.multiplier >= 0 ? match.multiplier * bid : match.multiplier * offer;
+        currentAsk += match.multiplier >= 0 ? match.multiplier * offer : match.multiplier * bid;
+        runningProfitLoss += profitLoss;
+      }
+
+      const executionId = getField(record, 'ExecutionId', 'executionId', '');
+      const plan = uniqueRiskPlan(executionId);
+      return {
+        executionId,
+        basket: getField(record, 'BasketId', 'basketId', ''),
+        symbol: getField(payload, 'Symbol', 'symbol', ''),
+        currency: getField(payload, 'CurrencyLabel', 'currencyLabel',
+          getField(record, 'MarginCurrency', 'marginCurrency', '')),
+        direction: String(getField(record, 'Side', 'side', '')).toUpperCase(),
+        legCount: matches.length,
+        entry,
+        currentBid,
+        currentAsk,
+        runningProfitLoss,
+        estimatedMargin: optionalNumber(getField(record, 'EstimatedMargin', 'estimatedMargin', null)),
+        brokerStopLoss: aggregateBrokerLevel(matches, 'StopLevel', 'stopLevel'),
+        brokerTakeProfit: aggregateBrokerLevel(matches, 'ProfitLevel', 'profitLevel'),
+        planStopLoss: plan ? optionalNumber(getField(plan, 'StopLoss', 'stopLoss', null)) : null,
+        planTakeProfit: plan ? optionalNumber(getField(plan, 'TakeProfit', 'takeProfit', null)) : null,
+        formula: matches.map(match =>
+          `${match.multiplier >= 0 ? '+' : '-'} ${formatMultiplier(Math.abs(match.multiplier))} x ${getField(match.leg, 'Epic', 'epic', '')}`)
+          .join(' ').replace(/^\+ /, '')
+      };
+    }
+
+    window.activeSyntheticTradeView = activeSyntheticTradeView;
+
     function executionQuote(record, snapshot, side) {
       const positions = uniquePositionsByDeal(snapshot);
       const legs = getField(record, 'Legs', 'legs', []);
@@ -2037,7 +2283,33 @@
       if (selectedDockRow && selectedDockRow !== row) selectedDockRow.classList.remove('selected');
       selectedDockRow = row;
       row.classList.add('selected');
+      renderRiskPlanControls();
       postHostAction({ type: 'showExecutionBasket', executionId });
+    }
+
+    function selectedRiskPlanExecution() {
+      if (tradeDockState.activeTab !== 'baskets' || !selectedDockExecutionId) return null;
+      const matches = terminalExecutions.filter(record =>
+        String(getField(record, 'ExecutionId', 'executionId', '')) === selectedDockExecutionId &&
+        !['Closed', 'Rejected'].includes(executionState(record)));
+      return matches.length === 1 ? matches[0] : null;
+    }
+
+    function renderRiskPlanControls() {
+      const execution = selectedRiskPlanExecution();
+      document.getElementById('risk-plan-copy').textContent = 'Visual plan only; not a Capital.com stop.';
+      riskPlanControls.style.display = execution ? 'grid' : 'none';
+      if (!execution) {
+        planStopLossInput.value = '';
+        planTakeProfitInput.value = '';
+        return;
+      }
+      const executionId = getField(execution, 'ExecutionId', 'executionId', '');
+      const plan = uniqueRiskPlan(executionId);
+      const stopLoss = plan ? optionalNumber(getField(plan, 'StopLoss', 'stopLoss', null)) : null;
+      const takeProfit = plan ? optionalNumber(getField(plan, 'TakeProfit', 'takeProfit', null)) : null;
+      planStopLossInput.value = stopLoss === null ? '' : String(stopLoss);
+      planTakeProfitInput.value = takeProfit === null ? '' : String(takeProfit);
     }
 
     function renderTradeDock() {
@@ -2089,6 +2361,7 @@
         body.appendChild(row);
       }
       tradeDockTable.replaceChildren(head, body);
+      renderRiskPlanControls();
     }
 
     function renderBrokerSnapshot(snapshot) {
@@ -2575,17 +2848,38 @@
       syntheticPriceLines = [];
     }
 
-    function addPriceLine(price, title, color) {
+    function addPriceLine(price, title, color, lineStyle = 2) {
       const numeric = Number(price);
       if (!priceLinesVisible || !candleSeries || !Number.isFinite(numeric) || numeric <= 0) return;
       syntheticPriceLines.push(candleSeries.createPriceLine({
         price: numeric,
         color,
         lineWidth: 1,
-        lineStyle: 2,
+        lineStyle,
         axisLabelVisible: true,
         title
       }));
+    }
+
+    function renderTradeOverlay(view) {
+      syntheticTradeOverlay.classList.toggle('visible', !!view);
+      syntheticTradeOverlay.classList.toggle('collapsed', tradeOverlayCollapsed);
+      tradeOverlayCollapseButton.setAttribute('aria-expanded', String(!tradeOverlayCollapsed));
+      tradeOverlayCollapseButton.setAttribute('title', tradeOverlayCollapsed ? 'Expand trade overlay' : 'Collapse trade overlay');
+      tradeOverlayCollapseButton.setAttribute('aria-label', tradeOverlayCollapsed ? 'Expand trade overlay' : 'Collapse trade overlay');
+      if (!view) {
+        document.getElementById('trade-overlay-title').textContent = 'No active synthetic trade';
+        document.getElementById('trade-overlay-summary').textContent = '';
+        document.getElementById('trade-overlay-metrics').textContent = '';
+        document.getElementById('trade-overlay-formula').textContent = '';
+        return;
+      }
+      document.getElementById('trade-overlay-title').textContent = view.symbol || view.basket || 'Synthetic basket';
+      document.getElementById('trade-overlay-summary').textContent =
+        `${view.currency || 'n/a'} | ${view.direction || 'n/a'} | ${view.legCount} legs`;
+      document.getElementById('trade-overlay-metrics').textContent =
+        `P/L ${dockProfitLoss(view.runningProfitLoss)} | Margin ${dockAmount(view.estimatedMargin, view.currency)}`;
+      document.getElementById('trade-overlay-formula').textContent = view.formula;
     }
 
     function renderPriceLines() {
@@ -2594,50 +2888,14 @@
       const ask = getField(payload, 'AskPrice', 'askPrice', null);
       addPriceLine(bid, 'Bid', '#22c55e');
       addPriceLine(ask, 'Ask', '#ef4444');
-      renderBrokerPriceLines();
-    }
-
-    function componentMultiplier(component) {
-      const weight = Number(getField(component, 'Weight', 'weight', 0));
-      return Number(getField(component, 'DisplayMultiplier', 'displayMultiplier',
-        getField(component, 'FormulaMultiplier', 'formulaMultiplier', weight / 100)));
-    }
-
-    function renderBrokerPriceLines() {
-      if (!terminalBrokerSnapshot) return;
-      const components = getField(payload, 'Components', 'components', []);
-      const positions = getField(terminalBrokerSnapshot, 'Positions', 'positions', []);
-      if (!components.length || !positions.length) return;
-      const matches = components.map(component => {
-        const epic = getField(component, 'Epic', 'epic', '');
-        return positions.find(position => String(getField(position, 'Epic', 'epic', '')).toUpperCase() === String(epic).toUpperCase());
-      });
-      if (matches.some(position => !position)) return;
-
-      const entry = matches.reduce((sum, position, index) =>
-        sum + componentMultiplier(components[index]) * Number(getField(position, 'Level', 'level', 0)), 0);
-      addPriceLine(entry, 'Entry', '#60a5fa');
-
-      const current = matches.reduce((sum, position, index) => {
-        const bid = Number(getField(position, 'Bid', 'bid', NaN));
-        const offer = Number(getField(position, 'Offer', 'offer', NaN));
-        const level = Number(getField(position, 'Level', 'level', 0));
-        const mid = Number.isFinite(bid) && Number.isFinite(offer) ? (bid + offer) / 2 : level;
-        return sum + componentMultiplier(components[index]) * mid;
-      }, 0);
-
-      matches.forEach((position, index) => {
-        const multiplier = componentMultiplier(components[index]);
-        const bid = Number(getField(position, 'Bid', 'bid', NaN));
-        const offer = Number(getField(position, 'Offer', 'offer', NaN));
-        const level = Number(getField(position, 'Level', 'level', 0));
-        const mid = Number.isFinite(bid) && Number.isFinite(offer) ? (bid + offer) / 2 : level;
-        const epic = getField(position, 'Epic', 'epic', '');
-        const stop = Number(getField(position, 'StopLevel', 'stopLevel', NaN));
-        const profit = Number(getField(position, 'ProfitLevel', 'profitLevel', NaN));
-        if (Number.isFinite(stop) && stop > 0) addPriceLine(current + multiplier * (stop - mid), `Stop loss ${epic}`, '#f97316');
-        if (Number.isFinite(profit) && profit > 0) addPriceLine(current + multiplier * (profit - mid), `Take profit ${epic}`, '#a3e635');
-      });
+      const view = activeSyntheticTradeView();
+      renderTradeOverlay(view);
+      if (!view) return;
+      addPriceLine(view.entry, 'Entry', '#60a5fa', 0);
+      addPriceLine(view.brokerStopLoss, 'Broker SL', '#f59e0b', 2);
+      addPriceLine(view.brokerTakeProfit, 'Broker TP', '#22c55e', 2);
+      addPriceLine(view.planStopLoss, 'PLAN SL', '#ef4444', 1);
+      addPriceLine(view.planTakeProfit, 'PLAN TP', '#a3e635', 1);
     }
 
     function buildFormula(components) {
@@ -3151,6 +3409,7 @@
       renderPositions(terminalExecutions);
       renderAudit(terminalExecutions);
       renderTradeDock();
+      renderPriceLines();
       refreshTradingControls();
     };
 
@@ -3164,6 +3423,7 @@
       renderPositions(terminalExecutions);
       renderAudit(terminalExecutions);
       renderTradeDock();
+      renderPriceLines();
       if (terminalExecutions.length && workspace.classList.contains('ticket-hidden')) setRailCollapsed(false);
       refreshTradingControls();
     };
@@ -3175,6 +3435,7 @@
     window.setTerminalRiskPlans = function(plans) {
       terminalRiskPlans = Array.isArray(plans) ? plans.slice() : [];
       renderTradeDock();
+      renderPriceLines();
     };
 
     window.clearTerminal = function() {
@@ -3457,6 +3718,34 @@
     for (const [tab, button] of Object.entries(tradeDockTabs)) {
       button.addEventListener('click', () => setTradeDockTab(tab));
     }
+    tradeOverlayCollapseButton.addEventListener('click', () => {
+      tradeOverlayCollapsed = !tradeOverlayCollapsed;
+      renderTradeOverlay(activeSyntheticTradeView());
+    });
+    document.getElementById('apply-risk-plan').addEventListener('click', () => {
+      const execution = selectedRiskPlanExecution();
+      if (!execution) return;
+      const stopLoss = parseRiskPlanLevel(planStopLossInput.value);
+      const takeProfit = parseRiskPlanLevel(planTakeProfitInput.value);
+      if (stopLoss === undefined || takeProfit === undefined) {
+        setStatus('PLAN levels must be positive numbers.');
+        return;
+      }
+      postHostAction({
+        type: 'setRiskPlan',
+        executionId: getField(execution, 'ExecutionId', 'executionId', ''),
+        stopLoss,
+        takeProfit
+      });
+    });
+    document.getElementById('clear-risk-plan').addEventListener('click', () => {
+      const execution = selectedRiskPlanExecution();
+      if (!execution) return;
+      postHostAction({
+        type: 'clearRiskPlan',
+        executionId: getField(execution, 'ExecutionId', 'executionId', '')
+      });
+    });
     tradeDockMinimizeButton.addEventListener('click', toggleTradeDock);
     tradeDockSplitter.addEventListener('pointerdown', beginTradeDockResize);
     tradeDockSplitter.addEventListener('pointermove', resizeTradeDock);

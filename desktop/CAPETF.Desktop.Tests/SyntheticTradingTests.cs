@@ -450,6 +450,15 @@ public static class SyntheticTradingTests
             "id=\"trade-tab-history\"",
             "id=\"trade-dock-table\"",
             "id=\"trade-dock-account-strip\"",
+            "id=\"synthetic-trade-overlay\"",
+            "id=\"trade-overlay-collapse\"",
+            "id=\"risk-plan-controls\"",
+            "id=\"plan-stop-loss\"",
+            "id=\"plan-take-profit\"",
+            "id=\"apply-risk-plan\"",
+            "id=\"clear-risk-plan\"",
+            "Visual plan only; not a Capital.com stop.",
+            "activeSyntheticTradeView",
             "Running P/L",
             "Funds",
             "Equity",
@@ -577,9 +586,15 @@ public static class SyntheticTradingTests
             const messages = [];
             const allMessages = [];
             global.chrome = { webview: { postMessage(message) { messages.push(message); allMessages.push(message); } } };
+            const activePriceLines = [];
             function makeSeries() {
               return {
-                setData() {}, update() {}, createPriceLine() { return {}; }, removePriceLine() {},
+                setData() {}, update() {},
+                createPriceLine(options) { activePriceLines.push(options); return options; },
+                removePriceLine(line) {
+                  const index = activePriceLines.indexOf(line);
+                  if (index >= 0) activePriceLines.splice(index, 1);
+                },
                 priceToCoordinate(value) { return Number(value); }, coordinateToPrice(value) { return Number(value); },
                 attachPrimitive() {}, detachPrimitive() {}
               };
@@ -782,6 +797,101 @@ public static class SyntheticTradingTests
               Legs: [{ ...livePnlExecution.Legs[0], FillLevel: null, ReferencePrice: 390 }]
             }], { Positions: [{ DealId: 'LIVE-DEAL', UnrealizedProfitLoss: 12.34 }] }, [])[0];
             assert.equal(missingFillRow.syntheticEntry, null, 'reference price must not replace an absent persisted fill');
+
+            const savedPayload = payload;
+            const savedExecutions = terminalExecutions.slice();
+            const savedBrokerSnapshot = terminalBrokerSnapshot;
+            const savedRiskPlans = terminalRiskPlans.slice();
+            const savedSelectedExecutionId = selectedDockExecutionId;
+            setTerminalData({
+              DrawingIdentity: 'execution-trade-1', Symbol: 'SYN-TECH', Block: 'US / USD / Technology', CurrencyLabel: 'USD', Candles: [],
+              Components: [
+                { Epic: 'AAA', DisplayMultiplier: 1 },
+                { Epic: 'BBB', DisplayMultiplier: 2 },
+                { Epic: 'CCC', DisplayMultiplier: 0.5 }
+              ]
+            });
+            setTerminalExecutions([{
+              ExecutionId: 'trade-1', BasketId: 'SYN-TECH|US|USD', Side: 'BUY', EstimatedMargin: 72.5, MarginCurrency: 'USD', State: 'Open',
+              Legs: [
+                { Epic: 'AAA', Direction: 'BUY', Multiplier: 1, FillLevel: 100, State: 'Open', DealId: 'DEAL-A' },
+                { Epic: 'BBB', Direction: 'BUY', Multiplier: 2, FillLevel: 400, State: 'Open', DealId: 'DEAL-B' },
+                { Epic: 'CCC', Direction: 'SELL', Multiplier: -0.5, FillLevel: 372.8, State: 'Open', DealId: 'DEAL-C' }
+              ]
+            }]);
+            setTerminalBrokerSnapshot({
+              Account: { Currency: 'USD' },
+              Positions: [
+                { DealId: 'DEAL-A', Epic: 'AAA', Level: 100, Bid: 98, Offer: 99, UnrealizedProfitLoss: -1.25 },
+                { DealId: 'DEAL-B', Epic: 'BBB', Level: 400, Bid: 398, Offer: 399, UnrealizedProfitLoss: -2.75 },
+                { DealId: 'DEAL-C', Epic: 'CCC', Level: 372.8, Bid: 370, Offer: 372, UnrealizedProfitLoss: -4.01 }
+              ]
+            });
+            setTerminalRiskPlans([{
+              ExecutionId: 'trade-1', BasketId: 'SYN-TECH|US|USD', Side: 'BUY', StopLoss: 680, TakeProfit: 760
+            }]);
+
+            const tradeView = activeSyntheticTradeView();
+            assert.equal(tradeView.entry, 713.60);
+            assert.equal(tradeView.currentBid, 708);
+            assert.equal(tradeView.currentAsk, 712);
+            assert.equal(tradeView.runningProfitLoss, -8.01);
+            assert.equal(tradeView.brokerStopLoss, null);
+            assert.equal(tradeView.planStopLoss, 680);
+            assert.equal(tradeView.planTakeProfit, 760);
+            assert.equal(tradeView.direction, 'BUY');
+            assert.equal(tradeView.legCount, 3);
+            assert.deepEqual(
+              activePriceLines.filter(line => ['Entry', 'Broker SL', 'Broker TP', 'PLAN SL', 'PLAN TP'].includes(line.title)).map(line => line.title),
+              ['Entry', 'PLAN SL', 'PLAN TP'],
+              'only trusted execution and visual plan lines are rendered');
+            assert.equal(activePriceLines.find(line => line.title === 'Entry').lineStyle, 0, 'Entry is solid');
+            assert.equal(activePriceLines.find(line => line.title === 'PLAN SL').lineStyle, 1, 'PLAN SL is dotted');
+            assert.equal(activePriceLines.find(line => line.title === 'PLAN TP').lineStyle, 1, 'PLAN TP is dotted');
+            const overlayText = [
+              element('trade-overlay-title').textContent,
+              element('trade-overlay-summary').textContent,
+              element('trade-overlay-metrics').textContent,
+              element('trade-overlay-formula').textContent
+            ].join(' ');
+            assert.match(overlayText, /SYN-TECH.*USD.*BUY.*3 legs.*-8\.01.*USD 72\.50.*AAA.*BBB.*CCC/);
+
+            element('trade-tab-baskets').click();
+            const selectedTradeRow = element('trade-dock-table').children[1].children[0];
+            selectedTradeRow.click();
+            assert.equal(element('risk-plan-controls').style.display, 'grid');
+            assert.equal(element('plan-stop-loss').value, '680');
+            assert.equal(element('plan-take-profit').value, '760');
+            assert.match(element('risk-plan-copy').textContent, /Visual plan only; not a Capital\.com stop\./);
+            messages.length = 0;
+            element('plan-stop-loss').value = '675.5';
+            element('plan-take-profit').value = '770';
+            element('apply-risk-plan').click();
+            assert.deepEqual(messages.pop(), { type: 'setRiskPlan', executionId: 'trade-1', stopLoss: 675.5, takeProfit: 770 });
+            element('clear-risk-plan').click();
+            assert.deepEqual(messages.pop(), { type: 'clearRiskPlan', executionId: 'trade-1' });
+
+            setTerminalBrokerSnapshot({
+              Account: { Currency: 'USD' },
+              Positions: [
+                { DealId: 'DEAL-A', Epic: 'AAA', Level: 100, Bid: 98, Offer: 99, UnrealizedProfitLoss: -1.25 },
+                { DealId: 'DEAL-A', Epic: 'AAA', Level: 100, Bid: 98, Offer: 99, UnrealizedProfitLoss: -1.25 },
+                { DealId: 'DEAL-B', Epic: 'BBB', Level: 400, Bid: 398, Offer: 399, UnrealizedProfitLoss: -2.75 },
+                { DealId: 'DEAL-C', Epic: 'CCC', Level: 372.8, Bid: 370, Offer: 372, UnrealizedProfitLoss: -4.01 }
+              ]
+            });
+            assert.equal(activeSyntheticTradeView(), null, 'ambiguous deal matches suppress the active execution view');
+            assert.equal(
+              activePriceLines.some(line => ['Entry', 'Broker SL', 'Broker TP', 'PLAN SL', 'PLAN TP'].includes(line.title)),
+              false,
+              'ambiguous matching suppresses all execution and plan chart lines');
+            selectedDockExecutionId = savedSelectedExecutionId;
+            setTerminalData(savedPayload);
+            setTerminalExecutions(savedExecutions);
+            setTerminalBrokerSnapshot(savedBrokerSnapshot);
+            setTerminalRiskPlans(savedRiskPlans);
+            setTradeDockTab('baskets');
+            assert.match(tableText(), /basket-1/, 'restored basket workspace remains available');
 
             messages.length = 0;
             const basketRow = element('trade-dock-table').children[1].children[0];
