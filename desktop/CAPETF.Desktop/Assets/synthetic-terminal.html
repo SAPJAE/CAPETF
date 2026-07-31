@@ -1805,15 +1805,34 @@
       return values.length ? values.reduce((total, value) => total + value, 0) : null;
     }
 
+    function brokerExecutionProfitLoss(record, snapshot) {
+      const positions = uniquePositionsByDeal(snapshot);
+      const legs = getField(record, 'Legs', 'legs', [])
+        .filter(leg => ['Open', 'Unknown', 'Closing'].includes(legState(leg)));
+      if (!legs.length) return null;
+      const matchedDeals = new Set();
+      let total = 0;
+      for (const leg of legs) {
+        const dealId = getField(leg, 'DealId', 'dealId', '');
+        if (!dealId || matchedDeals.has(dealId)) return null;
+        matchedDeals.add(dealId);
+        const position = positions.get(dealId);
+        if (!position) return null;
+        const profitLoss = optionalNumber(getField(position, 'UnrealizedProfitLoss', 'unrealizedProfitLoss', null));
+        if (profitLoss === null) return null;
+        total += profitLoss;
+      }
+      return total;
+    }
+
     function executionEntry(record) {
       let total = 0;
-      const legs = getField(record, 'Legs', 'legs', []);
+      const legs = getField(record, 'Legs', 'legs', [])
+        .filter(leg => ['Open', 'Unknown', 'Closing', 'Closed'].includes(legState(leg)));
       if (!legs.length) return null;
       for (const leg of legs) {
         const multiplier = optionalNumber(getField(leg, 'Multiplier', 'multiplier', null));
-        const fill = getField(leg, 'FillLevel', 'fillLevel', null);
-        const reference = getField(leg, 'ReferencePrice', 'referencePrice', null);
-        const level = optionalNumber(fill === null || fill === undefined ? reference : fill);
+        const level = optionalNumber(getField(leg, 'FillLevel', 'fillLevel', null));
         if (multiplier === null || level === null) return null;
         total += multiplier * level;
       }
@@ -1919,7 +1938,7 @@
             planTakeProfit: plan ? getField(plan, 'TakeProfit', 'takeProfit', null) : null,
             margin: getField(record, 'EstimatedMargin', 'estimatedMargin', null),
             currency: getField(record, 'MarginCurrency', 'marginCurrency', ''),
-            profitLoss: executionProfitLoss(record),
+            profitLoss: brokerExecutionProfitLoss(record, snapshot),
             state: executionState(record)
           };
         });
@@ -2794,6 +2813,12 @@
       requestAnimationFrame(() => window.resizeTerminal());
     }
 
+    function resizeTerminalWorkspace() {
+      const previousHeight = tradeDockState.height;
+      applyTradeDockState();
+      if (tradeDockState.height !== previousHeight) persistTradeDockState();
+    }
+
     function restoreTradeDockState() {
       try {
         const stored = JSON.parse(localStorage.getItem(TRADE_DOCK_STORAGE_KEY) || 'null');
@@ -3448,7 +3473,7 @@
       persistTradeDockState();
       event.preventDefault();
     });
-    window.addEventListener('resize', window.resizeTerminal);
+    window.addEventListener('resize', resizeTerminalWorkspace);
 
     restoreRailWidth();
     restoreTradeDockState();

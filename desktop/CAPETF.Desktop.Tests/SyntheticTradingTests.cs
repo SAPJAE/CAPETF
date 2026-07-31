@@ -557,7 +557,14 @@ public static class SyntheticTradingTests
               removeItem(key) { storedValues.delete(key); }
             };
             global.confirm = () => true;
-            global.addEventListener = () => {};
+            const windowListeners = new Map();
+            global.addEventListener = (name, callback) => {
+              if (!windowListeners.has(name)) windowListeners.set(name, []);
+              windowListeners.get(name).push(callback);
+            };
+            global.dispatchWindowEvent = name => {
+              for (const callback of windowListeners.get(name) || []) callback({ type: name });
+            };
             global.removeEventListener = () => {};
             global.requestAnimationFrame = callback => { callback(); return 1; };
             global.cancelAnimationFrame = () => {};
@@ -751,8 +758,31 @@ public static class SyntheticTradingTests
 
             element('trade-tab-baskets').click();
             assert.match(tableText(), /Basket.*Side.*Legs.*Synthetic entry.*Bid.*Ask.*PLAN SL.*PLAN TP.*Margin.*P\/L.*State/);
-            assert.match(tableText(), /basket-1.*BUY.*3.*235\.4500.*n\/a.*n\/a.*220\.0000.*260\.0000.*USDd 72\.50.*-2\.26.*Needs attention/);
+            assert.match(tableText(), /basket-1.*BUY.*3.*n\/a.*n\/a.*n\/a.*220\.0000.*260\.0000.*USDd 72\.50.*n\/a.*Needs attention/);
             assert.doesNotMatch(tableText(), /basket-closed/);
+
+            const livePnlExecution = {
+              ExecutionId: 'live-pnl-execution', BasketId: 'live-pnl-basket', Side: 'BUY', EstimatedMargin: 25, MarginCurrency: 'USDd', State: 'Open',
+              Legs: [{ Epic: 'ADBE', Direction: 'BUY', Multiplier: 1, ReferencePrice: 390, FillLevel: 400, Quantity: 0.2, State: 'Open', DealId: 'LIVE-DEAL', CurrentUnrealizedProfitLoss: 999 }]
+            };
+            const livePnlRow = syntheticBasketRows([livePnlExecution], {
+              Positions: [{ DealId: 'LIVE-DEAL', Epic: 'ADBE', UnrealizedProfitLoss: 12.34 }]
+            }, [])[0];
+            assert.equal(livePnlRow.syntheticEntry, 400, 'synthetic entry uses the persisted fill');
+            assert.equal(livePnlRow.profitLoss, 12.34, 'basket P/L comes from the latest broker snapshot');
+            const ambiguousPnlRow = syntheticBasketRows([livePnlExecution], {
+              Positions: [
+                { DealId: 'LIVE-DEAL', Epic: 'ADBE', UnrealizedProfitLoss: 12.34 },
+                { DealId: 'LIVE-DEAL', Epic: 'ADBE', UnrealizedProfitLoss: 45.67 }
+              ]
+            }, [])[0];
+            assert.equal(ambiguousPnlRow.profitLoss, null, 'ambiguous broker deal matches render P/L as n/a');
+            const missingFillRow = syntheticBasketRows([{
+              ...livePnlExecution,
+              Legs: [{ ...livePnlExecution.Legs[0], FillLevel: null, ReferencePrice: 390 }]
+            }], { Positions: [{ DealId: 'LIVE-DEAL', UnrealizedProfitLoss: 12.34 }] }, [])[0];
+            assert.equal(missingFillRow.syntheticEntry, null, 'reference price must not replace an absent persisted fill');
+
             messages.length = 0;
             const basketRow = element('trade-dock-table').children[1].children[0];
             basketRow.click();
@@ -779,6 +809,10 @@ public static class SyntheticTradingTests
             element('trade-dock-splitter').dispatch('pointermove', { pointerId: 9, clientY: 0 });
             assert.equal(element('trade-dock').style.height, '360px');
             element('trade-dock-splitter').dispatch('pointerup', { pointerId: 9 });
+            global.innerHeight = 400;
+            dispatchWindowEvent('resize');
+            assert.equal(element('trade-dock').style.height, '180px', 'viewport shrink reapplies the 45vh dock maximum');
+            assert.equal(JSON.parse(storedValues.get('capetf.tradeDock.v1')).height, 180);
 
             messages.length = 0;
             element('close-host-execution-1').click();
