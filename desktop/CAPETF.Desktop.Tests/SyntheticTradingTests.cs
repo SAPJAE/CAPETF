@@ -820,6 +820,13 @@ public static class SyntheticTradingTests
                 { Epic: 'BBB', Direction: 'BUY', Multiplier: 2, FillLevel: 400, State: 'Open', DealId: 'DEAL-B' },
                 { Epic: 'CCC', Direction: 'SELL', Multiplier: -0.5, FillLevel: 372.8, State: 'Open', DealId: 'DEAL-C' }
               ]
+            }, {
+              ExecutionId: 'trade-2', BasketId: 'SYN-SECOND|US|USD', Side: 'BUY', EstimatedMargin: 55, MarginCurrency: 'USD', AccountId: 'DEMO-1', State: 'Open',
+              Legs: [
+                { Epic: 'DDD', Direction: 'BUY', Multiplier: 1, FillLevel: 50, State: 'Open', DealId: 'DEAL-D' },
+                { Epic: 'EEE', Direction: 'BUY', Multiplier: 1, FillLevel: 60, State: 'Open', DealId: 'DEAL-E' },
+                { Epic: 'FFF', Direction: 'BUY', Multiplier: 1, FillLevel: 70, State: 'Open', DealId: 'DEAL-F' }
+              ]
             }]);
             setTerminalBrokerSnapshot({
               Account: { AccountId: 'DEMO-1', Currency: 'USD' },
@@ -925,30 +932,84 @@ public static class SyntheticTradingTests
             assert.equal(element('plan-stop-loss').value, '675.5', 'unchanged publication does not overwrite dirty PLAN SL');
             assert.equal(element('plan-take-profit').value, '770', 'unchanged publication does not overwrite dirty PLAN TP');
 
-            setTerminalRiskPlanError({ Error: 'Stop loss must be below entry.' });
-            assert.equal(element('risk-plan-error').textContent, 'Stop loss must be below entry.');
             messages.length = 0;
             element('apply-risk-plan').click();
-            assert.deepEqual(messages.pop(), { type: 'setRiskPlan', executionId: 'trade-1', stopLoss: 675.5, takeProfit: 770 });
-            assert.equal(element('risk-plan-error').textContent, '', 'apply retry clears the prior host error');
-            setTerminalRiskPlanError({ Error: 'Temporary validation error.' });
-            element('clear-risk-plan').click();
-            assert.deepEqual(messages.pop(), { type: 'clearRiskPlan', executionId: 'trade-1' });
-            assert.equal(element('risk-plan-error').textContent, '', 'clear retry clears the prior host error');
-            setTerminalRiskPlanError({ Error: 'Old validation error.' });
-            setTerminalRiskPlans([{
-              ExecutionId: 'trade-1', BasketId: 'SYN-TECH|US|USD', Side: 'BUY', StopLoss: 674, TakeProfit: 771, UpdatedUtc: '2026-08-01T12:00:00Z'
-            }]);
-            assert.equal(element('risk-plan-error').textContent, '', 'successful plan publication clears the host error');
-            assert.equal(element('plan-stop-loss').value, '674', 'changed publication hydrates PLAN SL');
-            assert.equal(element('plan-take-profit').value, '771', 'changed publication hydrates PLAN TP');
+            const applyA = messages.pop();
+            assert.equal(applyA.type, 'setRiskPlan');
+            assert.equal(applyA.executionId, 'trade-1');
+            assert.equal(applyA.stopLoss, 675.5);
+            assert.equal(applyA.takeProfit, 770);
+            assert.equal(Number.isSafeInteger(applyA.revision) && applyA.revision > 0, true, 'set request carries a positive revision');
 
-            setTerminalRiskPlanError({ Error: 'Selection-scoped error.' });
-            selectedDockExecutionId = 'missing-execution';
-            renderRiskPlanControls();
-            assert.equal(element('risk-plan-error').textContent, '', 'selection change clears the host error');
-            selectedDockExecutionId = 'trade-1';
-            renderRiskPlanControls();
+            const secondTradeRow = element('trade-dock-table').children[1].children[1];
+            secondTradeRow.click();
+            assert.equal(element('plan-stop-loss').value, '', 'selection B starts with its own PLAN SL');
+            assert.equal(element('plan-take-profit').value, '', 'selection B starts with its own PLAN TP');
+            element('plan-stop-loss').value = '150';
+            element('plan-take-profit').value = '220';
+            element('plan-stop-loss').dispatch('input');
+            messages.length = 0;
+            element('apply-risk-plan').click();
+            const applyB1 = messages.pop();
+            setTerminalRiskPlanError({ ExecutionId: 'trade-2', Revision: applyB1.revision, Error: 'Current B validation error.' });
+            assert.equal(element('risk-plan-error').textContent, 'Current B validation error.');
+
+            setTerminalRiskPlans({
+              ExecutionId: 'trade-1', Revision: applyA.revision,
+              Plans: [{ ExecutionId: 'trade-1', StopLoss: 675.5, TakeProfit: 770, UpdatedUtc: '2026-08-01T12:01:00Z' }]
+            });
+            assert.equal(element('risk-plan-error').textContent, 'Current B validation error.', 'delayed A success cannot clear B error');
+            assert.equal(element('plan-stop-loss').value, '150', 'delayed A success cannot hydrate B draft');
+            setTerminalRiskPlanError({ ExecutionId: 'trade-1', Revision: applyA.revision, Error: 'Delayed A validation error.' });
+            assert.equal(element('risk-plan-error').textContent, 'Current B validation error.', 'delayed A error cannot replace B error');
+
+            element('apply-risk-plan').click();
+            const applyB2 = messages.pop();
+            element('apply-risk-plan').click();
+            const applyB3 = messages.pop();
+            assert.equal(applyB3.revision > applyB2.revision, true, 'same-execution retries advance revision');
+            setTerminalRiskPlans({
+              ExecutionId: 'trade-2', Revision: applyB2.revision,
+              Plans: [{ ExecutionId: 'trade-2', StopLoss: 140, TakeProfit: 230, UpdatedUtc: '2026-08-01T12:01:30Z' }]
+            });
+            assert.equal(element('plan-stop-loss').value, '150', 'stale same-execution success cannot hydrate PLAN SL');
+            assert.equal(element('plan-take-profit').value, '220', 'stale same-execution success cannot hydrate PLAN TP');
+            setTerminalRiskPlanError({ ExecutionId: 'trade-2', Revision: applyB2.revision, Error: 'Stale B validation error.' });
+            assert.equal(element('risk-plan-error').textContent, '', 'stale same-execution revision is ignored');
+            setTerminalRiskPlanError({ ExecutionId: 'trade-2', Revision: applyB3.revision, Error: 'Latest B validation error.' });
+            assert.equal(element('risk-plan-error').textContent, 'Latest B validation error.', 'latest same-execution revision is accepted');
+
+            element('apply-risk-plan').click();
+            const applyB4 = messages.pop();
+            assert.equal(element('risk-plan-error').textContent, '', 'apply retry clears the current host error');
+            setTerminalRiskPlans({
+              ExecutionId: 'trade-2', Revision: applyB4.revision,
+              Plans: [
+                { ExecutionId: 'trade-1', StopLoss: 680, TakeProfit: 760 },
+                { ExecutionId: 'trade-2', StopLoss: 150, TakeProfit: 220, UpdatedUtc: '2026-08-01T12:02:00Z' }
+              ]
+            });
+            assert.equal(element('risk-plan-error').textContent, '', 'current success clears the host error');
+            assert.equal(element('plan-stop-loss').value, '150', 'current success hydrates acknowledged PLAN SL');
+            assert.equal(element('plan-take-profit').value, '220', 'current success hydrates acknowledged PLAN TP');
+            assert.equal(riskPlanEditorState.dirty, false, 'current success clears dirty editor state');
+
+            element('clear-risk-plan').click();
+            const clearB = messages.pop();
+            assert.equal(clearB.type, 'clearRiskPlan');
+            assert.equal(clearB.executionId, 'trade-2');
+            assert.equal(Number.isSafeInteger(clearB.revision) && clearB.revision > applyB4.revision, true, 'clear request carries a newer revision');
+            setTerminalRiskPlans({
+              ExecutionId: 'trade-2', Revision: clearB.revision,
+              Plans: [{ ExecutionId: 'trade-1', StopLoss: 680, TakeProfit: 760 }]
+            });
+            assert.equal(element('plan-stop-loss').value, '', 'current clear success hydrates empty PLAN SL');
+            assert.equal(element('plan-take-profit').value, '', 'current clear success hydrates empty PLAN TP');
+
+            const firstTradeRowAgain = element('trade-dock-table').children[1].children[0];
+            firstTradeRowAgain.click();
+            assert.equal(element('plan-stop-loss').value, '680', 'returning to A hydrates A plan only');
+            assert.equal(element('plan-take-profit').value, '760', 'returning to A hydrates A plan only');
 
             setTerminalBrokerSnapshot({
               Account: { AccountId: 'DEMO-1', Currency: 'USD' },
@@ -1082,37 +1143,44 @@ public static class SyntheticTradingTests
     private static void TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels()
     {
         using var setDocument = JsonDocument.Parse(
-            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":92.5,\"takeProfit\":118.0}");
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"revision\":17,\"stopLoss\":92.5,\"takeProfit\":118.0}");
         AssertTrue(
             SyntheticTradingBrowserRequestParser.TryParse(setDocument.RootElement, out var set, out var setError),
             $"valid risk-plan request must parse: {setError}");
         var setRequest = set as SyntheticSetRiskPlanRequest
             ?? throw new Exception("risk-plan request type");
         AssertEqual("execution-1", setRequest.ExecutionId, "risk-plan execution identity");
+        AssertEqual(17L, setRequest.Revision, "risk-plan request revision");
         AssertEqual(92.5m, setRequest.StopLoss, "risk-plan stop loss");
         AssertEqual(118.0m, setRequest.TakeProfit, "risk-plan take profit");
 
         using var nullableSetDocument = JsonDocument.Parse(
-            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":null,\"takeProfit\":118.0}");
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"revision\":18,\"stopLoss\":null,\"takeProfit\":118.0}");
         AssertTrue(
             SyntheticTradingBrowserRequestParser.TryParse(nullableSetDocument.RootElement, out var nullableSet, out var nullableSetError),
             $"risk-plan request with an empty level must parse: {nullableSetError}");
         AssertEqual(null, ((SyntheticSetRiskPlanRequest)nullableSet!).StopLoss, "risk-plan empty stop loss");
 
         using var clearDocument = JsonDocument.Parse(
-            "{\"type\":\"clearRiskPlan\",\"executionId\":\"execution-1\"}");
+            "{\"type\":\"clearRiskPlan\",\"executionId\":\"execution-1\",\"revision\":19}");
         AssertTrue(
             SyntheticTradingBrowserRequestParser.TryParse(clearDocument.RootElement, out var clear, out var clearError),
             $"valid risk-plan clear request must parse: {clearError}");
-        AssertEqual("execution-1", ((SyntheticClearRiskPlanRequest)clear!).ExecutionId, "risk-plan clear identity");
+        var clearRequest = (SyntheticClearRiskPlanRequest)clear!;
+        AssertEqual("execution-1", clearRequest.ExecutionId, "risk-plan clear identity");
+        AssertEqual(19L, clearRequest.Revision, "risk-plan clear revision");
 
         foreach (var unsafePayload in new[]
         {
-            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":92.5,\"takeProfit\":118.0,\"epic\":\"AAPL\"}",
-            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":92.5,\"takeProfit\":118.0,\"dealId\":\"deal-1\"}",
-            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":92.5,\"takeProfit\":118.0,\"multiplier\":1.5}",
-            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":92.5,\"takeProfit\":118.0,\"direction\":\"BUY\"}",
-            "{\"type\":\"clearRiskPlan\",\"executionId\":\"execution-1\",\"quantity\":1}",
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"revision\":17,\"stopLoss\":92.5,\"takeProfit\":118.0,\"epic\":\"AAPL\"}",
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"revision\":17,\"stopLoss\":92.5,\"takeProfit\":118.0,\"dealId\":\"deal-1\"}",
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"revision\":17,\"stopLoss\":92.5,\"takeProfit\":118.0,\"multiplier\":1.5}",
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"revision\":17,\"stopLoss\":92.5,\"takeProfit\":118.0,\"direction\":\"BUY\"}",
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":92.5,\"takeProfit\":118.0}",
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"revision\":0,\"stopLoss\":92.5,\"takeProfit\":118.0}",
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"revision\":1.5,\"stopLoss\":92.5,\"takeProfit\":118.0}",
+            "{\"type\":\"clearRiskPlan\",\"executionId\":\"execution-1\",\"revision\":19,\"quantity\":1}",
+            "{\"type\":\"clearRiskPlan\",\"executionId\":\"execution-1\"}",
         })
         {
             using var unsafeDocument = JsonDocument.Parse(unsafePayload);
@@ -1504,12 +1572,27 @@ public static class SyntheticTradingTests
             "setTerminalExecutionProgress",
             "setTerminalTradingMode",
             "setTerminalRiskPlans",
+            "setTerminalRiskPlanError",
         })
         {
             AssertContains(source, callback, $"WPF callback {callback}");
         }
         AssertContains(source, "SetSyntheticRiskPlanAsync", "WPF host risk-plan set handler");
         AssertContains(source, "ClearSyntheticRiskPlanAsync", "WPF host risk-plan clear handler");
+        var setRiskPlanBody = SliceSource(source, "private async Task SetSyntheticRiskPlanAsync", "private async Task ClearSyntheticRiskPlanAsync");
+        AssertContains(setRiskPlanBody,
+            "PublishTerminalRiskPlanErrorAsync(request.ExecutionId, request.Revision",
+            "risk-plan errors must echo execution and revision identity");
+        AssertContains(setRiskPlanBody,
+            "PublishTerminalRiskPlansAsync(request.ExecutionId, request.Revision)",
+            "risk-plan success must echo execution and revision identity");
+        var clearRiskPlanBody = SliceSource(source, "private async Task ClearSyntheticRiskPlanAsync", "private async Task RejectTerminalBrowserRequestAsync");
+        AssertContains(clearRiskPlanBody,
+            "PublishTerminalRiskPlanErrorAsync(request.ExecutionId, request.Revision",
+            "risk-plan clear errors must echo execution and revision identity");
+        AssertContains(clearRiskPlanBody,
+            "PublishTerminalRiskPlansAsync(request.ExecutionId, request.Revision)",
+            "risk-plan clear success must echo execution and revision identity");
 
         var preflightBody = SliceSource(source, "private async Task PreflightSyntheticBasketAsync", "private Task ExecuteSyntheticBasketAsync");
         AssertFalse(

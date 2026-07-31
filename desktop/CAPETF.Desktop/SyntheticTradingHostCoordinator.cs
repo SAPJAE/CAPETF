@@ -30,10 +30,11 @@ internal sealed record SyntheticPreviewOrderRequest(string Side, decimal BasketN
 
 internal sealed record SyntheticSetRiskPlanRequest(
     string ExecutionId,
+    long Revision,
     decimal? StopLoss,
     decimal? TakeProfit) : SyntheticTradingBrowserRequest;
 
-internal sealed record SyntheticClearRiskPlanRequest(string ExecutionId)
+internal sealed record SyntheticClearRiskPlanRequest(string ExecutionId, long Revision)
     : SyntheticTradingBrowserRequest;
 
 internal static class SyntheticTradingBrowserRequestParser
@@ -181,25 +182,27 @@ internal static class SyntheticTradingBrowserRequestParser
                 return true;
 
             case "setRiskPlan":
-                if (!HasOnlyProperties(root, "type", "executionId", "stopLoss", "takeProfit")
+                if (!HasOnlyProperties(root, "type", "executionId", "revision", "stopLoss", "takeProfit")
                     || !TryGetRequiredString(root, "executionId", out var riskPlanExecutionId)
+                    || !TryGetPositiveInt64(root, "revision", out var riskPlanRevision)
                     || !TryGetNullableDecimal(root, "stopLoss", out var stopLoss)
                     || !TryGetNullableDecimal(root, "takeProfit", out var takeProfit))
                 {
-                    error = "Risk plan requires an execution ID and numeric or empty risk levels only.";
+                    error = "Risk plan requires an execution ID, positive integer revision, and numeric or empty risk levels only.";
                     return false;
                 }
-                request = new SyntheticSetRiskPlanRequest(riskPlanExecutionId, stopLoss, takeProfit);
+                request = new SyntheticSetRiskPlanRequest(riskPlanExecutionId, riskPlanRevision, stopLoss, takeProfit);
                 return true;
 
             case "clearRiskPlan":
-                if (!HasOnlyProperties(root, "type", "executionId")
-                    || !TryGetRequiredString(root, "executionId", out var clearRiskPlanExecutionId))
+                if (!HasOnlyProperties(root, "type", "executionId", "revision")
+                    || !TryGetRequiredString(root, "executionId", out var clearRiskPlanExecutionId)
+                    || !TryGetPositiveInt64(root, "revision", out var clearRiskPlanRevision))
                 {
-                    error = "Risk plan clear requires an execution ID only.";
+                    error = "Risk plan clear requires an execution ID and positive integer revision only.";
                     return false;
                 }
-                request = new SyntheticClearRiskPlanRequest(clearRiskPlanExecutionId);
+                request = new SyntheticClearRiskPlanRequest(clearRiskPlanExecutionId, clearRiskPlanRevision);
                 return true;
 
             default:
@@ -230,6 +233,15 @@ internal static class SyntheticTradingBrowserRequestParser
         return root.TryGetProperty(propertyName, out var property)
             && property.ValueKind == JsonValueKind.Number
             && property.TryGetDecimal(out value);
+    }
+
+    private static bool TryGetPositiveInt64(JsonElement root, string propertyName, out long value)
+    {
+        value = default;
+        return root.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.Number
+            && property.TryGetInt64(out value)
+            && value > 0;
     }
 
     private static bool TryGetNullableDecimal(JsonElement root, string propertyName, out decimal? value)

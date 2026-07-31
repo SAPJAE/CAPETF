@@ -1341,11 +1341,21 @@ public partial class CapComTerminalWindow : Window
     private Task PublishTerminalExecutionErrorAsync(string error) =>
         PublishTerminalCallbackAsync("setTerminalExecutionProgress", new { Error = error });
 
-    private Task PublishTerminalRiskPlansAsync() =>
-        PublishTerminalCallbackAsync("setTerminalRiskPlans", _riskPlanStore.LoadAll());
+    private Task PublishTerminalRiskPlansAsync(string executionId = "", long revision = 0) =>
+        PublishTerminalCallbackAsync("setTerminalRiskPlans", new
+        {
+            ExecutionId = executionId,
+            Revision = revision,
+            Plans = _riskPlanStore.LoadAll()
+        });
 
-    private Task PublishTerminalRiskPlanErrorAsync(string error) =>
-        PublishTerminalCallbackAsync("setTerminalRiskPlanError", new { Error = error });
+    private Task PublishTerminalRiskPlanErrorAsync(string executionId, long revision, string error) =>
+        PublishTerminalCallbackAsync("setTerminalRiskPlanError", new
+        {
+            ExecutionId = executionId,
+            Revision = revision,
+            Error = error
+        });
 
     private Task PublishTerminalTradingModeAsync()
     {
@@ -1650,7 +1660,7 @@ public partial class CapComTerminalWindow : Window
             string.Equals(record.ExecutionId, request.ExecutionId, StringComparison.Ordinal));
         if (execution is null)
         {
-            await PublishTerminalRiskPlanErrorAsync("Synthetic execution was not found.");
+            await PublishTerminalRiskPlanErrorAsync(request.ExecutionId, request.Revision, "Synthetic execution was not found.");
             return;
         }
 
@@ -1664,12 +1674,12 @@ public partial class CapComTerminalWindow : Window
             request.TakeProfit);
         if (!validation.IsValid)
         {
-            await PublishTerminalRiskPlanErrorAsync(validation.Error);
+            await PublishTerminalRiskPlanErrorAsync(request.ExecutionId, request.Revision, validation.Error);
             return;
         }
 
         _riskPlanStore.Upsert(validation.Plan!);
-        await PublishTerminalRiskPlansAsync();
+        await PublishTerminalRiskPlansAsync(request.ExecutionId, request.Revision);
     }
 
     private async Task ClearSyntheticRiskPlanAsync(SyntheticClearRiskPlanRequest request)
@@ -1678,12 +1688,12 @@ public partial class CapComTerminalWindow : Window
             string.Equals(record.ExecutionId, request.ExecutionId, StringComparison.Ordinal));
         if (execution is null)
         {
-            await PublishTerminalRiskPlanErrorAsync("Synthetic execution was not found.");
+            await PublishTerminalRiskPlanErrorAsync(request.ExecutionId, request.Revision, "Synthetic execution was not found.");
             return;
         }
 
         _riskPlanStore.Remove(request.ExecutionId);
-        await PublishTerminalRiskPlansAsync();
+        await PublishTerminalRiskPlansAsync(request.ExecutionId, request.Revision);
     }
 
     private async Task RejectTerminalBrowserRequestAsync(string error)
