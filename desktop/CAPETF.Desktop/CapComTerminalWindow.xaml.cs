@@ -18,6 +18,10 @@ public partial class CapComTerminalWindow : Window
     private readonly SyntheticMarginPreviewService _marginPreview;
     private readonly SyntheticPreflightMarketSnapshotLoader _preflightMarketSnapshots;
     private readonly SyntheticTradingHostCoordinator _tradingCoordinator;
+    private readonly SyntheticRiskPlanStore _riskPlanStore = new(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "CAPETF",
+        "synthetic-risk-plans.json"));
     private readonly SyntheticTradingWindowLifecycleCoordinator _tradingLifecycle = new();
     private readonly TerminalOperationState _operationState = new();
     private readonly WindowLifetime _windowLifetime = new();
@@ -93,6 +97,7 @@ public partial class CapComTerminalWindow : Window
             await ResetMarginPreviewAfterLoginAsync();
             await PublishTerminalTradingModeAsync();
             await _tradingCoordinator.ReconnectAsync(PublishTerminalExecutionsAsync, cancellationToken);
+            await PublishTerminalRiskPlansAsync();
             await PublishBrokerSnapshotAsync(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             ConnectionText.Text = $"connected to {SavedCredentialLabel(saved)}";
@@ -764,6 +769,7 @@ public partial class CapComTerminalWindow : Window
         await ResetMarginPreviewAfterLoginAsync();
         await PublishTerminalTradingModeAsync();
         await _tradingCoordinator.ReconnectAsync(PublishTerminalExecutionsAsync, cancellationToken);
+        await PublishTerminalRiskPlansAsync();
         cancellationToken.ThrowIfCancellationRequested();
         ConnectionText.Text = "connected";
     }
@@ -1323,6 +1329,7 @@ public partial class CapComTerminalWindow : Window
     {
         _terminalExecutions = records.ToArray();
         await PublishTerminalCallbackAsync("setTerminalExecutions", records);
+        await PublishTerminalRiskPlansAsync();
         if (string.IsNullOrWhiteSpace(_tradingCoordinator.PersistenceWarning)) return;
         _windowLifetime.TryApply(() => StatusText.Text = _tradingCoordinator.PersistenceWarning);
         await PublishTerminalExecutionErrorAsync(_tradingCoordinator.PersistenceWarning);
@@ -1333,6 +1340,12 @@ public partial class CapComTerminalWindow : Window
 
     private Task PublishTerminalExecutionErrorAsync(string error) =>
         PublishTerminalCallbackAsync("setTerminalExecutionProgress", new { Error = error });
+
+    private Task PublishTerminalRiskPlansAsync() =>
+        PublishTerminalCallbackAsync("setTerminalRiskPlans", _riskPlanStore.LoadAll());
+
+    private Task PublishTerminalRiskPlanErrorAsync(string error) =>
+        PublishTerminalCallbackAsync("setTerminalRiskPlanError", new { Error = error });
 
     private Task PublishTerminalTradingModeAsync()
     {
@@ -1358,6 +1371,7 @@ public partial class CapComTerminalWindow : Window
         {
             await PublishTerminalTradingModeAsync();
             await _tradingCoordinator.PublishStoredAsync(PublishTerminalExecutionsAsync, _windowLifetime.Token);
+            await PublishTerminalRiskPlansAsync();
         }
         catch (OperationCanceledException) when (_windowLifetime.IsClosing)
         {
@@ -1621,7 +1635,47 @@ public partial class CapComTerminalWindow : Window
             case SyntheticPreviewOrderRequest previewOrder:
                 PreviewSyntheticOrder(previewOrder.Side, previewOrder.BasketNotional);
                 break;
+            case SyntheticSetRiskPlanRequest setRiskPlan:
+                await SetSyntheticRiskPlanAsync(setRiskPlan);
+                break;
+            case SyntheticClearRiskPlanRequest clearRiskPlan:
+                await ClearSyntheticRiskPlanAsync(clearRiskPlan);
+                break;
         }
+    }
+
+    private async Task SetSyntheticRiskPlanAsync(SyntheticSetRiskPlanRequest request)
+    {
+        var execution = _terminalExecutions.FirstOrDefault(record =>
+            string.Equals(record.ExecutionId, request.ExecutionId, StringComparison.Ordinal));
+        if (execution is null)
+        {
+            await PublishTerminalRiskPlanErrorAsync("Synthetic execution was not found.");
+            return;
+        }
+
+        var entry = execution.Legs.Sum(leg => leg.Multiplier * (leg.FillLevel ?? leg.ReferencePrice));
+        var validation = SyntheticRiskPlanValidation.Validate(
+            execution.ExecutionId,
+            execution.BasketId,
+            execution.Side,
+            entry,
+            request.StopLoss,
+            request.TakeProfit);
+        if (!validation.IsValid)
+        {
+            await PublishTerminalRiskPlanErrorAsync(validation.Error);
+            return;
+        }
+
+        _riskPlanStore.Upsert(validation.Plan!);
+        await PublishTerminalRiskPlansAsync();
+    }
+
+    private async Task ClearSyntheticRiskPlanAsync(SyntheticClearRiskPlanRequest request)
+    {
+        _riskPlanStore.Remove(request.ExecutionId);
+        await PublishTerminalRiskPlansAsync();
     }
 
     private async Task RejectTerminalBrowserRequestAsync(string error)

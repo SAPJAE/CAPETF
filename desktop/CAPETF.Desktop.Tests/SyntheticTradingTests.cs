@@ -20,6 +20,7 @@ public static class SyntheticTradingTests
         SyntheticTradingWorkspaceHasProfessionalDemoContract();
         SyntheticTradingWorkspaceRuntimeUsesHostOwnedTicketsAndOperationLocks();
         TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs();
+        TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels();
         ExecutionBasketSnapshotPreservesTrustedFormula();
         TradingBrowserParserRejectsMalformedShapesWithoutThrowing();
         TradingBrowserHandlerTurnsMalformedAndSemanticFailuresIntoRejections();
@@ -779,6 +780,49 @@ public static class SyntheticTradingTests
         }
     }
 
+    private static void TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels()
+    {
+        using var setDocument = JsonDocument.Parse(
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":92.5,\"takeProfit\":118.0}");
+        AssertTrue(
+            SyntheticTradingBrowserRequestParser.TryParse(setDocument.RootElement, out var set, out var setError),
+            $"valid risk-plan request must parse: {setError}");
+        var setRequest = set as SyntheticSetRiskPlanRequest
+            ?? throw new Exception("risk-plan request type");
+        AssertEqual("execution-1", setRequest.ExecutionId, "risk-plan execution identity");
+        AssertEqual(92.5m, setRequest.StopLoss, "risk-plan stop loss");
+        AssertEqual(118.0m, setRequest.TakeProfit, "risk-plan take profit");
+
+        using var nullableSetDocument = JsonDocument.Parse(
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":null,\"takeProfit\":118.0}");
+        AssertTrue(
+            SyntheticTradingBrowserRequestParser.TryParse(nullableSetDocument.RootElement, out var nullableSet, out var nullableSetError),
+            $"risk-plan request with an empty level must parse: {nullableSetError}");
+        AssertEqual(null, ((SyntheticSetRiskPlanRequest)nullableSet!).StopLoss, "risk-plan empty stop loss");
+
+        using var clearDocument = JsonDocument.Parse(
+            "{\"type\":\"clearRiskPlan\",\"executionId\":\"execution-1\"}");
+        AssertTrue(
+            SyntheticTradingBrowserRequestParser.TryParse(clearDocument.RootElement, out var clear, out var clearError),
+            $"valid risk-plan clear request must parse: {clearError}");
+        AssertEqual("execution-1", ((SyntheticClearRiskPlanRequest)clear!).ExecutionId, "risk-plan clear identity");
+
+        foreach (var unsafePayload in new[]
+        {
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":92.5,\"takeProfit\":118.0,\"epic\":\"AAPL\"}",
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":92.5,\"takeProfit\":118.0,\"dealId\":\"deal-1\"}",
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":92.5,\"takeProfit\":118.0,\"multiplier\":1.5}",
+            "{\"type\":\"setRiskPlan\",\"executionId\":\"execution-1\",\"stopLoss\":92.5,\"takeProfit\":118.0,\"direction\":\"BUY\"}",
+            "{\"type\":\"clearRiskPlan\",\"executionId\":\"execution-1\",\"quantity\":1}",
+        })
+        {
+            using var unsafeDocument = JsonDocument.Parse(unsafePayload);
+            AssertFalse(
+                SyntheticTradingBrowserRequestParser.TryParse(unsafeDocument.RootElement, out _, out _),
+                $"risk-plan mutation fields must be rejected: {unsafePayload}");
+        }
+    }
+
     private static void ExecutionBasketSnapshotPreservesTrustedFormula()
     {
         var now = DateTimeOffset.Parse("2026-07-30T12:00:00Z");
@@ -1160,10 +1204,13 @@ public static class SyntheticTradingTests
             "setTerminalExecutions",
             "setTerminalExecutionProgress",
             "setTerminalTradingMode",
+            "setTerminalRiskPlans",
         })
         {
             AssertContains(source, callback, $"WPF callback {callback}");
         }
+        AssertContains(source, "SetSyntheticRiskPlanAsync", "WPF host risk-plan set handler");
+        AssertContains(source, "ClearSyntheticRiskPlanAsync", "WPF host risk-plan clear handler");
 
         var preflightBody = SliceSource(source, "private async Task PreflightSyntheticBasketAsync", "private Task ExecuteSyntheticBasketAsync");
         AssertFalse(

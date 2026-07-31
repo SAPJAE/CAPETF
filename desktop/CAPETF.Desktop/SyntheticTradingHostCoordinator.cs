@@ -28,6 +28,14 @@ internal sealed record SyntheticPreviewMarginsRequest(decimal BasketNotional)
 internal sealed record SyntheticPreviewOrderRequest(string Side, decimal BasketNotional)
     : SyntheticTradingBrowserRequest;
 
+internal sealed record SyntheticSetRiskPlanRequest(
+    string ExecutionId,
+    decimal? StopLoss,
+    decimal? TakeProfit) : SyntheticTradingBrowserRequest;
+
+internal sealed record SyntheticClearRiskPlanRequest(string ExecutionId)
+    : SyntheticTradingBrowserRequest;
+
 internal static class SyntheticTradingBrowserRequestParser
 {
     public static bool TryParse(
@@ -172,6 +180,28 @@ internal static class SyntheticTradingBrowserRequestParser
                 request = new SyntheticPreviewOrderRequest(orderSideValue.GetString()!, orderNotional);
                 return true;
 
+            case "setRiskPlan":
+                if (!HasOnlyProperties(root, "type", "executionId", "stopLoss", "takeProfit")
+                    || !TryGetRequiredString(root, "executionId", out var riskPlanExecutionId)
+                    || !TryGetNullableDecimal(root, "stopLoss", out var stopLoss)
+                    || !TryGetNullableDecimal(root, "takeProfit", out var takeProfit))
+                {
+                    error = "Risk plan requires an execution ID and numeric or empty risk levels only.";
+                    return false;
+                }
+                request = new SyntheticSetRiskPlanRequest(riskPlanExecutionId, stopLoss, takeProfit);
+                return true;
+
+            case "clearRiskPlan":
+                if (!HasOnlyProperties(root, "type", "executionId")
+                    || !TryGetRequiredString(root, "executionId", out var clearRiskPlanExecutionId))
+                {
+                    error = "Risk plan clear requires an execution ID only.";
+                    return false;
+                }
+                request = new SyntheticClearRiskPlanRequest(clearRiskPlanExecutionId);
+                return true;
+
             default:
                 error = "Unsupported trading request.";
                 return false;
@@ -200,6 +230,25 @@ internal static class SyntheticTradingBrowserRequestParser
         return root.TryGetProperty(propertyName, out var property)
             && property.ValueKind == JsonValueKind.Number
             && property.TryGetDecimal(out value);
+    }
+
+    private static bool TryGetNullableDecimal(JsonElement root, string propertyName, out decimal? value)
+    {
+        value = null;
+        if (!root.TryGetProperty(propertyName, out var property)) return false;
+        if (property.ValueKind == JsonValueKind.Null) return true;
+        if (property.ValueKind != JsonValueKind.Number || !property.TryGetDecimal(out var decimalValue)) return false;
+        value = decimalValue;
+        return true;
+    }
+
+    private static bool TryGetRequiredString(JsonElement root, string propertyName, out string value)
+    {
+        value = "";
+        return root.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(property.GetString())
+            && (value = property.GetString()!) is not null;
     }
 
     internal static bool IsSemanticJsonException(Exception exception) =>
