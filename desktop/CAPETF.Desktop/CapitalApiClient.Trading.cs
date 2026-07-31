@@ -46,6 +46,27 @@ public sealed partial class CapitalApiClient
         return ParseOpenPositions(document.RootElement);
     }
 
+    public async Task<IReadOnlyList<CapitalWorkingOrder>> GetWorkingOrdersAsync(CancellationToken cancellationToken = default)
+    {
+        using var document = await SendTradingJsonAsync(HttpMethod.Get, "api/v1/workingorders", null, cancellationToken);
+        return ParseWorkingOrders(document.RootElement);
+    }
+
+    public async Task<CapitalBrokerAccount> GetBrokerAccountAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureSession();
+        using var document = await SendTradingJsonAsync(HttpMethod.Get, "api/v1/accounts", null, cancellationToken);
+        return ParseBrokerAccount(document.RootElement, _session!.CurrentAccountId, DateTimeOffset.UtcNow);
+    }
+
+    public async Task<CapitalBrokerSnapshot> GetBrokerSnapshotAsync(CancellationToken cancellationToken = default)
+    {
+        var account = await GetBrokerAccountAsync(cancellationToken);
+        var positions = await GetOpenPositionsAsync(cancellationToken);
+        var orders = await GetWorkingOrdersAsync(cancellationToken);
+        return new CapitalBrokerSnapshot(account, positions, orders, DateTimeOffset.UtcNow);
+    }
+
     public async Task<CapitalAccountPreferences> GetAccountPreferencesAsync(CancellationToken cancellationToken = default)
     {
         using var document = await SendTradingJsonAsync(HttpMethod.Get, "api/v1/accounts/preferences", null, cancellationToken);
@@ -159,9 +180,92 @@ public sealed partial class CapitalApiClient
                 ReadDecimal(position, "level"),
                 ReadDecimal(position, "upl"),
                 ReadString(position, "currency") ?? "",
-                ReadString(market, "marketStatus") ?? ReadString(position, "marketStatus") ?? ""));
+                ReadString(market, "marketStatus") ?? ReadString(position, "marketStatus") ?? "",
+                ReadDecimal(position, "stopLevel"),
+                ReadDecimal(position, "profitLevel"),
+                ReadDecimal(market, "bid"),
+                ReadDecimal(market, "offer"),
+                ReadString(market, "instrumentName") ?? "",
+                ReadDateTimeOffset(position, "createdDateUTC")));
         }
 
         return positions;
+    }
+
+    internal static IReadOnlyList<CapitalWorkingOrder> ParseWorkingOrders(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return ParseWorkingOrders(document.RootElement);
+    }
+
+    private static IReadOnlyList<CapitalWorkingOrder> ParseWorkingOrders(JsonElement root)
+    {
+        if (!root.TryGetProperty("workingOrders", out var values) || values.ValueKind != JsonValueKind.Array) return [];
+
+        var orders = new List<CapitalWorkingOrder>();
+        foreach (var value in values.EnumerateArray())
+        {
+            if (value.ValueKind != JsonValueKind.Object) continue;
+            var order = value.TryGetProperty("workingOrderData", out var orderValue) && orderValue.ValueKind == JsonValueKind.Object
+                ? orderValue
+                : value;
+            var market = value.TryGetProperty("marketData", out var marketValue) && marketValue.ValueKind == JsonValueKind.Object
+                ? marketValue
+                : value;
+            orders.Add(new CapitalWorkingOrder(
+                ReadString(order, "dealId") ?? "",
+                ReadString(order, "epic") ?? ReadString(market, "epic") ?? "",
+                ReadString(order, "direction") ?? "",
+                ReadDecimal(order, "orderSize") ?? ReadDecimal(order, "size"),
+                ReadDecimal(order, "orderLevel") ?? ReadDecimal(order, "level"),
+                ReadString(order, "orderType") ?? "",
+                ReadString(order, "timeInForce") ?? "",
+                ReadDecimal(order, "stopLevel"),
+                ReadDecimal(order, "profitLevel"),
+                ReadString(order, "currencyCode") ?? ReadString(order, "currency") ?? "",
+                ReadString(market, "marketStatus") ?? "",
+                ReadDecimal(market, "bid"),
+                ReadDecimal(market, "offer"),
+                ReadString(market, "instrumentName") ?? "",
+                ReadDateTimeOffset(order, "createdDateUTC")));
+        }
+
+        return orders;
+    }
+
+    internal static CapitalBrokerAccount ParseBrokerAccount(string json, string activeAccountId, DateTimeOffset retrievedAt)
+    {
+        using var document = JsonDocument.Parse(json);
+        return ParseBrokerAccount(document.RootElement, activeAccountId, retrievedAt);
+    }
+
+    private static CapitalBrokerAccount ParseBrokerAccount(JsonElement root, string activeAccountId, DateTimeOffset retrievedAt)
+    {
+        if (!root.TryGetProperty("accounts", out var accounts) || accounts.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("Capital.com did not return any accounts.");
+
+        foreach (var account in accounts.EnumerateArray())
+        {
+            if (!string.Equals(ReadString(account, "accountId"), activeAccountId, StringComparison.Ordinal)) continue;
+            var balance = account.TryGetProperty("balance", out var balanceValue) && balanceValue.ValueKind == JsonValueKind.Object
+                ? balanceValue
+                : default;
+            return new CapitalBrokerAccount(
+                ReadString(account, "accountId") ?? "",
+                ReadString(account, "currency") ?? ReadString(account, "currencyIsoCode") ?? "",
+                balance.ValueKind == JsonValueKind.Object ? ReadDecimal(balance, "balance") : null,
+                balance.ValueKind == JsonValueKind.Object ? ReadDecimal(balance, "deposit") : null,
+                balance.ValueKind == JsonValueKind.Object ? ReadDecimal(balance, "profitLoss") : null,
+                balance.ValueKind == JsonValueKind.Object ? ReadDecimal(balance, "available") : null,
+                retrievedAt);
+        }
+
+        throw new InvalidOperationException($"Capital.com did not return active account '{activeAccountId}'.");
+    }
+
+    private static DateTimeOffset? ReadDateTimeOffset(JsonElement element, string property)
+    {
+        var value = ReadString(element, property);
+        return DateTimeOffset.TryParse(value, out var parsed) ? parsed : null;
     }
 }

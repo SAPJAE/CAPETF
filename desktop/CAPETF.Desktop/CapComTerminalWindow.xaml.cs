@@ -21,6 +21,7 @@ public partial class CapComTerminalWindow : Window
     private readonly SyntheticTradingWindowLifecycleCoordinator _tradingLifecycle = new();
     private readonly TerminalOperationState _operationState = new();
     private readonly WindowLifetime _windowLifetime = new();
+    private readonly SemaphoreSlim _brokerRefreshGate = new(1, 1);
     private readonly List<MarketInstrument> _instruments = [];
     private readonly ObservableCollection<TerminalComponentRow> _components = [];
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>> _instrumentsByUniverse = [];
@@ -32,6 +33,7 @@ public partial class CapComTerminalWindow : Window
         new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> _cachedCandlesByEpicByResolution =
         new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyList<SyntheticExecutionRecord> _terminalExecutions = [];
     private CapitalStreamingClient? _streaming;
     private SyntheticBasket? _basket;
     private bool _loadingSavedBaskets;
@@ -40,6 +42,7 @@ public partial class CapComTerminalWindow : Window
     private bool _streamReconnectScheduled;
     private CancellationTokenSource? _marginPreviewRefresh;
     private decimal _marginPreviewNotional = 300m;
+    private readonly Task _brokerRefreshLoop;
 
     public CapComTerminalWindow()
     {
@@ -63,6 +66,7 @@ public partial class CapComTerminalWindow : Window
         LoadSavedCredentials();
         RefreshSavedBaskets();
         _ = InitializeChartHostAsync(_windowLifetime.Token);
+        _brokerRefreshLoop = RunBrokerRefreshLoopAsync(_windowLifetime.Token);
         SizeChanged += async (_, _) => await InvokeTerminalScriptAsync("window.resizeTerminal && window.resizeTerminal();");
     }
 
@@ -89,6 +93,7 @@ public partial class CapComTerminalWindow : Window
             await ResetMarginPreviewAfterLoginAsync();
             await PublishTerminalTradingModeAsync();
             await _tradingCoordinator.ReconnectAsync(PublishTerminalExecutionsAsync, cancellationToken);
+            await PublishBrokerSnapshotAsync(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             ConnectionText.Text = $"connected to {SavedCredentialLabel(saved)}";
             StatusText.Text = $"Connected to {SavedCredentialLabel(saved)}. Loading universe...";
@@ -366,6 +371,52 @@ public partial class CapComTerminalWindow : Window
         var loadStatus = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs, {HistoryRange(selectedHistory)}.";
         StatusText.Text = loadStatus;
         await TryStartStreamingCurrentBasketAsync(loadStatus, cancellationToken);
+    }
+
+    private async Task LoadExecutionBasketAsync(string executionId, CancellationToken cancellationToken)
+    {
+        var execution = _terminalExecutions.FirstOrDefault(record =>
+            string.Equals(record.ExecutionId, executionId, StringComparison.Ordinal));
+        if (execution is null)
+        {
+            throw new InvalidOperationException("The selected execution is no longer available. Refresh positions and try again.");
+        }
+        if (_instruments.Count == 0)
+        {
+            await LoadStocksAsync(cancellationToken);
+        }
+
+        var saved = SyntheticExecutionBasketSnapshot.Create(execution, _instruments);
+        var selectedInstruments = saved.Components
+            .Select(component => _instruments.Single(instrument =>
+                string.Equals(instrument.Epic, component.Epic, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        var resolution = SelectedResolution();
+        var history = await LoadSelectedHistoryAsync(selectedInstruments, resolution, cancellationToken);
+        _operationState.BeginStage("Restoring executed basket");
+        await Task.Yield();
+        var restored = SavedSyntheticBasketRestorer.Restore(
+            saved,
+            selectedInstruments,
+            history,
+            resolution,
+            PeriodsPerYear(resolution),
+            MinimumCandles(resolution));
+        if (restored is null)
+        {
+            throw new InvalidOperationException("The executed basket has no usable shared history for this timeframe.");
+        }
+
+        _basket = restored.Basket;
+        StrategyBox.SelectedValue = restored.Strategy;
+        await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
+        _operationState.BeginStage("Rendering executed basket");
+        await Task.Yield();
+        await RenderSyntheticChartAsync(_basket);
+        var status = $"Loaded executed basket {_basket.Symbol}: {_basket.Components.Count} legs, {HistoryRange(history)}.";
+        StatusText.Text = status;
+        await TryStartStreamingCurrentBasketAsync(status, cancellationToken);
+        await PublishBrokerSnapshotAsync(cancellationToken);
     }
 
     private static IReadOnlyList<MarketInstrument> SelectSyntheticCandidates(
@@ -1185,6 +1236,7 @@ public partial class CapComTerminalWindow : Window
                     trackedOperation.MarkMutationDispatched,
                     token);
                 _marginPreview.InvalidateCaches();
+                await PublishBrokerSnapshotAsync(token);
             },
             cancellationToken);
         var finished = FinishSyntheticExecutionAsync(execution, operation);
@@ -1206,10 +1258,13 @@ public partial class CapComTerminalWindow : Window
         }
     }
 
-    private Task RefreshSyntheticExecutionsAsync(CancellationToken cancellationToken) =>
-        _tradingCoordinator.RefreshAsync(PublishTerminalExecutionsAsync, cancellationToken);
+    private async Task RefreshSyntheticExecutionsAsync(CancellationToken cancellationToken)
+    {
+        await _tradingCoordinator.RefreshAsync(PublishTerminalExecutionsAsync, cancellationToken);
+        await PublishBrokerSnapshotAsync(cancellationToken);
+    }
 
-    private Task CloseSyntheticBasketAsync(string executionId, CancellationToken cancellationToken)
+    private async Task CloseSyntheticBasketAsync(string executionId, CancellationToken cancellationToken)
     {
         var trackedOperation = _tradingLifecycle.BeginOperation();
         var operation = _tradingCoordinator.CloseAsync(
@@ -1219,7 +1274,46 @@ public partial class CapComTerminalWindow : Window
             trackedOperation.MarkMutationDispatched,
             cancellationToken);
         trackedOperation.Track(operation);
-        return operation;
+        await operation;
+        await PublishBrokerSnapshotAsync(cancellationToken);
+    }
+
+    private async Task RunBrokerRefreshLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                if (_api.Session is null || !_chartReady || _operationState.IsBusy) continue;
+                await PublishBrokerSnapshotAsync(cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private async Task PublishBrokerSnapshotAsync(CancellationToken cancellationToken)
+    {
+        if (_api.Session is null || !await _brokerRefreshGate.WaitAsync(0, cancellationToken)) return;
+        try
+        {
+            var snapshot = await _api.GetBrokerSnapshotAsync(cancellationToken);
+            await PublishTerminalCallbackAsync("setTerminalBrokerSnapshot", snapshot);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await PublishTerminalCallbackAsync("setTerminalBrokerSnapshot", new { Error = ex.Message });
+        }
+        finally
+        {
+            _brokerRefreshGate.Release();
+        }
     }
 
     private Task PublishTerminalPreflightAsync(SyntheticPreflightResult result) =>
@@ -1227,6 +1321,7 @@ public partial class CapComTerminalWindow : Window
 
     private async Task PublishTerminalExecutionsAsync(IReadOnlyList<SyntheticExecutionRecord> records)
     {
+        _terminalExecutions = records.ToArray();
         await PublishTerminalCallbackAsync("setTerminalExecutions", records);
         if (string.IsNullOrWhiteSpace(_tradingCoordinator.PersistenceWarning)) return;
         _windowLifetime.TryApply(() => StatusText.Text = _tradingCoordinator.PersistenceWarning);
@@ -1497,6 +1592,11 @@ public partial class CapComTerminalWindow : Window
                 await RunOperationAsync(
                     "Closing synthetic basket",
                     token => CloseSyntheticBasketAsync(close.ExecutionId, token));
+                break;
+            case SyntheticShowExecutionBasketRequest show:
+                await RunOperationAsync(
+                    "Loading executed synthetic basket",
+                    token => LoadExecutionBasketAsync(show.ExecutionId, token));
                 break;
             case SyntheticCancelMarginPreviewRequest:
                 await ResetMarginPreviewContextAsync(

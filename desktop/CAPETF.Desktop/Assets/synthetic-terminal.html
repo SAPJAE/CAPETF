@@ -599,11 +599,41 @@
 
     .execution-row,
     .position-row,
+    .order-row,
     .audit-row,
     .preflight-row {
       padding: 8px 0;
       border-top: 1px solid #182235;
       line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    #account-summary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #account-summary > div {
+      min-width: 0;
+      padding: 6px;
+      border: 1px solid #1d2b40;
+      background: #0b1525;
+    }
+
+    #account-summary span {
+      display: block;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    #account-summary strong {
+      display: block;
+      margin-top: 2px;
+      font-size: 13px;
       overflow-wrap: anywhere;
     }
 
@@ -1067,9 +1097,37 @@
         </details>
 
         <details class="rail-section" open>
-          <summary>Positions</summary>
+          <summary>Account</summary>
+          <div class="section-body">
+            <div id="account-summary">
+              <div><span>Funds</span><strong id="broker-deposit">n/a</strong></div>
+              <div><span>Equity</span><strong id="broker-balance">n/a</strong></div>
+              <div><span>Running P/L</span><strong id="broker-profit-loss">n/a</strong></div>
+              <div><span>Available</span><strong id="broker-available">n/a</strong></div>
+              <div><span>Margin used</span><strong id="broker-margin-used">n/a</strong></div>
+            </div>
+            <div id="broker-updated" class="row-meta">Broker state not loaded.</div>
+          </div>
+        </details>
+
+        <details class="rail-section" open>
+          <summary>Open Positions</summary>
+          <div id="broker-position-list" class="section-body">
+            <div class="empty-copy">No broker positions loaded.</div>
+          </div>
+        </details>
+
+        <details class="rail-section" open>
+          <summary>Pending Orders</summary>
+          <div id="working-order-list" class="section-body">
+            <div class="empty-copy">No pending orders loaded.</div>
+          </div>
+        </details>
+
+        <details class="rail-section">
+          <summary>Synthetic Baskets</summary>
           <div id="position-list" class="section-body">
-            <div class="empty-copy">No saved synthetic positions.</div>
+            <div class="empty-copy">No saved synthetic baskets.</div>
           </div>
         </details>
 
@@ -1205,6 +1263,7 @@
     let pendingExecutionTicket = null;
     let pendingCloseExecution = null;
     let terminalExecutions = [];
+    let terminalBrokerSnapshot = null;
     const INVALID_MARGIN_NOTIONAL = 'Enter a basket notional greater than 0.';
     const SYNTHETIC_PRICE_FLOOR = -10;
     const RAIL_WIDTH_KEY = 'capcom-terminal-rail-width';
@@ -1485,6 +1544,91 @@
       }
     }
 
+    function brokerAmount(value, currency) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return 'n/a';
+      return `${currency || ''} ${numeric.toFixed(2)}`.trim();
+    }
+
+    function renderBrokerSnapshot(snapshot) {
+      const error = getField(snapshot, 'Error', 'error', '');
+      if (error) {
+        document.getElementById('broker-updated').textContent = `Broker refresh failed: ${error}`;
+        return;
+      }
+      terminalBrokerSnapshot = snapshot;
+      const account = getField(snapshot, 'Account', 'account', {});
+      const currency = getField(account, 'Currency', 'currency', '');
+      const deposit = Number(getField(account, 'Deposit', 'deposit', NaN));
+      const balance = Number(getField(account, 'Balance', 'balance', NaN));
+      const profitLoss = Number(getField(account, 'ProfitLoss', 'profitLoss', NaN));
+      const available = Number(getField(account, 'Available', 'available', NaN));
+      const marginUsed = Number.isFinite(balance) && Number.isFinite(available)
+        ? balance - available
+        : NaN;
+      document.getElementById('broker-deposit').textContent = brokerAmount(deposit, currency);
+      document.getElementById('broker-balance').textContent = brokerAmount(balance, currency);
+      const pnlElement = document.getElementById('broker-profit-loss');
+      pnlElement.textContent = brokerAmount(profitLoss, currency);
+      pnlElement.classList.toggle('positive', Number.isFinite(profitLoss) && profitLoss >= 0);
+      pnlElement.classList.toggle('negative', Number.isFinite(profitLoss) && profitLoss < 0);
+      document.getElementById('broker-available').textContent = brokerAmount(available, currency);
+      document.getElementById('broker-margin-used').textContent = brokerAmount(marginUsed, currency);
+      const retrieved = getField(snapshot, 'RetrievedAt', 'retrievedAt', '');
+      const parsed = retrieved ? new Date(retrieved) : null;
+      document.getElementById('broker-updated').textContent = parsed && !Number.isNaN(parsed.getTime())
+        ? `Broker state ${parsed.toLocaleTimeString()}`
+        : 'Broker state loaded.';
+
+      const positions = getField(snapshot, 'Positions', 'positions', []);
+      const positionList = document.getElementById('broker-position-list');
+      positionList.replaceChildren();
+      if (!positions.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-copy';
+        empty.textContent = 'No open broker positions.';
+        positionList.appendChild(empty);
+      }
+      for (const position of positions) {
+        const row = document.createElement('div');
+        row.className = 'position-row';
+        const epic = getField(position, 'Epic', 'epic', '');
+        const direction = getField(position, 'Direction', 'direction', '');
+        const size = getField(position, 'Size', 'size', null);
+        const level = getField(position, 'Level', 'level', null);
+        const upl = Number(getField(position, 'UnrealizedProfitLoss', 'unrealizedProfitLoss', NaN));
+        const positionCurrency = getField(position, 'Currency', 'currency', currency);
+        const stop = getField(position, 'StopLevel', 'stopLevel', null);
+        const profit = getField(position, 'ProfitLevel', 'profitLevel', null);
+        const dealId = getField(position, 'DealId', 'dealId', '');
+        row.textContent = `${epic} | ${direction} ${formatMultiplier(size)} | Entry ${money(level)} | ` +
+          `Running P/L ${brokerAmount(upl, positionCurrency)} | Stop loss ${money(stop)} | Take profit ${money(profit)} | deal ${dealId || 'n/a'}`;
+        row.classList.toggle('positive', Number.isFinite(upl) && upl >= 0);
+        row.classList.toggle('negative', Number.isFinite(upl) && upl < 0);
+        positionList.appendChild(row);
+      }
+
+      const orders = getField(snapshot, 'WorkingOrders', 'workingOrders', []);
+      const orderList = document.getElementById('working-order-list');
+      orderList.replaceChildren();
+      if (!orders.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-copy';
+        empty.textContent = 'No pending orders.';
+        orderList.appendChild(empty);
+      }
+      for (const order of orders) {
+        const row = document.createElement('div');
+        row.className = 'order-row';
+        row.textContent = `${getField(order, 'Epic', 'epic', '')} | ${getField(order, 'Direction', 'direction', '')} ` +
+          `${formatMultiplier(getField(order, 'Size', 'size', null))} | ${getField(order, 'OrderType', 'orderType', 'ORDER')} ` +
+          `${money(getField(order, 'OrderLevel', 'orderLevel', null))} | Stop loss ${money(getField(order, 'StopLevel', 'stopLevel', null))} | ` +
+          `Take profit ${money(getField(order, 'ProfitLevel', 'profitLevel', null))} | deal ${getField(order, 'DealId', 'dealId', 'n/a')}`;
+        orderList.appendChild(row);
+      }
+      renderPriceLines();
+    }
+
     function renderPositions(records) {
       const container = document.getElementById('position-list');
       container.replaceChildren();
@@ -1517,9 +1661,18 @@
         }
         const hasCloseableLeg = recordLegs.some(leg =>
           legState(leg) === 'Open' && !!getField(leg, 'DealId', 'dealId', ''));
+        const actions = document.createElement('div');
+        actions.className = 'row-actions';
+        const showButton = document.createElement('button');
+        showButton.type = 'button';
+        showButton.className = 'compact-button';
+        showButton.textContent = 'Show on Chart';
+        showButton.addEventListener('click', () => {
+          if (!executionId || tradingIsBusy()) return;
+          postHostAction({ type: 'showExecutionBasket', executionId });
+        });
+        actions.appendChild(showButton);
         if (recordState !== 'Closed' && recordState !== 'Rejected' && hasCloseableLeg) {
-          const actions = document.createElement('div');
-          actions.className = 'row-actions';
           const closeButton = document.createElement('button');
           closeButton.type = 'button';
           closeButton.id = `close-${executionId}`;
@@ -1528,8 +1681,8 @@
           closeButton.textContent = 'Close Basket';
           closeButton.addEventListener('click', () => requestCloseBasket(record));
           actions.appendChild(closeButton);
-          container.appendChild(actions);
         }
+        container.appendChild(actions);
         const marker = document.createElement('div');
         marker.className = 'row-meta';
         marker.textContent = `${basketId} | ${recordState}`;
@@ -1899,6 +2052,50 @@
       const ask = getField(payload, 'AskPrice', 'askPrice', null);
       addPriceLine(bid, 'Bid', '#22c55e');
       addPriceLine(ask, 'Ask', '#ef4444');
+      renderBrokerPriceLines();
+    }
+
+    function componentMultiplier(component) {
+      const weight = Number(getField(component, 'Weight', 'weight', 0));
+      return Number(getField(component, 'DisplayMultiplier', 'displayMultiplier',
+        getField(component, 'FormulaMultiplier', 'formulaMultiplier', weight / 100)));
+    }
+
+    function renderBrokerPriceLines() {
+      if (!terminalBrokerSnapshot) return;
+      const components = getField(payload, 'Components', 'components', []);
+      const positions = getField(terminalBrokerSnapshot, 'Positions', 'positions', []);
+      if (!components.length || !positions.length) return;
+      const matches = components.map(component => {
+        const epic = getField(component, 'Epic', 'epic', '');
+        return positions.find(position => String(getField(position, 'Epic', 'epic', '')).toUpperCase() === String(epic).toUpperCase());
+      });
+      if (matches.some(position => !position)) return;
+
+      const entry = matches.reduce((sum, position, index) =>
+        sum + componentMultiplier(components[index]) * Number(getField(position, 'Level', 'level', 0)), 0);
+      addPriceLine(entry, 'Entry', '#60a5fa');
+
+      const current = matches.reduce((sum, position, index) => {
+        const bid = Number(getField(position, 'Bid', 'bid', NaN));
+        const offer = Number(getField(position, 'Offer', 'offer', NaN));
+        const level = Number(getField(position, 'Level', 'level', 0));
+        const mid = Number.isFinite(bid) && Number.isFinite(offer) ? (bid + offer) / 2 : level;
+        return sum + componentMultiplier(components[index]) * mid;
+      }, 0);
+
+      matches.forEach((position, index) => {
+        const multiplier = componentMultiplier(components[index]);
+        const bid = Number(getField(position, 'Bid', 'bid', NaN));
+        const offer = Number(getField(position, 'Offer', 'offer', NaN));
+        const level = Number(getField(position, 'Level', 'level', 0));
+        const mid = Number.isFinite(bid) && Number.isFinite(offer) ? (bid + offer) / 2 : level;
+        const epic = getField(position, 'Epic', 'epic', '');
+        const stop = Number(getField(position, 'StopLevel', 'stopLevel', NaN));
+        const profit = Number(getField(position, 'ProfitLevel', 'profitLevel', NaN));
+        if (Number.isFinite(stop) && stop > 0) addPriceLine(current + multiplier * (stop - mid), `Stop loss ${epic}`, '#f97316');
+        if (Number.isFinite(profit) && profit > 0) addPriceLine(current + multiplier * (profit - mid), `Take profit ${epic}`, '#a3e635');
+      });
     }
 
     function buildFormula(components) {
@@ -2323,6 +2520,10 @@
       renderAudit(terminalExecutions);
       if (terminalExecutions.length && workspace.classList.contains('ticket-hidden')) setRailCollapsed(false);
       refreshTradingControls();
+    };
+
+    window.setTerminalBrokerSnapshot = function(snapshot) {
+      renderBrokerSnapshot(snapshot || {});
     };
 
     window.clearTerminal = function() {

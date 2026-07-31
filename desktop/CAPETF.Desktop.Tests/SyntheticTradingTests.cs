@@ -19,6 +19,7 @@ public static class SyntheticTradingTests
         SyntheticTradingWorkspaceHasProfessionalDemoContract();
         SyntheticTradingWorkspaceRuntimeUsesHostOwnedTicketsAndOperationLocks();
         TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs();
+        ExecutionBasketSnapshotPreservesTrustedFormula();
         TradingBrowserParserRejectsMalformedShapesWithoutThrowing();
         TradingBrowserHandlerTurnsMalformedAndSemanticFailuresIntoRejections();
         HostConsumesFrozenTicketsBeforeExecutionAndRejectsReuse();
@@ -73,6 +74,8 @@ public static class SyntheticTradingTests
         DemoPositionRedirectDoesNotReachRedirectTarget();
         DealConfirmationParsesRequiredFields();
         OpenPositionsParseRequiredFields();
+        BrokerAccountParsesTradingTotals();
+        WorkingOrdersParseRequiredFields();
         DemoClosePositionUsesDeleteWithoutRetry();
         DemoCloseRedirectDoesNotReachRedirectTarget();
         ExecutionStoreRoundTripsVersionedRecordsAndDealIdentity();
@@ -395,12 +398,22 @@ public static class SyntheticTradingTests
             "setTerminalExecutions",
             "setTerminalExecutionProgress",
             "setTerminalTradingMode",
+            "setTerminalBrokerSnapshot",
             "Needs attention",
             "Close Basket",
+            "Show on Chart",
+            "showExecutionBasket",
             "<summary>Formula</summary>",
             "<summary>Preflight</summary>",
             "<summary>Execution</summary>",
-            "<summary>Positions</summary>",
+            "Open Positions",
+            "Pending Orders",
+            "Running P/L",
+            "Funds",
+            "Equity",
+            "Entry",
+            "Stop loss",
+            "Take profit",
             "<summary>Audit</summary>",
             "overflow-y: auto",
             "position: sticky",
@@ -549,6 +562,17 @@ public static class SyntheticTradingTests
               DrawingIdentity: 'basket-1', Symbol: 'SYN-1', Currency: 'USD', Candles: [],
               Components: [{ Epic: 'AAPL' }, { Epic: 'MSFT' }, { Epic: 'NVDA' }]
             });
+            setTerminalBrokerSnapshot({
+              RetrievedAt: '2026-07-31T15:00:00Z',
+              Account: { Currency: 'USDd', Balance: 20993.11, Deposit: 21000, ProfitLoss: -6.89, Available: 20684.88 },
+              Positions: [{ DealId: 'DEAL-AAPL', Epic: 'AAPL', Direction: 'BUY', Size: 0.9, Level: 123.45, UnrealizedProfitLoss: -2.26, Currency: 'USDd', StopLevel: 118, ProfitLevel: 140, Bid: 123.4, Offer: 123.5 }],
+              WorkingOrders: [{ DealId: 'ORDER-AAPL', Epic: 'AAPL', Direction: 'SELL', Size: 1, OrderLevel: 130, OrderType: 'LIMIT', StopLevel: 140, ProfitLevel: 110 }]
+            });
+            assert.match(element('broker-profit-loss').textContent, /-6\.89/);
+            assert.match(element('broker-margin-used').textContent, /308\.23/);
+            assert.match(element('broker-deposit').textContent, /21000\.00/);
+            assert.match(element('broker-position-list').children[0].textContent, /Entry 123\.4500.*Running P\/L USDd -2\.26.*Stop loss 118\.0000.*Take profit 140\.0000/);
+            assert.match(element('working-order-list').children[0].textContent, /LIMIT 130\.0000.*ORDER-AAPL/);
             messages.length = 0;
             allMessages.length = 0;
             setTerminalBusy(true, 'Refreshing positions');
@@ -700,6 +724,13 @@ public static class SyntheticTradingTests
             $"valid execute request must parse: {executeError}");
         AssertEqual(ticketId, ((SyntheticExecuteBasketRequest)execute!).TicketId, "execute ticket identity");
 
+        using var showDocument = JsonDocument.Parse(
+            "{\"type\":\"showExecutionBasket\",\"executionId\":\"execution-123\"}");
+        AssertTrue(
+            SyntheticTradingBrowserRequestParser.TryParse(showDocument.RootElement, out var show, out var showError),
+            $"valid show execution request must parse: {showError}");
+        AssertEqual("execution-123", ((SyntheticShowExecutionBasketRequest)show!).ExecutionId, "show execution identity");
+
         foreach (var unsafePayload in new[]
         {
             "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"basketNotional\":300,\"epic\":\"AAPL\"}",
@@ -707,6 +738,7 @@ public static class SyntheticTradingTests
             "{\"type\":\"executeBasket\",\"ticketId\":\"11111111-1111-1111-1111-111111111111\",\"quantity\":999}",
             "{\"type\":\"closeBasket\",\"executionId\":\"execution-123\",\"dealId\":\"attacker-deal\"}",
             "{\"type\":\"refreshExecutions\",\"epic\":\"AAPL\"}",
+            "{\"type\":\"showExecutionBasket\",\"executionId\":\"execution-123\",\"multiplier\":999}",
         })
         {
             using var unsafeDocument = JsonDocument.Parse(unsafePayload);
@@ -714,6 +746,39 @@ public static class SyntheticTradingTests
                 SyntheticTradingBrowserRequestParser.TryParse(unsafeDocument.RootElement, out _, out _),
                 $"browser mutation fields must be rejected: {unsafePayload}");
         }
+    }
+
+    private static void ExecutionBasketSnapshotPreservesTrustedFormula()
+    {
+        var now = DateTimeOffset.Parse("2026-07-30T12:00:00Z");
+        var record = new SyntheticExecutionRecord(
+            "execution-123", "ticket-123", "SYN-USUSDALL-01|AMD|BB|DDOG", "SELL", 300m, 60m, "USD",
+            now, now, SyntheticExecutionState.Open,
+            [
+                ExecutionLeg("AMD", "SELL", 0.06m, 156m),
+                ExecutionLeg("BB", "SELL", 3.93m, 2.54m),
+                ExecutionLeg("DDOG", "BUY", -0.13m, 75m),
+            ]);
+        var instruments = new[]
+        {
+            new MarketInstrument { Epic = "AMD", Name = "AMD", Region = "US", Currency = "USD", Sector = "Technology" },
+            new MarketInstrument { Epic = "BB", Name = "BlackBerry", Region = "US", Currency = "USD", Sector = "Technology" },
+            new MarketInstrument { Epic = "DDOG", Name = "Datadog", Region = "US", Currency = "USD", Sector = "Technology" },
+        };
+
+        var saved = SyntheticExecutionBasketSnapshot.Create(record, instruments);
+
+        AssertEqual("SYN-USUSDALL-01", saved.Symbol, "execution basket symbol");
+        AssertEqual("US / USD / All", saved.Block, "execution basket block");
+        AssertEqual(3, saved.Components.Count, "execution basket leg count");
+        AssertEqual(0.06m, saved.Components[0].FormulaMultiplier, "first trusted multiplier");
+        AssertEqual(3.93m, saved.Components[1].FormulaMultiplier, "second trusted multiplier");
+        AssertEqual(-0.13m, saved.Components[2].FormulaMultiplier, "signed trusted multiplier");
+        AssertTrue(saved.Components.All(component => component.Weight == 100m / 3m), "execution basket equal weights");
+
+        SyntheticExecutionLegRecord ExecutionLeg(string epic, string direction, decimal multiplier, decimal reference) =>
+            new(epic, direction, multiplier, reference, 1m, 100m, 20m, "USD",
+                SyntheticExecutionLegState.Open, "ref", $"deal-{epic}", "", reference, "", now, now, null, now);
     }
 
     private static void TradingBrowserParserRejectsMalformedShapesWithoutThrowing()
@@ -1092,6 +1157,10 @@ public static class SyntheticTradingTests
         AssertFalse(previewBody.Contains("BeginExecution", StringComparison.Ordinal), "legacy preview must not consume execution tickets");
         var closingBody = SliceSource(source, "protected override void OnClosing", "protected override void OnClosed");
         AssertOrdered(closingBody, "CancelPendingOperations", "BeginClosing");
+        var closedBody = SliceSource(source, "protected override void OnClosed", "\n}");
+        AssertFalse(
+            closedBody.Contains("_brokerRefreshLoop.GetAwaiter().GetResult()", StringComparison.Ordinal),
+            "window close must not synchronously wait on a dispatcher-captured broker refresh loop");
         AssertContains(xaml, "TradingModeText", "persistent WPF demo-state label");
     }
 
@@ -3364,6 +3433,46 @@ public static class SyntheticTradingTests
         AssertEqual(17.25m, position.UnrealizedProfitLoss, "open position UPL");
         AssertEqual("USD", position.Currency, "open position currency");
         AssertEqual("TRADEABLE", position.MarketStatus, "open position market status");
+        AssertEqual(118m, position.StopLevel, "open position stop level");
+        AssertEqual(140m, position.ProfitLevel, "open position take profit level");
+        AssertEqual(123.40m, position.Bid, "open position bid");
+        AssertEqual(123.50m, position.Offer, "open position offer");
+    }
+
+    private static void BrokerAccountParsesTradingTotals()
+    {
+        const string json = """
+        {"accounts":[{"accountId":"active","currency":"USDd","balance":{"balance":20993.11,"deposit":21000,"profitLoss":-6.89,"available":20684.88}}]}
+        """;
+
+        var account = CapitalApiClient.ParseBrokerAccount(json, "active", DateTimeOffset.UnixEpoch);
+
+        AssertEqual("active", account.AccountId, "broker account ID");
+        AssertEqual("USDd", account.Currency, "broker account currency");
+        AssertEqual(20993.11m, account.Balance, "broker equity");
+        AssertEqual(21000m, account.Deposit, "broker deposit");
+        AssertEqual(-6.89m, account.ProfitLoss, "broker running P/L");
+        AssertEqual(20684.88m, account.Available, "broker available funds");
+    }
+
+    private static void WorkingOrdersParseRequiredFields()
+    {
+        const string json = """
+        {"workingOrders":[{"workingOrderData":{"dealId":"ORDER-1","direction":"SELL","epic":"AAPL","orderSize":2.5,"orderLevel":130,"orderType":"LIMIT","timeInForce":"GOOD_TILL_CANCELLED","stopLevel":140,"profitLevel":110,"currencyCode":"USD"},"marketData":{"instrumentName":"Apple Inc","marketStatus":"TRADEABLE","bid":123.4,"offer":123.5}}]}
+        """;
+
+        var orders = CapitalApiClient.ParseWorkingOrders(json);
+
+        AssertEqual(1, orders.Count, "working order count");
+        var order = orders[0];
+        AssertEqual("ORDER-1", order.DealId, "working order deal ID");
+        AssertEqual("AAPL", order.Epic, "working order epic");
+        AssertEqual("SELL", order.Direction, "working order direction");
+        AssertEqual(2.5m, order.Size, "working order size");
+        AssertEqual(130m, order.OrderLevel, "working order level");
+        AssertEqual("LIMIT", order.OrderType, "working order type");
+        AssertEqual(140m, order.StopLevel, "working order stop level");
+        AssertEqual(110m, order.ProfitLevel, "working order take profit level");
     }
 
     private static void DemoClosePositionUsesDeleteWithoutRetry()
@@ -3475,7 +3584,7 @@ public static class SyntheticTradingTests
                 "/api/v1/session" => JsonResponse(HttpStatusCode.OK, "{}", includeSessionHeaders: true),
                 "/api/v1/positions" when request.Method == HttpMethod.Post => JsonResponse(HttpStatusCode.OK, "{\"dealReference\":\"REF-123\"}"),
                 "/api/v1/confirms/REF-123" => JsonResponse(HttpStatusCode.OK, "{\"dealStatus\":\"ACCEPTED\",\"dealId\":\"DEAL-123\",\"level\":123.45,\"affectedDeals\":[\"DEAL-123\",\"DEAL-OTHER\"]}"),
-                "/api/v1/positions" => JsonResponse(HttpStatusCode.OK, "{\"positions\":[{\"position\":{\"dealId\":\"DEAL-123\",\"direction\":\"BUY\",\"size\":2.5,\"level\":123.45,\"upl\":17.25,\"currency\":\"USD\"},\"market\":{\"epic\":\"AAPL\",\"marketStatus\":\"TRADEABLE\"}}]}"),
+                "/api/v1/positions" => JsonResponse(HttpStatusCode.OK, "{\"positions\":[{\"position\":{\"dealId\":\"DEAL-123\",\"direction\":\"BUY\",\"size\":2.5,\"level\":123.45,\"upl\":17.25,\"currency\":\"USD\",\"stopLevel\":118,\"profitLevel\":140},\"market\":{\"epic\":\"AAPL\",\"marketStatus\":\"TRADEABLE\",\"bid\":123.40,\"offer\":123.50}}]}"),
                 "/api/v1/positions/DEAL-123" when request.Method == HttpMethod.Delete => JsonResponse(HttpStatusCode.OK, "{\"dealReference\":\"REF-CLOSE-123\"}"),
                 _ => JsonResponse(HttpStatusCode.NotFound, "{}"),
             };

@@ -16,6 +16,9 @@ internal sealed record SyntheticRefreshExecutionsRequest
 internal sealed record SyntheticCloseBasketRequest(string ExecutionId)
     : SyntheticTradingBrowserRequest;
 
+internal sealed record SyntheticShowExecutionBasketRequest(string ExecutionId)
+    : SyntheticTradingBrowserRequest;
+
 internal sealed record SyntheticCancelMarginPreviewRequest
     : SyntheticTradingBrowserRequest;
 
@@ -119,6 +122,22 @@ internal static class SyntheticTradingBrowserRequestParser
                     return false;
                 }
                 request = new SyntheticCloseBasketRequest(executionIdValue.GetString()!);
+                return true;
+
+            case "showExecutionBasket":
+                if (!HasOnlyProperties(root, "type", "executionId"))
+                {
+                    error = "Show on Chart accepts an execution ID only.";
+                    return false;
+                }
+                if (!root.TryGetProperty("executionId", out var showExecutionIdValue)
+                    || showExecutionIdValue.ValueKind != JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(showExecutionIdValue.GetString()))
+                {
+                    error = "A valid execution ID is required.";
+                    return false;
+                }
+                request = new SyntheticShowExecutionBasketRequest(showExecutionIdValue.GetString()!);
                 return true;
 
             case "cancelMarginPreview":

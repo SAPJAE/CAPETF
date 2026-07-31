@@ -29,7 +29,45 @@ public sealed record CapitalOpenPosition(
     decimal? Level,
     decimal? UnrealizedProfitLoss,
     string Currency,
-    string MarketStatus);
+    string MarketStatus,
+    decimal? StopLevel = null,
+    decimal? ProfitLevel = null,
+    decimal? Bid = null,
+    decimal? Offer = null,
+    string InstrumentName = "",
+    DateTimeOffset? CreatedUtc = null);
+
+public sealed record CapitalWorkingOrder(
+    string DealId,
+    string Epic,
+    string Direction,
+    decimal? Size,
+    decimal? OrderLevel,
+    string OrderType,
+    string TimeInForce,
+    decimal? StopLevel,
+    decimal? ProfitLevel,
+    string Currency,
+    string MarketStatus,
+    decimal? Bid,
+    decimal? Offer,
+    string InstrumentName,
+    DateTimeOffset? CreatedUtc);
+
+public sealed record CapitalBrokerAccount(
+    string AccountId,
+    string Currency,
+    decimal? Balance,
+    decimal? Deposit,
+    decimal? ProfitLoss,
+    decimal? Available,
+    DateTimeOffset RetrievedAt);
+
+public sealed record CapitalBrokerSnapshot(
+    CapitalBrokerAccount Account,
+    IReadOnlyList<CapitalOpenPosition> Positions,
+    IReadOnlyList<CapitalWorkingOrder> WorkingOrders,
+    DateTimeOffset RetrievedAt);
 
 public sealed record SyntheticPreflightInput(
     bool IsDemoSession,
