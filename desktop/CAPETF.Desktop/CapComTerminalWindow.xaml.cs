@@ -1674,6 +1674,14 @@ public partial class CapComTerminalWindow : Window
 
     private async Task ClearSyntheticRiskPlanAsync(SyntheticClearRiskPlanRequest request)
     {
+        var execution = _terminalExecutions.FirstOrDefault(record =>
+            string.Equals(record.ExecutionId, request.ExecutionId, StringComparison.Ordinal));
+        if (execution is null)
+        {
+            await PublishTerminalRiskPlanErrorAsync("Synthetic execution was not found.");
+            return;
+        }
+
         _riskPlanStore.Remove(request.ExecutionId);
         await PublishTerminalRiskPlansAsync();
     }

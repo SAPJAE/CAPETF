@@ -36,6 +36,7 @@ public static class SyntheticTradingTests
         WindowLifecycleDefersCloseUntilAcknowledgedSaveCompletes();
         WindowLifecycleBoundsOnlyPreDispatchWait();
         WpfHostPublishesTradingContractsWithoutLegacyPreviewMutation();
+        WpfHostRejectsUnknownRiskPlanClearWithoutPersisting();
         FreshPreflightSnapshotsRejectFailedRefreshDespiteStaleMetadata();
         FreshPreflightSnapshotsRejectIncompleteCurrentMetadata();
         FreshPreflightSnapshotsBuildDetachedBasketFromExactResponses();
@@ -1240,6 +1241,26 @@ public static class SyntheticTradingTests
             closedBody.Contains("_brokerRefreshLoop.GetAwaiter().GetResult()", StringComparison.Ordinal),
             "window close must not synchronously wait on a dispatcher-captured broker refresh loop");
         AssertContains(xaml, "TradingModeText", "persistent WPF demo-state label");
+    }
+
+    private static void WpfHostRejectsUnknownRiskPlanClearWithoutPersisting()
+    {
+        var source = ReadRepositoryFile("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs");
+        var clearBody = SliceSource(source, "private async Task ClearSyntheticRiskPlanAsync", "private async Task RejectTerminalBrowserRequestAsync");
+
+        AssertOrdered(clearBody,
+            "_terminalExecutions.FirstOrDefault",
+            "if (execution is null)",
+            "PublishTerminalRiskPlanErrorAsync",
+            "return;",
+            "_riskPlanStore.Remove(request.ExecutionId)");
+
+        using var directory = new TemporaryDirectory();
+        var store = new SyntheticRiskPlanStore(Path.Combine(directory.Path, "synthetic-risk-plans.json"));
+        store.Upsert(new SyntheticRiskPlan("execution-1", "basket-1", "BUY", 92m, 118m, DateTimeOffset.UtcNow));
+        store.Remove("unknown-execution");
+        AssertEqual("execution-1", store.LoadAll().Single().ExecutionId,
+            "an unknown clear ID must not remove a persisted execution plan");
     }
 
     private static void WindowLifecycleDefersCloseUntilAcknowledgedSaveCompletes()
