@@ -12,6 +12,7 @@ public static class SyntheticTradingTests
 {
     public static void RunAll()
     {
+        ValidatedSyntheticRiskPlansPersistAcrossStoreInstances();
         DefaultTestSuiteSelectionRunsBothSuitesExactlyOnce();
         TestSuiteSelectionPropagatesEitherSuiteFailure();
         AcceptedBasketSurvivesRestartReconcilesAndClosesWithoutDuplicateMutations();
@@ -102,6 +103,36 @@ public static class SyntheticTradingTests
         ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
         ReconciliationClosesUnknownTrackedDealWhenCapitalNoLongerListsIt();
         ReconciliationMapsRejectedOpenPendingToNeedsAttentionAndPersistsIt();
+    }
+
+    private static void ValidatedSyntheticRiskPlansPersistAcrossStoreInstances()
+    {
+        var buy = SyntheticRiskPlanValidation.Validate("execution-1", "basket-1", "buy", 100m, 92m, 118m);
+        AssertTrue(buy.IsValid, "BUY plan surrounds entry");
+        AssertEqual("BUY", buy.Plan!.Side, "side is normalized");
+        AssertFalse(SyntheticRiskPlanValidation.Validate("execution-1", "basket-1", "BUY", 100m, 105m, 118m).IsValid,
+            "BUY stop must remain below entry");
+        AssertFalse(SyntheticRiskPlanValidation.Validate("execution-1", "basket-1", "SELL", 100m, 92m, 118m).IsValid,
+            "SELL levels must surround entry in reverse order");
+        AssertTrue(SyntheticRiskPlanValidation.Validate("execution-1", "basket-1", "SELL", 100m, 118m, 92m).IsValid,
+            "SELL plan surrounds entry");
+        AssertTrue(SyntheticRiskPlanValidation.Validate("execution-1", "basket-1", "BUY", 100m, null, 118m).IsValid,
+            "BUY stop may be empty");
+        AssertTrue(SyntheticRiskPlanValidation.Validate("execution-1", "basket-1", "SELL", 100m, 118m, null).IsValid,
+            "SELL take profit may be empty");
+        AssertFalse(SyntheticRiskPlanValidation.Validate("execution-1", "basket-1", "BUY", 0m, 92m, 118m).IsValid,
+            "zero entry is rejected");
+        AssertFalse(SyntheticRiskPlanValidation.Validate("execution-1", "basket-1", "BUY", 100m, -1m, 118m).IsValid,
+            "negative stop is rejected");
+        AssertFalse(SyntheticRiskPlanValidation.Validate("execution-1", "basket-1", "BUY", decimal.MaxValue, decimal.MaxValue, null).IsValid,
+            "decimal boundary values that cannot form a valid risk relationship are rejected");
+
+        using var directory = new TemporaryDirectory();
+        var path = System.IO.Path.Combine(directory.Path, "synthetic-risk-plans.json");
+        var store = new SyntheticRiskPlanStore(path);
+        store.Upsert(buy.Plan);
+        AssertEqual(JsonSerializer.Serialize(buy.Plan), JsonSerializer.Serialize(new SyntheticRiskPlanStore(path).LoadAll().Single()),
+            "risk plan persists exactly");
     }
 
     private static void DefaultTestSuiteSelectionRunsBothSuitesExactlyOnce()
