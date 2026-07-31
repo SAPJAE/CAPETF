@@ -402,6 +402,18 @@
       text-overflow: ellipsis;
     }
 
+    #risk-plan-error {
+      grid-column: 1 / -1;
+      color: #fca5a5;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+
+    #risk-plan-error:empty {
+      display: none;
+    }
+
     #trade-dock.minimized #trade-dock-table-scroll {
       display: none;
     }
@@ -1462,6 +1474,7 @@
             <button type="button" id="apply-risk-plan">Apply</button>
             <button type="button" id="clear-risk-plan">Clear</button>
             <span id="risk-plan-copy">Visual plan only; not a Capital.com stop.</span>
+            <span id="risk-plan-error" role="status" aria-live="polite"></span>
           </div>
           <table id="trade-dock-table" aria-label="Positions"></table>
         </div>
@@ -1565,6 +1578,7 @@
     const riskPlanControls = document.getElementById('risk-plan-controls');
     const planStopLossInput = document.getElementById('plan-stop-loss');
     const planTakeProfitInput = document.getElementById('plan-take-profit');
+    const riskPlanErrorElement = document.getElementById('risk-plan-error');
     const syntheticTradeOverlay = document.getElementById('synthetic-trade-overlay');
     const tradeOverlayCollapseButton = document.getElementById('trade-overlay-collapse');
     const tradeDockTabs = {
@@ -1611,6 +1625,7 @@
     let terminalRiskPlans = [];
     let selectedDockExecutionId = '';
     let selectedDockRow = null;
+    let riskPlanEditorState = { executionId: '', publishedKey: '', dirty: false };
     let tradeOverlayCollapsed = false;
     let tradeDockPointerId = null;
     let tradeDockState = { height: 210, minimized: false, activeTab: 'positions' };
@@ -2011,6 +2026,12 @@
       const positions = getField(snapshot, 'Positions', 'positions', []);
       const legs = getField(record, 'Legs', 'legs', []);
       if (!legs.length || !positions.length) return null;
+      const recordAccountId = String(getField(record, 'AccountId', 'accountId', '')).trim();
+      const snapshotAccount = getField(snapshot, 'Account', 'account', {});
+      const snapshotAccountId = String(getField(snapshotAccount, 'AccountId', 'accountId', '')).trim();
+      const activeAccountId = String(terminalTradingMode.accountId || '').trim();
+      const legacyAccountMatches = !!recordAccountId && !!snapshotAccountId &&
+        recordAccountId === snapshotAccountId && (!activeAccountId || activeAccountId === snapshotAccountId);
       const byDeal = new Map();
       const byEpic = new Map();
       for (const position of positions) {
@@ -2031,7 +2052,13 @@
       for (const leg of legs) {
         const dealId = String(getField(leg, 'DealId', 'dealId', ''));
         const epic = String(getField(leg, 'Epic', 'epic', '')).toUpperCase();
-        const candidates = dealId ? (byDeal.get(dealId) || []) : (byEpic.get(epic) || []);
+        const direction = String(getField(leg, 'Direction', 'direction', '')).toUpperCase();
+        const candidates = dealId
+          ? (byDeal.get(dealId) || [])
+          : legacyAccountMatches && direction
+            ? (byEpic.get(epic) || []).filter(position =>
+                String(getField(position, 'Direction', 'direction', '')).toUpperCase() === direction)
+            : [];
         if (candidates.length !== 1 || used.has(candidates[0])) return null;
         const multiplier = optionalNumber(getField(leg, 'Multiplier', 'multiplier', null));
         if (multiplier === null) return null;
@@ -2295,21 +2322,47 @@
       return matches.length === 1 ? matches[0] : null;
     }
 
+    function riskPlanPublishedKey(plan) {
+      if (!plan) return 'none';
+      return JSON.stringify([
+        getField(plan, 'StopLoss', 'stopLoss', null),
+        getField(plan, 'TakeProfit', 'takeProfit', null),
+        getField(plan, 'UpdatedUtc', 'updatedUtc', '')
+      ]);
+    }
+
+    function setRiskPlanError(message) {
+      riskPlanErrorElement.textContent = String(message || '');
+    }
+
+    function hydrateRiskPlanInputs(plan) {
+      const stopLoss = plan ? optionalNumber(getField(plan, 'StopLoss', 'stopLoss', null)) : null;
+      const takeProfit = plan ? optionalNumber(getField(plan, 'TakeProfit', 'takeProfit', null)) : null;
+      planStopLossInput.value = stopLoss === null ? '' : String(stopLoss);
+      planTakeProfitInput.value = takeProfit === null ? '' : String(takeProfit);
+      riskPlanEditorState.dirty = false;
+    }
+
     function renderRiskPlanControls() {
       const execution = selectedRiskPlanExecution();
       document.getElementById('risk-plan-copy').textContent = 'Visual plan only; not a Capital.com stop.';
       riskPlanControls.style.display = execution ? 'grid' : 'none';
       if (!execution) {
+        if (riskPlanEditorState.executionId) setRiskPlanError('');
+        riskPlanEditorState = { executionId: '', publishedKey: '', dirty: false };
         planStopLossInput.value = '';
         planTakeProfitInput.value = '';
         return;
       }
       const executionId = getField(execution, 'ExecutionId', 'executionId', '');
       const plan = uniqueRiskPlan(executionId);
-      const stopLoss = plan ? optionalNumber(getField(plan, 'StopLoss', 'stopLoss', null)) : null;
-      const takeProfit = plan ? optionalNumber(getField(plan, 'TakeProfit', 'takeProfit', null)) : null;
-      planStopLossInput.value = stopLoss === null ? '' : String(stopLoss);
-      planTakeProfitInput.value = takeProfit === null ? '' : String(takeProfit);
+      const publishedKey = riskPlanPublishedKey(plan);
+      const selectionChanged = executionId !== riskPlanEditorState.executionId;
+      const publicationChanged = publishedKey !== riskPlanEditorState.publishedKey;
+      if (selectionChanged) setRiskPlanError('');
+      if (selectionChanged || publicationChanged) hydrateRiskPlanInputs(plan);
+      riskPlanEditorState.executionId = executionId;
+      riskPlanEditorState.publishedKey = publishedKey;
     }
 
     function renderTradeDock() {
@@ -3434,8 +3487,13 @@
 
     window.setTerminalRiskPlans = function(plans) {
       terminalRiskPlans = Array.isArray(plans) ? plans.slice() : [];
+      setRiskPlanError('');
       renderTradeDock();
       renderPriceLines();
+    };
+
+    window.setTerminalRiskPlanError = function(result) {
+      setRiskPlanError(getField(result, 'Error', 'error', result || ''));
     };
 
     window.clearTerminal = function() {
@@ -3722,13 +3780,19 @@
       tradeOverlayCollapsed = !tradeOverlayCollapsed;
       renderTradeOverlay(activeSyntheticTradeView());
     });
+    for (const input of [planStopLossInput, planTakeProfitInput]) {
+      input.addEventListener('input', () => {
+        if (selectedRiskPlanExecution()) riskPlanEditorState.dirty = true;
+      });
+    }
     document.getElementById('apply-risk-plan').addEventListener('click', () => {
       const execution = selectedRiskPlanExecution();
       if (!execution) return;
+      setRiskPlanError('');
       const stopLoss = parseRiskPlanLevel(planStopLossInput.value);
       const takeProfit = parseRiskPlanLevel(planTakeProfitInput.value);
       if (stopLoss === undefined || takeProfit === undefined) {
-        setStatus('PLAN levels must be positive numbers.');
+        setRiskPlanError('PLAN levels must be positive numbers.');
         return;
       }
       postHostAction({
@@ -3741,6 +3805,7 @@
     document.getElementById('clear-risk-plan').addEventListener('click', () => {
       const execution = selectedRiskPlanExecution();
       if (!execution) return;
+      setRiskPlanError('');
       postHostAction({
         type: 'clearRiskPlan',
         executionId: getField(execution, 'ExecutionId', 'executionId', '')

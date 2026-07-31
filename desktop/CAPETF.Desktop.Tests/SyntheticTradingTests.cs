@@ -457,8 +457,10 @@ public static class SyntheticTradingTests
             "id=\"plan-take-profit\"",
             "id=\"apply-risk-plan\"",
             "id=\"clear-risk-plan\"",
+            "id=\"risk-plan-error\"",
             "Visual plan only; not a Capital.com stop.",
             "activeSyntheticTradeView",
+            "setTerminalRiskPlanError",
             "Running P/L",
             "Funds",
             "Equity",
@@ -812,7 +814,7 @@ public static class SyntheticTradingTests
               ]
             });
             setTerminalExecutions([{
-              ExecutionId: 'trade-1', BasketId: 'SYN-TECH|US|USD', Side: 'BUY', EstimatedMargin: 72.5, MarginCurrency: 'USD', State: 'Open',
+              ExecutionId: 'trade-1', BasketId: 'SYN-TECH|US|USD', Side: 'BUY', EstimatedMargin: 72.5, MarginCurrency: 'USD', AccountId: 'DEMO-1', State: 'Open',
               Legs: [
                 { Epic: 'AAA', Direction: 'BUY', Multiplier: 1, FillLevel: 100, State: 'Open', DealId: 'DEAL-A' },
                 { Epic: 'BBB', Direction: 'BUY', Multiplier: 2, FillLevel: 400, State: 'Open', DealId: 'DEAL-B' },
@@ -820,7 +822,7 @@ public static class SyntheticTradingTests
               ]
             }]);
             setTerminalBrokerSnapshot({
-              Account: { Currency: 'USD' },
+              Account: { AccountId: 'DEMO-1', Currency: 'USD' },
               Positions: [
                 { DealId: 'DEAL-A', Epic: 'AAA', Level: 100, Bid: 98, Offer: 99, UnrealizedProfitLoss: -1.25 },
                 { DealId: 'DEAL-B', Epic: 'BBB', Level: 400, Bid: 398, Offer: 399, UnrealizedProfitLoss: -2.75 },
@@ -856,6 +858,46 @@ public static class SyntheticTradingTests
             ].join(' ');
             assert.match(overlayText, /SYN-TECH.*USD.*BUY.*3 legs.*-8\.01.*USD 72\.50.*AAA.*BBB.*CCC/);
 
+            const legacyExecution = {
+              ExecutionId: 'legacy-1', AccountId: 'DEMO-1',
+              Legs: [
+                { Epic: 'AAA', Direction: 'BUY', Multiplier: 1, DealId: '' },
+                { Epic: 'BBB', Direction: 'BUY', Multiplier: 2, DealId: '' },
+                { Epic: 'CCC', Direction: 'SELL', Multiplier: -0.5, DealId: '' }
+              ]
+            };
+            const legacySnapshot = {
+              Account: { AccountId: 'DEMO-1' },
+              Positions: [
+                { Epic: 'AAA', Direction: 'BUY' },
+                { Epic: 'BBB', Direction: 'BUY' },
+                { Epic: 'CCC', Direction: 'SELL' }
+              ]
+            };
+            assert.equal(matchExecutionPositions(legacyExecution, legacySnapshot).length, 3, 'compatible legacy epic fallback remains available');
+            assert.equal(matchExecutionPositions({ ...legacyExecution, AccountId: 'OTHER' }, legacySnapshot), null,
+              'legacy epic fallback rejects another account');
+            assert.equal(matchExecutionPositions(legacyExecution, {
+              ...legacySnapshot,
+              Positions: legacySnapshot.Positions.map(position => position.Epic === 'CCC' ? { ...position, Direction: 'BUY' } : position)
+            }), null, 'legacy epic fallback rejects the wrong direction');
+
+            setTerminalBrokerSnapshot({
+              Account: { AccountId: 'DEMO-1', Currency: 'USD' },
+              Positions: [
+                { DealId: 'DEAL-A', Epic: 'AAA', Level: 100, Bid: 98, Offer: 99, StopLevel: 90, ProfitLevel: 110, UnrealizedProfitLoss: -1.25 },
+                { DealId: 'DEAL-B', Epic: 'BBB', Level: 400, Bid: 398, Offer: 399, StopLevel: 390, ProfitLevel: 410, UnrealizedProfitLoss: -2.75 },
+                { DealId: 'DEAL-C', Epic: 'CCC', Level: 372.8, Bid: 370, Offer: 372, StopLevel: 380, ProfitLevel: 360, UnrealizedProfitLoss: -4.01 }
+              ]
+            });
+            const brokerLevelView = activeSyntheticTradeView();
+            assert.equal(brokerLevelView.brokerStopLoss, 680, 'signed broker stops aggregate at basket level');
+            assert.equal(brokerLevelView.brokerTakeProfit, 750, 'signed broker limits aggregate at basket level');
+            assert.deepEqual(
+              activePriceLines.filter(line => ['Broker SL', 'Broker TP'].includes(line.title)).map(line => [line.title, line.lineStyle]),
+              [['Broker SL', 2], ['Broker TP', 2]],
+              'actual broker levels create dashed basket lines');
+
             element('trade-tab-baskets').click();
             const selectedTradeRow = element('trade-dock-table').children[1].children[0];
             selectedTradeRow.click();
@@ -863,16 +905,53 @@ public static class SyntheticTradingTests
             assert.equal(element('plan-stop-loss').value, '680');
             assert.equal(element('plan-take-profit').value, '760');
             assert.match(element('risk-plan-copy').textContent, /Visual plan only; not a Capital\.com stop\./);
-            messages.length = 0;
+            planStopLossInput.focus();
             element('plan-stop-loss').value = '675.5';
             element('plan-take-profit').value = '770';
+            element('plan-stop-loss').dispatch('input');
+            setTerminalBrokerSnapshot({
+              Account: { AccountId: 'DEMO-1', Currency: 'USD' },
+              Positions: [
+                { DealId: 'DEAL-A', Epic: 'AAA', Level: 100, Bid: 98.1, Offer: 99.1, StopLevel: 90, ProfitLevel: 110, UnrealizedProfitLoss: -1.1 },
+                { DealId: 'DEAL-B', Epic: 'BBB', Level: 400, Bid: 398.1, Offer: 399.1, StopLevel: 390, ProfitLevel: 410, UnrealizedProfitLoss: -2.6 },
+                { DealId: 'DEAL-C', Epic: 'CCC', Level: 372.8, Bid: 370.1, Offer: 372.1, StopLevel: 380, ProfitLevel: 360, UnrealizedProfitLoss: -3.9 }
+              ]
+            });
+            assert.equal(element('plan-stop-loss').value, '675.5', 'broker refresh preserves the focused dirty PLAN SL');
+            assert.equal(element('plan-take-profit').value, '770', 'broker refresh preserves the dirty PLAN TP');
+            setTerminalRiskPlans([{
+              ExecutionId: 'trade-1', BasketId: 'SYN-TECH|US|USD', Side: 'BUY', StopLoss: 680, TakeProfit: 760
+            }]);
+            assert.equal(element('plan-stop-loss').value, '675.5', 'unchanged publication does not overwrite dirty PLAN SL');
+            assert.equal(element('plan-take-profit').value, '770', 'unchanged publication does not overwrite dirty PLAN TP');
+
+            setTerminalRiskPlanError({ Error: 'Stop loss must be below entry.' });
+            assert.equal(element('risk-plan-error').textContent, 'Stop loss must be below entry.');
+            messages.length = 0;
             element('apply-risk-plan').click();
             assert.deepEqual(messages.pop(), { type: 'setRiskPlan', executionId: 'trade-1', stopLoss: 675.5, takeProfit: 770 });
+            assert.equal(element('risk-plan-error').textContent, '', 'apply retry clears the prior host error');
+            setTerminalRiskPlanError({ Error: 'Temporary validation error.' });
             element('clear-risk-plan').click();
             assert.deepEqual(messages.pop(), { type: 'clearRiskPlan', executionId: 'trade-1' });
+            assert.equal(element('risk-plan-error').textContent, '', 'clear retry clears the prior host error');
+            setTerminalRiskPlanError({ Error: 'Old validation error.' });
+            setTerminalRiskPlans([{
+              ExecutionId: 'trade-1', BasketId: 'SYN-TECH|US|USD', Side: 'BUY', StopLoss: 674, TakeProfit: 771, UpdatedUtc: '2026-08-01T12:00:00Z'
+            }]);
+            assert.equal(element('risk-plan-error').textContent, '', 'successful plan publication clears the host error');
+            assert.equal(element('plan-stop-loss').value, '674', 'changed publication hydrates PLAN SL');
+            assert.equal(element('plan-take-profit').value, '771', 'changed publication hydrates PLAN TP');
+
+            setTerminalRiskPlanError({ Error: 'Selection-scoped error.' });
+            selectedDockExecutionId = 'missing-execution';
+            renderRiskPlanControls();
+            assert.equal(element('risk-plan-error').textContent, '', 'selection change clears the host error');
+            selectedDockExecutionId = 'trade-1';
+            renderRiskPlanControls();
 
             setTerminalBrokerSnapshot({
-              Account: { Currency: 'USD' },
+              Account: { AccountId: 'DEMO-1', Currency: 'USD' },
               Positions: [
                 { DealId: 'DEAL-A', Epic: 'AAA', Level: 100, Bid: 98, Offer: 99, UnrealizedProfitLoss: -1.25 },
                 { DealId: 'DEAL-A', Epic: 'AAA', Level: 100, Bid: 98, Offer: 99, UnrealizedProfitLoss: -1.25 },
