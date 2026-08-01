@@ -19,6 +19,7 @@ public static class SyntheticTradingTests
         PartialExecutionSurvivesRestartWithoutSubmittingOrClosingRemainingLegs();
         SyntheticTradingWorkspaceHasProfessionalDemoContract();
         SyntheticTradingWorkspaceRuntimeUsesHostOwnedTicketsAndOperationLocks();
+        SyntheticHistorySessionCacheLoadsOnlyMissingLegsPerTimeframe();
         TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs();
         TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels();
         ExecutionBasketSnapshotPreservesTrustedFormula();
@@ -127,6 +128,32 @@ public static class SyntheticTradingTests
         ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
         ReconciliationClosesUnknownTrackedDealWhenCapitalNoLongerListsIt();
         ReconciliationMapsRejectedOpenPendingToNeedsAttentionAndPersistsIt();
+    }
+
+    private static void SyntheticHistorySessionCacheLoadsOnlyMissingLegsPerTimeframe()
+    {
+        var cache = new SyntheticHistorySessionCache();
+        var apple = new MarketInstrument { Epic = "AAPL", Name = "Apple" };
+        var microsoft = new MarketInstrument { Epic = "MSFT", Name = "Microsoft" };
+        var appleRows = new[]
+        {
+            new OhlcPoint(new DateTimeOffset(2026, 7, 30, 0, 0, 0, TimeSpan.Zero), 100, 102, 99, 101),
+            new OhlcPoint(new DateTimeOffset(2026, 7, 31, 0, 0, 0, TimeSpan.Zero), 101, 103, 100, 102)
+        };
+
+        cache.Store("Daily", new HistoryLoadResult(
+            new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["AAPL"] = appleRows
+            },
+            appleRows[0].Time,
+            appleRows[^1].Time,
+            appleRows.Length));
+
+        AssertEqual(1, cache.Missing([apple, microsoft], "Daily").Count, "only an uncached daily leg is requested");
+        AssertEqual("MSFT", cache.Missing([apple, microsoft], "Daily")[0].Epic, "the missing leg is preserved");
+        AssertEqual(2, cache.Missing([apple, microsoft], "Weekly").Count, "timeframes have independent history caches");
+        AssertEqual(2, cache.Get([apple, microsoft], "Daily")["AAPL"].Count, "cached rows are reusable without API paging");
     }
 
     private static void ValidatedSyntheticRiskPlansPersistAcrossStoreInstances()
@@ -797,10 +824,16 @@ public static class SyntheticTradingTests
             assert.match(tableText(), /AAPL.*SELL.*1.*LIMIT.*130\.0000.*140\.0000.*110\.0000.*ORDER-AAPL/);
 
             element('trade-tab-baskets').click();
-            assert.match(tableText(), /Basket.*Side.*Legs.*Synthetic entry.*Bid.*Ask.*PLAN SL.*PLAN TP.*Margin.*P\/L.*State.*Close/);
-            assert.match(tableText(), /basket-1.*BUY.*3.*n\/a.*n\/a.*n\/a.*220\.0000.*260\.0000.*USDd 72\.50.*n\/a.*Needs attention/);
+            assert.equal(element('trade-tab-baskets').textContent, 'Active Baskets (1)');
+            assert.match(tableText(), /Basket.*Side.*Leg status.*Synthetic entry.*Bid.*Ask.*PLAN SL.*PLAN TP.*Margin.*P\/L.*State.*Close/);
+            assert.match(tableText(), /basket-1.*BUY.*1 open \/ 1 issue \/ 1 closed.*n\/a.*n\/a.*n\/a.*220\.0000.*260\.0000.*USDd 72\.50.*n\/a.*Needs attention/);
             assert.doesNotMatch(tableText(), /basket-closed/);
             assert.equal(element('close-synthetic-host-execution-1').getAttribute('aria-label'), 'Close basket-1');
+            assert.match(element('trade-dock-table').children[1].children[0].children[10].children[0].className, /dock-state-badge/);
+            assert.equal(syntheticBasketRows([{
+              ExecutionId: 'numeric-leg-states', BasketId: 'numeric', State: 7,
+              Legs: [{ State: 3 }, { State: 5 }, { State: 7 }]
+            }], {}, [])[0].legStatus, '1 open / 1 issue / 1 closed');
 
             const livePnlExecution = {
               ExecutionId: 'live-pnl-execution', BasketId: 'live-pnl-basket', Side: 'BUY', EstimatedMargin: 25, MarginCurrency: 'USDd', State: 'Open',
@@ -1067,6 +1100,7 @@ public static class SyntheticTradingTests
             assert.equal(JSON.parse(storedValues.get('capetf.tradeDock.v1')).activeTab, 'baskets');
 
             element('trade-tab-history').click();
+            assert.equal(element('trade-tab-history').textContent, 'History (2)');
             assert.match(tableText(), /Updated.*Basket.*Side.*Legs.*Margin.*P\/L.*State.*Message/);
             assert.match(tableText(), /basket-closed.*SELL.*1.*USDd 90\.00.*7\.50.*Closed/);
             assert.match(tableText(), /basket-rejected.*BUY.*1.*USDd 0\.00.*n\/a.*Rejected.*Market closed/);
@@ -2150,6 +2184,11 @@ public static class SyntheticTradingTests
         AssertFalse(previewBody.Contains("CreatePositionAsync", StringComparison.Ordinal), "legacy preview must not create positions");
         AssertFalse(previewBody.Contains("ClosePositionAsync", StringComparison.Ordinal), "legacy preview must not close positions");
         AssertFalse(previewBody.Contains("BeginExecution", StringComparison.Ordinal), "legacy preview must not consume execution tickets");
+        var closeBody = SliceSource(source, "private async Task CloseSyntheticBasketAsync", "private async Task RunBrokerRefreshLoopAsync");
+        AssertOrdered(closeBody,
+            "await operation",
+            "_tradingCoordinator.RefreshAsync",
+            "PublishBrokerSnapshotAsync");
         var closingBody = SliceSource(source, "protected override void OnClosing", "protected override void OnClosed");
         AssertOrdered(closingBody, "CancelPendingOperations", "BeginClosing");
         var closedBody = SliceSource(source, "protected override void OnClosed", "\n}");
@@ -2816,7 +2855,9 @@ public static class SyntheticTradingTests
                 [
                     "Closing|Open,Open",
                     "Closing|Closing,Open",
-                    "NeedsAttention|Open,Open",
+                    "Closing|Open,Closing",
+                    "Closing|Open,Closed",
+                    "PartiallyClosed|Open,Closed",
                 ]),
             new ExecutionEmissionContractCase(
                 "rejected close after a confirmed closure",
@@ -2826,7 +2867,9 @@ public static class SyntheticTradingTests
                     "Closing|Closing,Open,Open",
                     "Closing|Closed,Open,Open",
                     "Closing|Closed,Closing,Open",
-                    "PartiallyClosed|Closed,Open,Open",
+                    "Closing|Closed,Open,Closing",
+                    "Closing|Closed,Open,Closed",
+                    "PartiallyClosed|Closed,Open,Closed",
                 ]),
             new ExecutionEmissionContractCase(
                 "unknown close confirmation",
@@ -2835,7 +2878,9 @@ public static class SyntheticTradingTests
                     "Closing|Open,Open",
                     "Closing|Closing,Open",
                     "Closing|Unknown,Open",
-                    "NeedsAttention|Unknown,Open",
+                    "Closing|Unknown,Closing",
+                    "Closing|Unknown,Closed",
+                    "PartiallyClosed|Unknown,Closed",
                 ]),
             new ExecutionEmissionContractCase(
                 "cancelled close before dispatch",
@@ -3963,20 +4008,23 @@ public static class SyntheticTradingTests
         gateway.ClearCalls();
         gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_aapl")));
         gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_msft")));
+        gateway.CloseResults.Enqueue(() => Task.FromResult(Acknowledgement("c_nvda")));
         gateway.ConfirmResults["c_aapl"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
             [() => Task.FromResult(ClosedConfirmation("c_aapl", "d_aapl"))]);
         gateway.ConfirmResults["c_msft"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
             [() => Task.FromResult(RejectedConfirmation("c_msft", "POSITION_NOT_FOUND"))]);
+        gateway.ConfirmResults["c_nvda"] = new Queue<Func<Task<CapitalDealConfirmation>>>(
+            [() => Task.FromResult(ClosedConfirmation("c_nvda", "d_nvda"))]);
 
         var partial = service.CloseAsync(open, IgnoreProgress, default).GetAwaiter().GetResult();
 
-        AssertSequence(gateway.Calls, "CLOSE:d_aapl", "CONFIRM:c_aapl", "CLOSE:d_msft", "CONFIRM:c_msft");
+        AssertSequence(gateway.Calls, "CLOSE:d_aapl", "CONFIRM:c_aapl", "CLOSE:d_msft", "CONFIRM:c_msft", "CLOSE:d_nvda", "CONFIRM:c_nvda");
         AssertEqual(SyntheticExecutionState.PartiallyClosed, partial.State, "partial close basket state");
         AssertEqual(SyntheticExecutionLegState.Closed, partial.Legs[0].State, "confirmed close state");
         AssertEqual(SyntheticExecutionLegState.Open, partial.Legs[1].State, "rejected close remains explicitly open");
         AssertContains(partial.Legs[1].Message, "POSITION_NOT_FOUND", "close rejection reason");
-        AssertEqual(SyntheticExecutionLegState.Open, partial.Legs[2].State, "close failure stops later open legs");
-        AssertEqual(2, gateway.CloseCalls.Count, "failed close must not retry or continue");
+        AssertEqual(SyntheticExecutionLegState.Closed, partial.Legs[2].State, "an independent later leg still closes");
+        AssertEqual(3, gateway.CloseCalls.Count, "a failed leg must not prevent other tracked legs from closing");
     }
 
     private static void GenericCloseFailureIsUnknownAndCannotBeRetriedBlindly()

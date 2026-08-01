@@ -15,6 +15,7 @@ public partial class CapComTerminalWindow : Window
     private readonly SavedBasketDeletionCoordinator _savedBasketDeletion;
     private readonly CapitalApiClient _api = new();
     private readonly SyntheticHistoryService _history;
+    private readonly SyntheticHistorySessionCache _historySessionCache = new();
     private readonly SyntheticMarginPreviewService _marginPreview;
     private readonly SyntheticPreflightMarketSnapshotLoader _preflightMarketSnapshots;
     private readonly SyntheticTradingHostCoordinator _tradingCoordinator;
@@ -632,25 +633,41 @@ public partial class CapComTerminalWindow : Window
         bool exactTimestamps = false)
     {
         await EnsureConnectedAsync(cancellationToken);
-        _operationState.BeginStage($"Loading full {resolution} history", selectedComponents.Count);
-        var progress = new Progress<HistoryLoadProgress>(update =>
+        var missingComponents = _historySessionCache.Missing(selectedComponents, resolution);
+        if (missingComponents.Count > 0)
         {
-            if (_windowLifetime.IsClosing) return;
-            _operationState.Report($"Loading full {resolution} history", update.CompletedComponents, update.TotalComponents);
-            StatusText.Text = $"Loading full {resolution} history for selected leg {update.CompletedComponents} of {update.TotalComponents}: {update.Epic}.";
-        });
-        var apiHistory = await _history.LoadSelectedAsync(selectedComponents, resolution, progress, cancellationToken);
+            _operationState.BeginStage($"Loading missing {resolution} history", missingComponents.Count);
+            var progress = new Progress<HistoryLoadProgress>(update =>
+            {
+                if (_windowLifetime.IsClosing) return;
+                _operationState.Report($"Loading missing {resolution} history", update.CompletedComponents, update.TotalComponents);
+                StatusText.Text = $"Loading {resolution} history for uncached leg {update.CompletedComponents} of {update.TotalComponents}: {update.Epic}.";
+            });
+            var apiHistory = await _history.LoadSelectedAsync(missingComponents, resolution, progress, cancellationToken);
+            _historySessionCache.Store(resolution, apiHistory);
+        }
+        else
+        {
+            _operationState.BeginStage($"Reusing cached {resolution} history");
+            StatusText.Text = $"Reusing cached {resolution} history for {selectedComponents.Count} legs.";
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
+        var sessionHistory = new HistoryLoadResult(
+            _historySessionCache.Get(selectedComponents, resolution),
+            null,
+            null,
+            0);
         return exactTimestamps
             ? SyntheticHistoryService.MergeSelectedManualHistory(
                 selectedComponents,
                 resolution,
-                apiHistory,
+                sessionHistory,
                 CachedCandlesForResolution(resolution))
             : SyntheticHistoryService.MergeSelectedHistory(
                 selectedComponents,
                 resolution,
-                apiHistory,
+                sessionHistory,
                 CachedCandlesForResolution(resolution));
     }
 
@@ -1680,6 +1697,7 @@ public partial class CapComTerminalWindow : Window
             cancellationToken);
         trackedOperation.Track(operation);
         await operation;
+        await _tradingCoordinator.RefreshAsync(PublishTerminalExecutionsAsync, cancellationToken);
         await PublishBrokerSnapshotAsync(cancellationToken);
     }
 

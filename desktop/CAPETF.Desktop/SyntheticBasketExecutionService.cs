@@ -369,7 +369,7 @@ public sealed class SyntheticBasketExecutionService
             catch (CapitalMutationOutcomeUnknownException exception)
             {
                 current = MarkLeg(current, index, SyntheticExecutionLegState.Unknown, $"{current.Legs[index].Epic} close: {exception.Message}");
-                break;
+                continue;
             }
             catch (OperationCanceledException)
             {
@@ -380,19 +380,19 @@ public sealed class SyntheticBasketExecutionService
             catch (Exception exception)
             {
                 current = MarkLeg(current, index, SyntheticExecutionLegState.Unknown, $"{current.Legs[index].Epic} close failed with an unknown outcome: {exception.Message}");
-                break;
+                continue;
             }
 
             if (IsRejected(acknowledgement.DealStatus))
             {
                 current = MarkLeg(current, index, SyntheticExecutionLegState.Open, FormatReason(current.Legs[index].Epic, "close", acknowledgement.Reason));
-                break;
+                continue;
             }
 
             if (string.IsNullOrWhiteSpace(acknowledgement.DealReference))
             {
                 current = MarkLeg(current, index, SyntheticExecutionLegState.Unknown, $"{current.Legs[index].Epic} close returned no deal reference; the outcome is unknown.");
-                break;
+                continue;
             }
 
             current = UpdateLeg(
@@ -405,7 +405,6 @@ public sealed class SyntheticBasketExecutionService
             if (confirmation.Cancelled || cancellationToken.IsCancellationRequested) cancelled = true;
             current = ApplyCloseConfirmation(current, index, confirmation);
             await progress(current, CancellationToken.None);
-            if (current.Legs[index].State != SyntheticExecutionLegState.Closed) break;
         }
 
         current = current with { State = DetermineCloseState(current, cancelled), UpdatedUtc = _clock.UtcNow };

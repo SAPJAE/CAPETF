@@ -495,6 +495,19 @@
       color: #fee2e2;
     }
 
+    .dock-state-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 19px;
+      padding: 0 6px;
+      border: 1px solid currentColor;
+      border-radius: 3px;
+      font-size: 9px;
+      font-weight: 700;
+      line-height: 1;
+      text-transform: uppercase;
+    }
+
     #trade-dock-table .dock-empty {
       height: 42px;
       color: var(--muted);
@@ -1490,8 +1503,8 @@
           <nav id="trade-dock-tabs" aria-label="Trade dock views" role="tablist">
             <button type="button" id="trade-tab-positions" role="tab" aria-selected="true">Positions</button>
             <button type="button" id="trade-tab-pending" role="tab" aria-selected="false">Pending Orders</button>
-            <button type="button" id="trade-tab-baskets" role="tab" aria-selected="false">Synthetic Baskets</button>
-            <button type="button" id="trade-tab-history" role="tab" aria-selected="false">History</button>
+            <button type="button" id="trade-tab-baskets" role="tab" aria-selected="false">Active Baskets (0)</button>
+            <button type="button" id="trade-tab-history" role="tab" aria-selected="false">History (0)</button>
           </nav>
           <div id="trade-dock-account-strip" aria-live="polite">
             <span>Funds<strong>n/a</strong></span>
@@ -2259,11 +2272,20 @@
         .map(record => {
           const executionId = getField(record, 'ExecutionId', 'executionId', '');
           const plan = plans.get(executionId);
+          const legs = getField(record, 'Legs', 'legs', []);
+          const openLegs = legs.filter(leg => legState(leg) === 'Open').length;
+          const closedLegs = legs.filter(leg => legState(leg) === 'Closed').length;
+          const issueLegs = legs.length - openLegs - closedLegs;
+          const legStatus = [
+            openLegs ? `${openLegs} open` : '',
+            issueLegs ? `${issueLegs} issue` : '',
+            closedLegs ? `${closedLegs} closed` : ''
+          ].filter(Boolean).join(' / ') || 'No tracked legs';
           return {
             executionId,
             basket: getField(record, 'BasketId', 'basketId', 'n/a') || 'n/a',
             side: getField(record, 'Side', 'side', 'n/a') || 'n/a',
-            legs: getField(record, 'Legs', 'legs', []).length,
+            legStatus,
             syntheticEntry: executionEntry(record),
             bid: executionQuote(record, snapshot, 'bid'),
             ask: executionQuote(record, snapshot, 'ask'),
@@ -2293,6 +2315,13 @@
         if (record) requestCloseBasket(record);
       });
       return button;
+    }
+
+    function renderDockState(value) {
+      const badge = document.createElement('span');
+      badge.className = `dock-state-badge ${stateClass(value)}`;
+      badge.textContent = String(value || 'n/a');
+      return badge;
     }
 
     function historyRows(executions) {
@@ -2337,25 +2366,25 @@
         rows: () => pendingOrderRows(terminalBrokerSnapshot || {})
       },
       baskets: {
-        label: 'Synthetic Baskets',
+        label: 'Active Baskets',
         empty: 'No active synthetic baskets.',
         columns: [
-          ['Basket', 'basket'], ['Side', 'side'], ['Legs', 'legs', dockQuantity],
+          ['Basket', 'basket'], ['Side', 'side'], ['Leg status', 'legStatus'],
           ['Synthetic entry', 'syntheticEntry', dockNumber], ['Bid', 'bid', dockNumber], ['Ask', 'ask', dockNumber],
           ['PLAN SL', 'planStopLoss', dockNumber], ['PLAN TP', 'planTakeProfit', dockNumber],
           ['Margin', 'margin', (value, row) => dockAmount(value, row.currency)],
-          ['P/L', 'profitLoss', dockProfitLoss], ['State', 'state'],
+          ['P/L', 'profitLoss', dockProfitLoss], ['State', 'state', null, renderDockState],
           ['Close', 'close', null, renderSyntheticCloseAction]
         ],
         rows: () => syntheticBasketRows(terminalExecutions, terminalBrokerSnapshot || {}, terminalRiskPlans)
       },
       history: {
         label: 'History',
-        empty: 'No closed or rejected executions.',
+        empty: 'No completed synthetic baskets yet.',
         columns: [
           ['Updated', 'updated'], ['Basket', 'basket'], ['Side', 'side'], ['Legs', 'legs', dockQuantity],
           ['Margin', 'margin', (value, row) => dockAmount(value, row.currency)],
-          ['P/L', 'profitLoss', dockProfitLoss], ['State', 'state'], ['Message', 'message']
+          ['P/L', 'profitLoss', dockProfitLoss], ['State', 'state', null, renderDockState], ['Message', 'message']
         ],
         rows: () => historyRows(terminalExecutions)
       }
@@ -2465,6 +2494,8 @@
 
     function renderTradeDock() {
       renderTradeDockAccount();
+      tradeDockTabs.baskets.textContent = `Active Baskets (${syntheticBasketRows(terminalExecutions, terminalBrokerSnapshot || {}, terminalRiskPlans).length})`;
+      tradeDockTabs.history.textContent = `History (${historyRows(terminalExecutions).length})`;
       const view = dockViews[tradeDockState.activeTab] || dockViews.positions;
       for (const [name, button] of Object.entries(tradeDockTabs)) {
         const active = name === tradeDockState.activeTab;
