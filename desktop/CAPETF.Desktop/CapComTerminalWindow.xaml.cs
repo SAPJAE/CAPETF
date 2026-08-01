@@ -1500,6 +1500,13 @@ public partial class CapComTerminalWindow : Window
 
         var freshBasket = snapshotResult.Basket;
         var preferences = await _api.GetAccountPreferencesAsync(cancellationToken);
+        if (!preferences.HedgingMode && _api.IsDemoTradingSession)
+        {
+            _operationState.BeginStage("Enabling demo hedging mode");
+            _windowLifetime.TryApply(() => StatusText.Text = "Enabling Capital.com demo hedging mode for synthetic execution...");
+            await _api.SetHedgingModeAsync(true, cancellationToken);
+            preferences = await _api.GetAccountPreferencesAsync(cancellationToken);
+        }
         var accountId = _api.Session?.CurrentAccountId ?? "";
         _marginPreview.InvalidateCaches();
         var margin = await _marginPreview.BuildAsync(freshBasket, basketNotional, cancellationToken);

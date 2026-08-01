@@ -76,6 +76,21 @@ public sealed partial class CapitalApiClient
             && value.GetBoolean());
     }
 
+    public async Task SetHedgingModeAsync(bool enabled, CancellationToken cancellationToken = default)
+    {
+        EnsureDemoMutationAllowed();
+        using var document = await SendTradingJsonAsync(
+            HttpMethod.Put,
+            "api/v1/accounts/preferences",
+            new { hedgingMode = enabled },
+            cancellationToken);
+        if (!document.RootElement.TryGetProperty("status", out var status) ||
+            !string.Equals(status.GetString(), "SUCCESS", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Capital.com did not confirm the hedging-mode update.");
+        }
+    }
+
     public async Task<CapitalDealAcknowledgement> ClosePositionAsync(string dealId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(dealId)) throw new ArgumentException("A deal ID is required.", nameof(dealId));

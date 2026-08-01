@@ -87,6 +87,7 @@ public static class SyntheticTradingTests
         CancellationDuringLaterClosePersistenceStopsBeforeGateway();
         ProductionTransportDisablesAutomaticRedirects();
         LiveMutationIsRejectedBeforeItIsSent();
+        DemoHedgingPreferenceRequestUsesCapitalContract();
         DemoPositionRequestUsesCapitalContract();
         LostCreateResponseRecoversUniqueNewPositionWithoutRetry();
         MalformedCreateResponseRecoversUniqueNewPositionWithoutRetry();
@@ -4545,6 +4546,28 @@ public static class SyntheticTradingTests
         AssertEqual("demo-api-capital.backend-capital.com", handler.MutationRequests[0].Host, "position must never reach the redirect target");
     }
 
+    private static void DemoHedgingPreferenceRequestUsesCapitalContract()
+    {
+        var handler = new TradingHandler();
+        using var client = Login(handler, useDemo: true);
+
+        client.SetHedgingModeAsync(true, default).GetAwaiter().GetResult();
+
+        var sent = handler.Requests.Single(request => request.Path == "/api/v1/accounts/preferences");
+        AssertEqual(HttpMethod.Put, sent.Method, "hedging preference method");
+        using var body = JsonDocument.Parse(sent.Body);
+        AssertTrue(body.RootElement.GetProperty("hedgingMode").GetBoolean(), "hedging preference body");
+
+        var liveHandler = new TradingHandler();
+        using var liveClient = Login(liveHandler, useDemo: false);
+        AssertThrows<InvalidOperationException>(
+            () => liveClient.SetHedgingModeAsync(true, default).GetAwaiter().GetResult(),
+            "live hedging preferences must be blocked before transport");
+        AssertFalse(
+            liveHandler.Requests.Any(request => request.Path == "/api/v1/accounts/preferences"),
+            "live preference mutation must never reach transport");
+    }
+
     private static void OpenPositionsParseRequiredFields()
     {
         var handler = new TradingHandler();
@@ -4711,6 +4734,7 @@ public static class SyntheticTradingTests
             var response = request.RequestUri?.AbsolutePath switch
             {
                 "/api/v1/session" => JsonResponse(HttpStatusCode.OK, "{}", includeSessionHeaders: true),
+                "/api/v1/accounts/preferences" when request.Method == HttpMethod.Put => JsonResponse(HttpStatusCode.OK, "{\"status\":\"SUCCESS\"}"),
                 "/api/v1/positions" when request.Method == HttpMethod.Post => JsonResponse(HttpStatusCode.OK, "{\"dealReference\":\"REF-123\"}"),
                 "/api/v1/confirms/REF-123" => JsonResponse(HttpStatusCode.OK, "{\"dealStatus\":\"ACCEPTED\",\"dealId\":\"DEAL-123\",\"level\":123.45,\"affectedDeals\":[\"DEAL-123\",\"DEAL-OTHER\"]}"),
                 "/api/v1/positions" => JsonResponse(HttpStatusCode.OK, "{\"positions\":[{\"position\":{\"dealId\":\"DEAL-123\",\"direction\":\"BUY\",\"size\":2.5,\"level\":123.45,\"upl\":17.25,\"currency\":\"USD\",\"stopLevel\":118,\"profitLevel\":140},\"market\":{\"epic\":\"AAPL\",\"marketStatus\":\"TRADEABLE\",\"bid\":123.40,\"offer\":123.50}}]}"),
