@@ -168,3 +168,11 @@ The final self-contained publish was rebuilt from commit `05f4c19` and then laun
 ### Transaction Boundary
 
 The fresh ticket expired while waiting for the required action-time user confirmation. The acknowledgement was not selected and `Confirm Demo Order` was not clicked. Therefore no ETH or BTC order was submitted, and no crypto position exists from this validation run. A new preflight ticket must be generated after explicit confirmation before the final two demo orders can be sent.
+
+## Five-Lot SELL Follow-Up
+
+The user requested five synthetic lots on the SELL side. Entering raw basket quantity `5` was preflighted and correctly rejected before ticket creation: it would produce `45 ETHUSD + 1 BTCUSD`, required approximately `USDd 72,933` margin, and exceeded approximately `USDd 20,787` available margin. No order was sent.
+
+Commit `e06632e` makes the quantity control deal-rule aware. For the exact ETH/BTC basket, one executable synthetic lot is the host-owned minimum basket quantity `0.001`; five lots therefore means basket quantity `0.005`, producing `0.045 ETHUSD + 0.001 BTCUSD`. The terminal now applies that minimum to the input `min` and `step` attributes and displays the current executable-lot count beside the raw basket quantity.
+
+The corrected self-contained build was published unzipped to `desktop/publish/cap.com-terminal-v4-five-lots`. Its executable is 151,552 bytes with SHA-256 `9F8CCC12ECB388C41132B20786174A36B6DDBDF1FF0B04AE4AB4EC7BAF16A836`; the folder contains 494 files and zero `.zip` files. Automated tests passed before publishing. Hands-on SELL ticket validation remains pending because user interaction was detected in the existing terminal window and automated control stopped without altering it.
