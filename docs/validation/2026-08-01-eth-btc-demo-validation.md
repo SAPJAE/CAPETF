@@ -75,3 +75,17 @@ Focused fixtures cover blank summary USD/EUR currency recovery, exact ETH/BTC pr
 ### Publishing State
 
 The existing publish folder has not been modified in this round. Publishing is pending controller confirmation that every CAPETF.exe instance from the target publish directory has been closed.
+
+## Live Validation Round 1 Publish Evidence
+
+The controller confirmed the target application was closed. A local process check then found zero `CAPETF.exe` processes whose executable path was inside the target publish directory before publishing.
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Published commit | `c3769a0 Enrich Crypto market metadata` | Self-contained publish completed. |
+| Publish command | `dotnet publish desktop/CAPETF.Desktop/CAPETF.Desktop.csproj -c Release -r win-x64 --self-contained true -o desktop/publish/cap.com-terminal-v4-complete` | PASS. Exit code 0. |
+| Publish directory | `desktop/publish/cap.com-terminal-v4-complete` | Exists with 495 files and zero `.zip` files. |
+| Executable | `desktop/publish/cap.com-terminal-v4-complete/CAPETF.exe` | Exists; 151,552 bytes; last-write UTC `2026-08-01T12:20:49.5203848Z`; SHA-256 `D6CA577C50046243DC1A863A072B5852236F2BC769D373F77FCEA5424AAE51F9`. |
+| Post-publish process check | Target publish directory | PASS. Zero target-directory `CAPETF.exe` processes; the executable was not launched by this task. |
+
+The published build is ready for the controller's live retest of Crypto grouping and the ETH/BTC manual preset. No Capital.com connection, order, or other live-app action was performed by this task.
