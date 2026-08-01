@@ -175,4 +175,22 @@ The user requested five synthetic lots on the SELL side. Entering raw basket qua
 
 Commit `e06632e` makes the quantity control deal-rule aware. For the exact ETH/BTC basket, one executable synthetic lot is the host-owned minimum basket quantity `0.001`; five lots therefore means basket quantity `0.005`, producing `0.045 ETHUSD + 0.001 BTCUSD`. The terminal now applies that minimum to the input `min` and `step` attributes and displays the current executable-lot count beside the raw basket quantity.
 
-The corrected self-contained build was published unzipped to `desktop/publish/cap.com-terminal-v4-five-lots`. Its executable is 151,552 bytes with SHA-256 `9F8CCC12ECB388C41132B20786174A36B6DDBDF1FF0B04AE4AB4EC7BAF16A836`; the folder contains 494 files and zero `.zip` files. Automated tests passed before publishing. Hands-on SELL ticket validation remains pending because user interaction was detected in the existing terminal window and automated control stopped without altering it.
+The corrected self-contained build was published unzipped to `desktop/publish/cap.com-terminal-v4-five-lots`. Its executable is 151,552 bytes with SHA-256 `9F8CCC12ECB388C41132B20786174A36B6DDBDF1FF0B04AE4AB4EC7BAF16A836`; the folder contains 494 files and zero `.zip` files. Automated tests passed before publishing.
+
+### Five-Lot Demo Execution
+
+The corrected executable connected to Capital.com demo, loaded 229 eligible Crypto instruments, and rebuilt `SYN-CRYPTO-ETHBTC-01` with 574 shared weekly candles from 2015-08-06 through 2026-07-27. Setting basket quantity `0.005` displayed `5 lots` and produced the required executable SELL legs.
+
+The user selected the partial-execution acknowledgement and submitted the frozen demo ticket. Capital.com accepted both legs:
+
+| Symbol | Side | Quantity | Entry | Deal | State at verification |
+| --- | --- | ---: | ---: | --- | --- |
+| ETHUSD | SELL | 0.045 | 1835.9500 | `0015421d-0055-311e-0000-0000823b4a3f` | Open |
+| BTCUSD | SELL | 0.001 | 62483.5000 | `000940dd-0055-311e-0000-000083749067` | Open |
+
+- Synthetic execution: `fdf9fa06cf5d4a0b8e1b69aaf1d20924`, state `Open`.
+- Frozen-ticket estimated SELL margin: `USDd 72.58`.
+- Post-trade account snapshot: funds `USDd 20,997.13`, equity `USDd 20,995.44`, available `USDd 20,784.96`, margin used `USDd 210.48`, running P/L `USDd -1.69`.
+- The crypto legs initially reported running P/L of `USD -0.07` for ETHUSD and `USD -0.05` for BTCUSD.
+- No pending orders appeared.
+- Existing PLTR and HOOD positions remained open and unchanged. No position was closed by this validation.
