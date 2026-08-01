@@ -120,6 +120,8 @@ public static class SyntheticTradingTests
         ReconciliationMarksMissingOpenPositionsClosed();
         ReconciliationNormalizesSubmittedLegWhenOpenPositionDisappearsAndPersistsIt();
         ReconciliationNormalizesConfirmingLegWhenOpenPositionDisappearsAndPersistsIt();
+        ReconciliationRecoversOneFreshExactSubmittedPosition();
+        ReconciliationRejectsAmbiguousOrPreexistingSubmittedPositionMatches();
         ReconciliationReopensClosedLegWithoutClosureMetadataAndPersistsIt();
         ReconciliationLeavesUnresolvedUnknownUntilPositivelyMatched();
         ReconciliationClosesUnknownTrackedDealWhenCapitalNoLongerListsIt();
@@ -3297,6 +3299,93 @@ public static class SyntheticTradingTests
         AssertEqual(reconciled.ExecutionId, restored.ExecutionId, "normalized in-flight execution identity survives save and load");
         AssertEqual(reconciled.State, restored.State, "normalized in-flight execution state survives save and load");
         AssertTrue(reconciled.Legs.SequenceEqual(restored.Legs), "normalized in-flight legs survive save and load exactly");
+    }
+
+    private static void ReconciliationRecoversOneFreshExactSubmittedPosition()
+    {
+        using var directory = new TemporaryDirectory();
+        var baseRecord = CreatePersistedExecutionRecord();
+        var submittedUtc = baseRecord.CreatedUtc.AddMinutes(1);
+        var submitted = baseRecord.Legs[0] with
+        {
+            State = SyntheticExecutionLegState.Submitted,
+            DealReference = "",
+            DealId = "",
+            FillLevel = null,
+            Message = "POST dispatch persisted before acknowledgement.",
+            SubmittedUtc = submittedUtc,
+            ConfirmedUtc = null,
+            CurrentUnrealizedProfitLoss = null,
+            UpdatedUtc = submittedUtc,
+        };
+        var record = baseRecord with
+        {
+            State = SyntheticExecutionState.Submitting,
+            UpdatedUtc = submittedUtc,
+            Legs = [submitted],
+        };
+        var createdUtc = submittedUtc.AddSeconds(1);
+        var position = new CapitalOpenPosition(
+            "recovered-deal", submitted.Epic, submitted.Direction, submitted.Quantity,
+            102.5m, 4.25m, "USD", "TRADEABLE", CreatedUtc: createdUtc);
+        var now = submittedUtc.AddMinutes(1);
+
+        var reconciled = new SyntheticPositionReconciler().Reconcile(record, [position], now);
+
+        AssertEqual(SyntheticExecutionState.Open, reconciled.State, "one fresh exact broker position must recover a submitted execution");
+        AssertEqual(SyntheticExecutionLegState.Open, reconciled.Legs[0].State, "the recovered submitted leg becomes open");
+        AssertEqual("recovered-deal", reconciled.Legs[0].DealId, "recovery retains the permanent Capital deal ID");
+        AssertEqual(102.5m, reconciled.Legs[0].FillLevel, "recovery retains the broker fill level");
+        AssertEqual(createdUtc, reconciled.Legs[0].ConfirmedUtc, "the broker creation time anchors recovered confirmation");
+        AssertEqual(4.25m, reconciled.Legs[0].CurrentUnrealizedProfitLoss, "recovery publishes current broker P/L");
+
+        var store = new SyntheticExecutionStore(Path.Combine(directory.Path, "recovered-submission.json"));
+        store.SaveAsync([reconciled], default).GetAwaiter().GetResult();
+        var restored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "recovered submitted position must persist");
+        AssertEqual("recovered-deal", restored.Legs[0].DealId, "recovered deal identity survives restart persistence");
+    }
+
+    private static void ReconciliationRejectsAmbiguousOrPreexistingSubmittedPositionMatches()
+    {
+        var baseRecord = CreatePersistedExecutionRecord();
+        var submittedUtc = baseRecord.CreatedUtc.AddMinutes(1);
+        var submitted = baseRecord.Legs[0] with
+        {
+            State = SyntheticExecutionLegState.Submitted,
+            DealReference = "",
+            DealId = "",
+            FillLevel = null,
+            SubmittedUtc = submittedUtc,
+            ConfirmedUtc = null,
+            CurrentUnrealizedProfitLoss = null,
+            UpdatedUtc = submittedUtc,
+        };
+        var record = baseRecord with
+        {
+            State = SyntheticExecutionState.Submitting,
+            UpdatedUtc = submittedUtc,
+            Legs = [submitted],
+        };
+        CapitalOpenPosition Match(string dealId, DateTimeOffset createdUtc) => new(
+            dealId, submitted.Epic, submitted.Direction, submitted.Quantity,
+            101m, 1m, "USD", "TRADEABLE", CreatedUtc: createdUtc);
+        var now = submittedUtc.AddMinutes(1);
+
+        var ambiguous = new SyntheticPositionReconciler().Reconcile(
+            record,
+            [Match("candidate-one", submittedUtc.AddSeconds(1)), Match("candidate-two", submittedUtc.AddSeconds(2))],
+            now);
+        AssertEqual(SyntheticExecutionLegState.Unknown, ambiguous.Legs[0].State,
+            "multiple fresh exact broker matches must remain unresolved");
+        AssertEqual("", ambiguous.Legs[0].DealId, "ambiguous recovery must not claim either broker deal");
+
+        var preexisting = new SyntheticPositionReconciler().Reconcile(
+            record,
+            [Match("older-unrelated", submittedUtc.AddMinutes(-10))],
+            now);
+        AssertEqual(SyntheticExecutionLegState.Unknown, preexisting.Legs[0].State,
+            "a position created before submission must not be attached");
+        AssertEqual("", preexisting.Legs[0].DealId, "preexisting position identity must remain unclaimed");
     }
 
     private static void ReconciliationReopensClosedLegWithoutClosureMetadataAndPersistsIt()
