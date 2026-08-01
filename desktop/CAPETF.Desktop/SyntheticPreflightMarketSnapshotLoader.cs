@@ -46,6 +46,7 @@ internal sealed class SyntheticPreflightMarketSnapshotLoader
                     continue;
                 }
 
+                ApplyNewerStreamQuote(component.Instrument, details);
                 snapshots.Add(details);
                 var missing = MissingTradingMetadata(epic, details);
                 if (missing.Count > 0)
@@ -88,6 +89,25 @@ internal sealed class SyntheticPreflightMarketSnapshotLoader
             basket,
             Array.AsReadOnly(snapshots.ToArray()),
             Array.Empty<SyntheticPreflightFailure>());
+    }
+
+    private static void ApplyNewerStreamQuote(MarketInstrument streamed, MarketInstrument details)
+    {
+        if (!string.Equals(streamed.Epic?.Trim(), details.Epic?.Trim(), StringComparison.OrdinalIgnoreCase) ||
+            streamed.LastTickAt is not { } streamedAt ||
+            streamed.Bid is not > 0m ||
+            streamed.Offer is not > 0m ||
+            details.LastTickAt is { } detailsAt && detailsAt.ToUniversalTime() >= streamedAt.ToUniversalTime())
+        {
+            return;
+        }
+
+        details.Bid = streamed.Bid;
+        details.Offer = streamed.Offer;
+        details.Price = streamed.Price is > 0m
+            ? streamed.Price
+            : (streamed.Bid.Value + streamed.Offer.Value) / 2m;
+        details.LastTickAt = streamedAt;
     }
 
     private static IReadOnlyList<string> MissingTradingMetadata(string requestedEpic, MarketInstrument details)

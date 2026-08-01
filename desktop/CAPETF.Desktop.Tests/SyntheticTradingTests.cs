@@ -54,6 +54,7 @@ public static class SyntheticTradingTests
         WpfHostRejectsUnknownRiskPlanClearWithoutPersisting();
         FreshPreflightSnapshotsRejectFailedRefreshDespiteStaleMetadata();
         FreshPreflightSnapshotsRejectIncompleteCurrentMetadata();
+        FreshPreflightSnapshotsUseStreamQuoteWhenMarketDetailsOmitTimestamp();
         FreshPreflightSnapshotsBuildDetachedBasketFromExactResponses();
         PreflightRejectsNonDemoSessions();
         PreflightRejectsNonHedgingAccounts();
@@ -2222,6 +2223,39 @@ public static class SyntheticTradingTests
 
         AssertTrue(result.Basket is null, "missing current trading metadata must fail closed");
         AssertContainsFailure(result.Failures, "GAMMA", "margin factor");
+    }
+
+    private static void FreshPreflightSnapshotsUseStreamQuoteWhenMarketDetailsOmitTimestamp()
+    {
+        var basket = CreateBasket();
+        var streamedAt = DateTimeOffset.Parse("2026-08-01T13:35:20Z");
+        foreach (var component in basket.Components)
+        {
+            component.Instrument.Bid = 101m;
+            component.Instrument.Offer = 102m;
+            component.Instrument.Price = 101.5m;
+            component.Instrument.LastTickAt = streamedAt;
+        }
+
+        var loader = new SyntheticPreflightMarketSnapshotLoader((epic, _) =>
+        {
+            var details = CreateFreshMarketDetails(epic);
+            details.Bid = 91m;
+            details.Offer = 92m;
+            details.Price = 91.5m;
+            details.LastTickAt = null;
+            return Task.FromResult<MarketInstrument?>(details);
+        });
+
+        var result = loader.LoadAsync(basket, default).GetAwaiter().GetResult();
+        var refreshed = result.Basket ?? throw new Exception("a same-epic stream quote must complete undated market details");
+        foreach (var component in refreshed.Components)
+        {
+            AssertEqual(101m, component.Instrument.Bid, "preflight uses the streamed bid");
+            AssertEqual(102m, component.Instrument.Offer, "preflight uses the streamed offer");
+            AssertEqual(101.5m, component.Instrument.Price, "preflight uses the streamed midpoint");
+            AssertEqual(streamedAt, component.Instrument.LastTickAt, "preflight uses the streamed source timestamp");
+        }
     }
 
     private static void FreshPreflightSnapshotsBuildDetachedBasketFromExactResponses()
