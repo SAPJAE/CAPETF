@@ -17,7 +17,9 @@ public sealed record SyntheticMarginSidePreview(
     bool IsAvailable,
     string UnavailableReason,
     decimal? TotalMargin,
-    IReadOnlyList<SyntheticMarginLegPreview> Legs);
+    IReadOnlyList<SyntheticMarginLegPreview> Legs,
+    string NativeCurrency = "",
+    decimal? ConversionRate = null);
 
 public sealed record SyntheticMarginSummary(
     string AccountCurrency,
@@ -87,7 +89,9 @@ public static class SyntheticMarginCalculator
             true,
             "",
             legs.Sum(leg => leg.MarginAccountCurrency),
-            legs);
+            legs,
+            basket.Components[0].Instrument.Currency,
+            conversionRate);
     }
 
     public static SyntheticMarginSummary Combine(

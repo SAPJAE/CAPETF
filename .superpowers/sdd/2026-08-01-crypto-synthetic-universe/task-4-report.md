@@ -200,3 +200,189 @@ No whitespace errors. Git reported only LF-to-CRLF working-copy conversion warni
 - Existing public/browser fields named `basketNotional` and model property `RequestedNotional` remain for compatibility. Manual snapshots now carry an explicit `BasketQuantity`, removing ambiguity in persisted execution state.
 - The solver fails closed if an exact shared result exceeds .NET decimal precision/range; it never falls back to binary floating point or approximate rounding.
 - Automated fixtures only were used. Capital.com credentials, current live dealing rules, and real account margin were not read or validated, and no order was placed.
+
+## Fix Round 1
+
+### Scope
+
+Fix base: `ba29e9cb070f8a113c499a5c3837b9495b4369e6`
+
+Review findings addressed:
+
+1. Manual preflight now validates the complete BUY and SELL margin snapshot identity instead of trusting matching epic/side/price/quantity/notional fields.
+2. The shared-grid solver now uses reduced `BigInteger` fractions and reduces before LCM or multiplication, so valid grids with extreme decimal scale do not overflow.
+3. Automated coverage now includes an actually unrepresentable grid and verifies both solver failure and preflight blocking.
+
+No Capital.com connection was opened. No demo or live order was submitted.
+
+### Changed Files
+
+- `desktop/CAPETF.Desktop/RatioPreservingBasketSizer.cs`: replaces largest-scale decimal LCM arithmetic with reduced rational numerator/denominator operations, exact integer ceilings, decimal-representability normalization, and final-only decimal conversion.
+- `desktop/CAPETF.Desktop/SyntheticMarginCalculator.cs`: freezes native currency and conversion rate in each side preview.
+- `desktop/CAPETF.Desktop/SyntheticTradePreflight.cs`: validates complete manual BUY/SELL margin shape, uniqueness, currencies, conversion metadata, native and account margin values, totals, and account arithmetic before funds checks.
+- `desktop/CAPETF.Desktop.Tests/SyntheticTradingTests.cs`: adds margin tampering, malformed margin shape, extreme-scale grid, explicit conversion metadata, and impossible-grid coverage.
+- `.superpowers/sdd/2026-08-01-crypto-synthetic-universe/task-4-report.md`: appends this fix-round record.
+
+### Red Evidence
+
+#### Zeroed margin bypass
+
+Command:
+
+```powershell
+dotnet run --project desktop\CAPETF.Desktop.Tests\CAPETF.Desktop.Tests.csproj -- trading
+```
+
+Observed result before the margin identity fix:
+
+```text
+Exit code: 1
+Unhandled exception. System.Exception: zeroed margin snapshot must not bypass insufficient funds
+   at CAPETF.Desktop.Tests.SyntheticTradingTests.ManualPreflightRejectsZeroedMarginSnapshotThatBypassesFundsCheck()
+```
+
+A snapshot with available funds `3299`, true required margin `3300`, and tampered zero leg/total margins incorrectly produced a ready ticket. Manual preflight now recalculates expected native margin from frozen notional and Capital percentage margin factor, validates account-margin conversion, and checks totals before the insufficient-funds comparison.
+
+#### Extreme decimal-scale LCM overflow
+
+Command:
+
+```powershell
+dotnet run --project desktop\CAPETF.Desktop.Tests\CAPETF.Desktop.Tests.csproj -- trading
+```
+
+Observed result before the rational solver:
+
+```text
+Exit code: 1
+CAPETF.Desktop.RatioPreservingBasketSizingException: Exact ratio-preserving basket quantity is unavailable within decimal limits.
+   at CAPETF.Desktop.RatioPreservingBasketSizer.ScaleInteger(...)
+   at CAPETF.Desktop.RatioPreservingBasketSizer.LeastCommonDecimalMultiple(...)
+   at CAPETF.Desktop.Tests.SyntheticTradingTests.ManualRatioSizerHandlesExtremeDecimalScaleWithoutOverflow()
+```
+
+The prior implementation attempted to scale `10m` by `10^28` before computing LCM. The reduced rational implementation returns the correct smallest shared quantity `10m` for increments `10m` and `1e-28m`.
+
+#### Malformed margin snapshot handling
+
+After complete identity validation was added, null epic/leg-collection tampering exposed a fail-open-by-exception boundary.
+
+```text
+Exit code: 1
+Unhandled exception. System.NullReferenceException: Object reference not set to an instance of an object.
+   at CAPETF.Desktop.SyntheticTradePreflight.IsValidManualMarginSide(...)
+   at CAPETF.Desktop.Tests.SyntheticTradingTests.ManualPreflightRejectsMissingDuplicateAndExtraMarginLegs()
+```
+
+Malformed or null leg identities now return the blocking `Margin preview is inconsistent.` result without throwing.
+
+#### Explicit conversion metadata contract
+
+The side preview originally discarded the conversion rate used by the margin service.
+
+```text
+Exit code: 1
+SyntheticTradingTests.cs: error CS1061: 'SyntheticMarginSidePreview' does not contain a definition for 'NativeCurrency'
+SyntheticTradingTests.cs: error CS1061: 'SyntheticMarginSidePreview' does not contain a definition for 'ConversionRate'
+The build failed. Fix the build errors and run again.
+```
+
+The snapshot now freezes both fields. Manual preflight requires the same metadata on BUY and SELL, requires rate `1` for same-currency conversion, and verifies every account-margin amount equals native margin multiplied by the frozen rate.
+
+### Behavioral Coverage Added
+
+- Reject a zeroed BUY margin snapshot that would otherwise bypass `3299 < 3300` insufficient funds.
+- Reject missing, duplicate, extra, null-epic, and null-collection margin leg shapes without throwing.
+- Reject wrong leg native currency, leg account currency, summary account currency, side identity, side native currency, native margin value, conversion rate, account-margin conversion, total margin, available/after arithmetic, opposite-side total, and opposite-side account arithmetic.
+- Validate exact leg count and case-insensitive epic/side uniqueness for both BUY and SELL snapshots.
+- Verify `TotalMargin` equals the exact sum of account-currency leg margins.
+- Verify side and leg account currencies match the summary account currency and base/native currencies match the basket instruments.
+- Verify increments `10m` and `1e-28m` produce the smallest shared basket quantity `10m` without overflow.
+- Verify a `1e-28m` multiplier with `decimal.MaxValue` minimum/increment has no representable basket quantity, causes the solver to fail closed, and produces no preflight ticket.
+
+### Green Evidence
+
+Focused trading command:
+
+```powershell
+dotnet run --project desktop\CAPETF.Desktop.Tests\CAPETF.Desktop.Tests.csproj -- trading
+```
+
+Result:
+
+```text
+Exit code: 0
+Wall time: 6.5 seconds
+SyntheticTrading tests passed
+```
+
+Full test command:
+
+```powershell
+dotnet run --project desktop\CAPETF.Desktop.Tests\CAPETF.Desktop.Tests.csproj
+```
+
+Result:
+
+```text
+Exit code: 0
+Wall time: 39.8 seconds
+SyntheticTrading tests passed
+SyntheticBasketBuilder tests passed
+```
+
+Release build command:
+
+```powershell
+dotnet build desktop\CAPETF.Desktop\CAPETF.Desktop.csproj -c Release
+```
+
+Result:
+
+```text
+Exit code: 0
+Build succeeded.
+0 Warning(s)
+0 Error(s)
+```
+
+Whitespace command:
+
+```powershell
+git diff --check
+```
+
+Result:
+
+```text
+Exit code: 0
+No whitespace errors. Git reported only LF-to-CRLF working-copy conversion warnings.
+```
+
+### Self-Review
+
+- Confirmed complete margin identity validation runs only for `ManualFormula`; automatic equal-notional preflight retains its prior margin matching behavior.
+- Confirmed both BUY and SELL snapshots are rebuilt from the frozen basket quantity and validated, even when only one side is being submitted.
+- Confirmed exact shape and uniqueness checks run before any lookup, so duplicate or malformed data cannot reach `SingleOrDefault` or ticket construction.
+- Confirmed native margins are recomputed from executable notional and the Capital percentage margin factor; account margins are recomputed with the frozen conversion rate.
+- Confirmed same-currency snapshots require conversion rate `1m`, and BUY/SELL conversion metadata must agree.
+- Confirmed selected-side insufficient-funds comparison occurs only after the complete snapshot passes internal identity checks.
+- Confirmed rational multiplication cross-reduces before multiplying and rational LCM uses `lcm(numerators) / gcd(denominators)` on reduced positive fractions.
+- Confirmed decimal input conversion preserves the exact 96-bit unscaled integer and scale; no binary floating point is used.
+- Confirmed each fundamental grid increment is lifted only when necessary to the smallest .NET-decimal-representable multiple before shared LCM.
+- Confirmed only final basket and leg quantities are converted back to decimal, with denominator scale and 96-bit range checks.
+- Confirmed regular `9`/`0.2`, extreme-scale, off-grid, below-minimum, and unrepresentable cases are behaviorally covered.
+- Confirmed no credential, connection, transport, confirmation, or order-submission path was invoked.
+
+### Commit
+
+- Branch: `feature/cap-com-terminal-v4`
+- Fix base: `ba29e9cb070f8a113c499a5c3837b9495b4369e6`
+- Subject: `Fix manual basket sizing review issues`
+- The final Fix Round 1 commit hash is returned in the task response because a commit cannot contain its own hash.
+
+### Concerns And Boundaries
+
+- Margin identity checks validate the complete host-owned snapshot and its internal conversion/account arithmetic. Capital.com remains authoritative at the existing margin snapshot loader boundary.
+- Unrepresentable rational results fail closed; the solver never approximates, rounds, or falls back to floating point.
+- Validation was automated only. No credentials were read and no order was placed.

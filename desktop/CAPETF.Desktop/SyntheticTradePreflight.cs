@@ -118,9 +118,15 @@ public static class SyntheticTradePreflight
         }
 
         var margin = side is null ? null : MarginForSide(input.Margin, side);
+        var manualMarginIsConsistent = !isManual ||
+            (executable is not null && IsValidManualMarginSnapshot(input.Margin, input.Basket, input.RequestedNotional));
         if (margin is null || !margin.IsAvailable || margin.TotalMargin is null || input.Margin?.IsAccountStale == true)
         {
             globalFailures.Add(Failure("Margin preview is unavailable."));
+        }
+        else if (!manualMarginIsConsistent)
+        {
+            globalFailures.Add(Failure("Margin preview is inconsistent."));
         }
         else
         {
@@ -182,6 +188,123 @@ public static class SyntheticTradePreflight
 
         return new SyntheticPreflightResult(true, ticket, Array.Empty<SyntheticPreflightFailure>());
     }
+
+    private static bool IsValidManualMarginSnapshot(
+        SyntheticMarginSummary? summary,
+        SyntheticBasket basket,
+        decimal basketQuantity)
+    {
+        if (summary is null ||
+            summary.Buy is null ||
+            summary.Sell is null ||
+            summary.IsAccountStale ||
+            !string.IsNullOrWhiteSpace(summary.AccountError) ||
+            string.IsNullOrWhiteSpace(summary.AccountCurrency))
+        {
+            return false;
+        }
+
+        try
+        {
+            var buy = SyntheticOrderSizing.BuildExecutableOrderPreview(basket, "BUY", basketQuantity);
+            var sell = SyntheticOrderSizing.BuildExecutableOrderPreview(basket, "SELL", basketQuantity);
+            if (!IsValidManualMarginSide(summary.Buy, buy, basket, summary.AccountCurrency) ||
+                !IsValidManualMarginSide(summary.Sell, sell, basket, summary.AccountCurrency) ||
+                !SameCurrency(summary.Buy.NativeCurrency, summary.Sell.NativeCurrency) ||
+                summary.Buy.ConversionRate != summary.Sell.ConversionRate)
+            {
+                return false;
+            }
+
+            return summary.Buy.TotalMargin is decimal buyMargin &&
+                   summary.Sell.TotalMargin is decimal sellMargin &&
+                   summary.AfterBuy == summary.Available - buyMargin &&
+                   summary.AfterSell == summary.Available - sellMargin;
+        }
+        catch (ArithmeticException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsValidManualMarginSide(
+        SyntheticMarginSidePreview margin,
+        ExecutableOrderPreview executable,
+        SyntheticBasket basket,
+        string accountCurrency)
+    {
+        if (margin is null ||
+            margin.Legs is null ||
+            !margin.IsAvailable ||
+            !string.IsNullOrWhiteSpace(margin.UnavailableReason) ||
+            margin.TotalMargin is not decimal totalMargin ||
+            margin.ConversionRate is not > 0m ||
+            totalMargin < 0m ||
+            !string.Equals(margin.Side, executable.Side, StringComparison.OrdinalIgnoreCase) ||
+            !SameCurrency(margin.AccountCurrency, accountCurrency) ||
+            margin.Legs.Count != executable.Legs.Count)
+        {
+            return false;
+        }
+
+        var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var leg in margin.Legs)
+        {
+            if (leg is null || string.IsNullOrWhiteSpace(leg.Epic) || string.IsNullOrWhiteSpace(leg.Side)) return false;
+            if (!identities.Add($"{leg.Epic.Trim()}|{leg.Side.Trim()}")) return false;
+        }
+
+        decimal marginSum = 0m;
+        foreach (var executableLeg in executable.Legs)
+        {
+            var matches = margin.Legs.Where(candidate =>
+                string.Equals(candidate.Epic, executableLeg.Epic, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(candidate.Side, executableLeg.Side, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (matches.Length != 1) return false;
+
+            var marginLeg = matches[0];
+            var component = basket.Components.Single(component =>
+                string.Equals(component.Instrument.Epic, executableLeg.Epic, StringComparison.OrdinalIgnoreCase));
+            if (component.Instrument.MarginFactor is not > 0m ||
+                !string.Equals(component.Instrument.MarginFactorUnit, "PERCENTAGE", StringComparison.OrdinalIgnoreCase) ||
+                !SameCurrency(margin.NativeCurrency, component.Instrument.Currency) ||
+                !SameCurrency(marginLeg.NativeCurrency, component.Instrument.Currency) ||
+                !SameCurrency(marginLeg.AccountCurrency, accountCurrency) ||
+                marginLeg.ReferencePrice != executableLeg.ReferencePrice ||
+                marginLeg.Quantity != executableLeg.Quantity ||
+                marginLeg.NativeNotional != executableLeg.Notional)
+            {
+                return false;
+            }
+
+            var expectedNativeMargin = executableLeg.Notional * component.Instrument.MarginFactor.Value / 100m;
+            if (marginLeg.NativeMargin != expectedNativeMargin ||
+                marginLeg.NativeMargin <= 0m ||
+                marginLeg.MarginAccountCurrency <= 0m ||
+                marginLeg.MarginAccountCurrency != marginLeg.NativeMargin * margin.ConversionRate.Value)
+            {
+                return false;
+            }
+
+            if (SameCurrency(marginLeg.NativeCurrency, accountCurrency))
+            {
+                if (margin.ConversionRate != 1m) return false;
+            }
+
+            marginSum = checked(marginSum + marginLeg.MarginAccountCurrency);
+        }
+
+        return totalMargin == marginSum;
+    }
+
+    private static bool SameCurrency(string left, string right) =>
+        !string.IsNullOrWhiteSpace(left) &&
+        !string.IsNullOrWhiteSpace(right) &&
+        string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
 
     private static SyntheticPreflightFailure Failure(string reason) => new("", reason);
 
