@@ -11,35 +11,38 @@ internal static class SessionAwareHourlyAggregation
             .Select(group => group.Last())
             .OrderBy(point => point.Time.ToUniversalTime())
             .ToList();
-        var result = new List<OhlcPoint>();
-        var run = new List<OhlcPoint>();
-        foreach (var point in ordered)
-        {
-            if (run.Count > 0 && point.Time.ToUniversalTime() - run[^1].Time.ToUniversalTime() != TimeSpan.FromHours(1))
-            {
-                AddCompleteBuckets(run, bucketSize, result);
-                run.Clear();
-            }
-            run.Add(point);
-        }
-        AddCompleteBuckets(run, bucketSize, result);
-        return result;
+        return ordered
+            .GroupBy(point => BucketNumber(point.Time, bucketSize))
+            .OrderBy(group => group.Key)
+            .Select(group => CompleteBucket(group.OrderBy(point => point.Time.ToUniversalTime()).ToList(), bucketSize))
+            .Where(point => point is not null)
+            .Select(point => point!)
+            .ToList();
     }
 
-    private static void AddCompleteBuckets(
-        IReadOnlyList<OhlcPoint> run,
-        int bucketSize,
-        ICollection<OhlcPoint> destination)
+    private static long BucketNumber(DateTimeOffset time, int bucketSize)
     {
-        for (var start = 0; start + bucketSize <= run.Count; start += bucketSize)
+        var utcTicks = time.ToUniversalTime().Ticks - DateTimeOffset.UnixEpoch.Ticks;
+        var hourNumber = Math.DivRem(utcTicks, TimeSpan.TicksPerHour, out _);
+        return Math.DivRem(hourNumber, bucketSize, out _);
+    }
+
+    private static OhlcPoint? CompleteBucket(IReadOnlyList<OhlcPoint> candles, int bucketSize)
+    {
+        if (candles.Count != bucketSize) return null;
+        for (var index = 1; index < candles.Count; index++)
         {
-            var candles = run.Skip(start).Take(bucketSize).ToList();
-            destination.Add(new OhlcPoint(
-                candles[^1].Time,
-                candles[0].Open,
-                candles.Max(point => point.High),
-                candles.Min(point => point.Low),
-                candles[^1].Close));
+            if (candles[index].Time.ToUniversalTime() - candles[index - 1].Time.ToUniversalTime() != TimeSpan.FromHours(1))
+            {
+                return null;
+            }
         }
+
+        return new OhlcPoint(
+            candles[^1].Time,
+            candles[0].Open,
+            candles.Max(point => point.High),
+            candles.Min(point => point.Low),
+            candles[^1].Close);
     }
 }

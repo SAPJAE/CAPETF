@@ -81,6 +81,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticHistoryServiceClassifiesCancellationAuthServerAndUnavailableFailures();
         SyntheticHistoryServiceAggregatesHourlyCandlesLocally();
         SyntheticHistoryServiceAggregatesTradingSessionsAndRejectsGaps();
+        IntradayAggregationUsesStableUtcBoundariesAcrossLegs();
         CachedIntradayLoadersAggregateOnlyConsecutiveHourlyRuns();
         LegacyWeeklyCacheNormalizesAllObservationsAndBuildsSelectedBasket();
         BundledPalantirWeeklyCacheHasDistinctMultiYearKeys();
@@ -874,8 +875,7 @@ public static class SyntheticBasketBuilderTests
     {
         var nonMidnightStart = DateTimeOffset.Parse("2026-07-20T09:30:00+02:00");
         var nonMidnight = SyntheticHistoryService.Transform(HourlyCandles(nonMidnightStart, 6), "6H");
-        AssertEqual(1, nonMidnight.Count, "a six-hour trading session must aggregate from its actual first bar");
-        AssertEqual(nonMidnightStart.AddHours(5), nonMidnight[0].Time, "session aggregate must retain the final source timestamp");
+        AssertEqual(0, nonMidnight.Count, "an incomplete UTC-aligned six-hour bucket must not shift to a symbol's first bar");
 
         var dstRows = new[]
         {
@@ -886,20 +886,44 @@ public static class SyntheticBasketBuilderTests
             DateTimeOffset.Parse("2026-03-08T05:00:00-04:00"),
             DateTimeOffset.Parse("2026-03-08T06:00:00-04:00"),
         }.Select((time, index) => FlatCandle(time, 100m + index)).ToList();
-        var dst = SyntheticHistoryService.Transform(dstRows, "6H");
-        AssertEqual(1, dst.Count, "DST clock changes must not break consecutive hourly trading bars");
-        AssertEqual(dstRows[^1].Time, dst[0].Time, "DST aggregate must retain the final source offset and timestamp");
+        var dst = SyntheticHistoryService.Transform(dstRows, "2H");
+        AssertEqual(2, dst.Count, "DST clock changes must not break fixed UTC two-hour buckets");
+        AssertEqual(dstRows[2].Time, dst[0].Time, "DST aggregate must retain the final source offset and timestamp");
 
         var gapStart = DateTimeOffset.Parse("2026-07-20T09:00:00Z");
         var gapRows = new[] { 0, 1, 3, 4, 5, 6 }
             .Select(offset => FlatCandle(gapStart.AddHours(offset), 100m + offset))
             .ToList();
         var afterGap = SyntheticHistoryService.Transform(gapRows, "2H");
-        AssertEqual(3, afterGap.Count, "complete consecutive groups on either side of a gap must remain available");
+        AssertEqual(2, afterGap.Count, "complete UTC-aligned groups on either side of a gap must remain available");
         if (afterGap.Any(candle => candle.Time == gapStart.AddHours(3)))
         {
             throw new Exception("a 2H candle must not bridge the missing hourly bar");
         }
+    }
+
+    private static void IntradayAggregationUsesStableUtcBoundariesAcrossLegs()
+    {
+        var start = DateTimeOffset.Parse("2026-07-20T00:00:00Z");
+        var eth = HourlyCandles(start, 12);
+        var btc = HourlyCandles(start.AddHours(1), 11);
+
+        var ethTwoHour = SyntheticHistoryService.Transform(eth, "2H");
+        var btcTwoHour = SyntheticHistoryService.Transform(btc, "2H");
+        AssertSequence(
+            ethTwoHour.Select(candle => candle.Time),
+            start.AddHours(1), start.AddHours(3), start.AddHours(5),
+            start.AddHours(7), start.AddHours(9), start.AddHours(11));
+        AssertSequence(
+            btcTwoHour.Select(candle => candle.Time),
+            start.AddHours(3), start.AddHours(5), start.AddHours(7),
+            start.AddHours(9), start.AddHours(11));
+
+        var withGap = eth.Where(candle => candle.Time != start.AddHours(7)).ToList();
+        var sixHour = SyntheticHistoryService.Transform(withGap, "6H");
+        AssertSequence(
+            sixHour.Select(candle => candle.Time),
+            start.AddHours(5));
     }
 
     private static void CachedIntradayLoadersAggregateOnlyConsecutiveHourlyRuns()
@@ -927,17 +951,18 @@ public static class SyntheticBasketBuilderTests
         var stock = DashboardStockChunkLoader.BuildSyntheticCandlesByResolution(document.RootElement);
         var etf = DashboardEtfDataLoader.BuildCandlesByResolution(document.RootElement);
         var serviceRows = times.Select((time, index) => FlatCandle(time, 100m + index)).ToList();
-        var expected = new Dictionary<string, IReadOnlyList<DateTimeOffset>>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["2H"] = [firstSession[1], firstSession[3], firstSession[5], secondSession[1], secondSession[3], secondSession[5], gapSession[1], gapSession[3], gapSession[5]],
-            ["4H"] = [firstSession[3], secondSession[3], gapSession[5]],
-            ["6H"] = [firstSession[5], secondSession[5]],
-        };
+        var expected = new[] { "2H", "4H", "6H" }.ToDictionary(
+            interval => interval,
+            interval => (IReadOnlyList<DateTimeOffset>)SyntheticHistoryService.Transform(serviceRows, interval)
+                .Select(row => row.Time)
+                .ToList(),
+            StringComparer.OrdinalIgnoreCase);
 
         foreach (var interval in new[] { "2H", "4H", "6H" })
         {
-            AssertCandleTimes(expected[interval], stock[interval], $"stock cached {interval}");
-            AssertCandleTimes(expected[interval], etf[interval], $"ETF cached {interval}");
+            var expectedCached = expected[interval].Count >= 2 ? expected[interval] : [];
+            AssertCandleTimes(expectedCached, stock.GetValueOrDefault(interval) ?? [], $"stock cached {interval}");
+            AssertCandleTimes(expectedCached, etf.GetValueOrDefault(interval) ?? [], $"ETF cached {interval}");
             AssertCandleTimes(expected[interval], SyntheticHistoryService.Transform(serviceRows, interval), $"service {interval}");
         }
 
@@ -949,14 +974,14 @@ public static class SyntheticBasketBuilderTests
         };
         var cached = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
         {
-            ["SELECTED-A"] = stock["4H"],
-            ["SELECTED-B"] = etf["4H"],
-            ["SELECTED-C"] = stock["4H"],
+            ["SELECTED-A"] = stock["2H"],
+            ["SELECTED-B"] = etf["2H"],
+            ["SELECTED-C"] = stock["2H"],
         };
-        var apiOverride = FlatCandle(expected["4H"][0], 999m);
+        var apiOverride = FlatCandle(expected["2H"][0], 999m);
         var merged = SyntheticHistoryService.MergeSelectedHistory(
             selected,
-            "4H",
+            "2H",
             new HistoryLoadResult(
                 new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
                 {
@@ -967,7 +992,7 @@ public static class SyntheticBasketBuilderTests
                 0),
             cached);
 
-        AssertEqual(3, merged.SharedCount, "partial intraday API history must retain only valid cached shared buckets");
+        AssertEqual(expected["2H"].Count, merged.SharedCount, "partial intraday API history must retain only valid cached shared buckets");
         AssertNear(999m, merged.CandlesByEpic["SELECTED-A"].Single(row => row.Time == apiOverride.Time).Close,
             "partial API history must win without replacing valid cached 4H coverage");
         if (merged.CandlesByEpic.Values.SelectMany(rows => rows).Any(row => row.Time == gapSession[2]))
