@@ -131,11 +131,33 @@ public sealed class SyntheticExecutionStore
                 stream.Flush(flushToDisk: true);
             }
 
-            File.Move(temporaryPath, _path, overwrite: true);
+            await ReplaceWithRetryAsync(temporaryPath, cancellationToken);
         }
         finally
         {
             if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+    }
+
+    private async Task ReplaceWithRetryAsync(string temporaryPath, CancellationToken cancellationToken)
+    {
+        const int maximumAttempts = 8;
+        for (var attempt = 1; ; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                File.Move(temporaryPath, _path, overwrite: true);
+                return;
+            }
+            catch (IOException) when (attempt < maximumAttempts)
+            {
+            }
+            catch (UnauthorizedAccessException) when (attempt < maximumAttempts)
+            {
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(25 * attempt), cancellationToken);
         }
     }
 

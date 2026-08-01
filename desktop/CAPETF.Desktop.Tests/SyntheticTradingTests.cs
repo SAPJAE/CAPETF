@@ -103,6 +103,7 @@ public static class SyntheticTradingTests
         ExecutionStoreRoundTripsVersionedRecordsAndDealIdentity();
         ExecutionStoreUpsertsAtomicallyWithoutCredentials();
         ExecutionStoreCoordinatesConcurrentInstancesWithoutLosingDealIdentity();
+        ExecutionStoreRetriesTransientAtomicReplaceLock();
         ExecutionStoreQuarantinesMalformedFiles();
         ExecutionStoreQuarantinesStructurallyInvalidExecutions();
         ExecutionStoreQuarantinesInvalidLegs();
@@ -2442,6 +2443,35 @@ public static class SyntheticTradingTests
         AssertTrue(restored.Any(record => record.ExecutionId == "execution-first" && record.Legs[0].DealId == "deal-first"), "concurrent first upsert must retain deal identity");
         AssertTrue(restored.Any(record => record.ExecutionId == "execution-second" && record.Legs[0].DealId == "deal-second"), "concurrent second upsert must retain deal identity");
         AssertEqual(0, Directory.GetFiles(directory.Path, "executions.json.tmp*").Length, "concurrent persistence must clean temporary files");
+    }
+
+    private static void ExecutionStoreRetriesTransientAtomicReplaceLock()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "executions.json");
+        var store = new SyntheticExecutionStore(path);
+        var original = CreatePersistedExecutionRecord();
+        var revised = original with
+        {
+            UpdatedUtc = original.UpdatedUtc.AddMinutes(1),
+            Legs = [original.Legs[0] with { Message = "Persisted after a transient destination lock." }],
+        };
+        store.SaveAsync([original], default).GetAwaiter().GetResult();
+
+        using var lockedDestination = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var release = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            lockedDestination.Dispose();
+        });
+
+        store.UpsertAsync(revised, default).GetAwaiter().GetResult();
+        release.GetAwaiter().GetResult();
+        var restored = AssertSingle(store.LoadAsync(default).GetAwaiter().GetResult(), "transient atomic replace lock must recover");
+
+        AssertEqual(revised.UpdatedUtc, restored.UpdatedUtc, "retry must persist the latest execution state");
+        AssertEqual(revised.Legs[0].Message, restored.Legs[0].Message, "retry must not lose execution audit details");
+        AssertEqual(0, Directory.GetFiles(directory.Path, "executions.json.tmp*").Length, "successful retry must clean temporary files");
     }
 
     private static void ExecutionStoreQuarantinesStructurallyInvalidExecutions()
