@@ -489,6 +489,7 @@ public static class SyntheticTradingTests
             "Entry",
             "Stop loss",
             "Take profit",
+            "crosshairMarkerVisible: false",
             "<summary>Audit</summary>",
             "overflow-y: auto",
             "position: sticky",
@@ -796,9 +797,10 @@ public static class SyntheticTradingTests
             assert.match(tableText(), /AAPL.*SELL.*1.*LIMIT.*130\.0000.*140\.0000.*110\.0000.*ORDER-AAPL/);
 
             element('trade-tab-baskets').click();
-            assert.match(tableText(), /Basket.*Side.*Legs.*Synthetic entry.*Bid.*Ask.*PLAN SL.*PLAN TP.*Margin.*P\/L.*State/);
+            assert.match(tableText(), /Basket.*Side.*Legs.*Synthetic entry.*Bid.*Ask.*PLAN SL.*PLAN TP.*Margin.*P\/L.*State.*Close/);
             assert.match(tableText(), /basket-1.*BUY.*3.*n\/a.*n\/a.*n\/a.*220\.0000.*260\.0000.*USDd 72\.50.*n\/a.*Needs attention/);
             assert.doesNotMatch(tableText(), /basket-closed/);
+            assert.equal(element('close-synthetic-host-execution-1').getAttribute('aria-label'), 'Close basket-1');
 
             const livePnlExecution = {
               ExecutionId: 'live-pnl-execution', BasketId: 'live-pnl-basket', Side: 'BUY', EstimatedMargin: 25, MarginCurrency: 'USDd', State: 'Open',
@@ -1089,7 +1091,8 @@ public static class SyntheticTradingTests
             assert.equal(JSON.parse(storedValues.get('capetf.tradeDock.v1')).height, 180);
 
             messages.length = 0;
-            element('close-host-execution-1').click();
+            element('trade-tab-baskets').click();
+            element('close-synthetic-host-execution-1').click();
             assert.equal(messages.length, 0, 'first close click must not send a mutation');
             assert.equal(element('close-confirmation').open, true);
             assert.equal(element('close-confirmation-legs').children.length, 1);
