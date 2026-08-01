@@ -40,3 +40,38 @@ The controller must perform and record the following in a locally authorized CAP
 - After confirmed submission only, poll confirmations and positions; verify both legs correlate to one synthetic execution, running P/L, and chart entry/SL/TP plan overlays. Do not close positions automatically.
 
 No live validation result, account information, API secret, token, order, position, price, margin value, or screenshot is asserted in this document.
+
+## Live Validation Round 1: Crypto Metadata Blocker and Fix
+
+### Controller-Observed Blocker
+
+The controller connected to Capital.com demo and reported that Crypto loaded 287 instruments, but BlockBox contained only `Crypto / Currency / All`. Summary market rows had blank quote currency, so `Crypto / USD / All` could not be selected and the ETH/BTC manual preset could not be reliably resolved. This task did not reconnect or otherwise interact with Capital.com.
+
+### Root Cause and Contract Evidence
+
+- `CapitalApiClient.ExtractMarkets` already accepts `currency` or `currencyCode` when the all-markets response provides it.
+- `LoadUniverseFromApiAsync` previously grouped Crypto summaries immediately, without requesting detail metadata. `TerminalCryptoUniverseGrouping` consequently placed blank currencies in `Crypto / Currency / All`.
+- Capital.com's public API reference documents `GET /markets` as the all-markets/search response and `GET /markets/{epic}` as the single-market response. The single-market response supplies `instrument.currency`, `marginFactor`, and `dealingRules`, while the documented all-markets sample does not guarantee a currency field. No local Postman collection was found in this repository.
+
+### Implemented Fix
+
+- Added `CryptoMarketMetadataEnricher`: only Crypto summaries with blank quote currency are enriched through the existing authenticated detail client, with a maximum of four concurrent requests.
+- Successful details are cached by epic for the current application session; the cache is recreated after each login. Duplicate epics share a request.
+- Detail currency, status, lot/dealing rules, and margin metadata are merged into the summary. Summary quote values remain preferred when present.
+- Per-market detail failures leave the summary unresolved and do not abort loading. Cancellation propagates. The existing Crypto eligibility filter is reapplied after detail merge, so detail-provided `CLOSE_ONLY`/other non-openable states remain excluded.
+- Progress reports `Loading Crypto market details` while enrichment is active. Enriched rows normalize into `Crypto / USD / All`, where the manual `9 ETHUSD + 0.2 BTCUSD` preset resolves actual `ETH/USD` and `BTC/USD` fixtures.
+
+### Strict TDD Evidence
+
+| Stage | Command | Result |
+| --- | --- | --- |
+| RED | `dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- crypto-universe` | Expected FAIL before production code: `crypto metadata enricher must exist`. Exit code 1. |
+| Focused GREEN | `dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- crypto-universe` | PASS. `CryptoUniverse tests passed`. Exit code 0. |
+| Full suite | `dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj` | PASS. `SyntheticTrading tests passed`; `SyntheticBasketBuilder tests passed`. Exit code 0. |
+| Release build | `dotnet build desktop/CAPETF.Desktop/CAPETF.Desktop.csproj -c Release` | PASS. Exit code 0; 0 warnings; 0 errors. |
+
+Focused fixtures cover blank summary USD/EUR currency recovery, exact ETH/BTC preset resolution, duplicate/request-cache behavior, individual failure tolerance, cancellation, progress, bounded concurrency, and post-detail non-openable filtering.
+
+### Publishing State
+
+The existing publish folder has not been modified in this round. Publishing is pending controller confirmation that every CAPETF.exe instance from the target publish directory has been closed.

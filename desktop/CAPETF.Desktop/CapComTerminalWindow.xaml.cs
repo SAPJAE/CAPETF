@@ -34,6 +34,7 @@ public partial class CapComTerminalWindow : Window
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> _candlesByUniverse = [];
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>> _candlesByUniverseByResolution = [];
     private readonly EtfCatalogCache _etfCatalog = new();
+    private CryptoMarketMetadataEnricher _cryptoMetadataEnricher;
     private IReadOnlySet<string> _knownEtfEpics = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> _cachedCandlesByEpic =
         new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
@@ -68,6 +69,7 @@ public partial class CapComTerminalWindow : Window
         _history = new SyntheticHistoryService(_api);
         _marginPreview = new SyntheticMarginPreviewService(new CapitalApiSyntheticMarginDataSource(_api));
         _preflightMarketSnapshots = new SyntheticPreflightMarketSnapshotLoader(_api.GetMarketDetailsAsync);
+        _cryptoMetadataEnricher = new CryptoMarketMetadataEnricher(_api.GetMarketDetailsAsync);
         _tradingCoordinator = SyntheticTradingComposition.CreateCoordinator(
             new CapitalTradingGateway(_api),
             SyntheticTradingComposition.DefaultExecutionStorePath(),
@@ -106,6 +108,7 @@ public partial class CapComTerminalWindow : Window
         {
             ConnectionText.Text = $"connecting to {SavedCredentialLabel(saved)}...";
             await _api.LoginAsync(saved, cancellationToken);
+            _cryptoMetadataEnricher = new CryptoMarketMetadataEnricher(_api.GetMarketDetailsAsync);
             await ResetMarginPreviewAfterLoginAsync();
             await PublishTerminalTradingModeAsync();
             await _tradingCoordinator.ReconnectAsync(PublishTerminalExecutionsAsync, cancellationToken);
@@ -554,6 +557,20 @@ public partial class CapComTerminalWindow : Window
         var markets = await _api.SearchMarketsAsync(TerminalUniverseLoadPolicy.ApiSearchTerm(universe, SeedText()), cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         var normalized = TerminalUniverseLoadPolicy.NormalizeApiFallback(universe, markets, _knownEtfEpics);
+        if (universe == TerminalUniverseKind.Crypto)
+        {
+            var detailCount = normalized.Count(CryptoMarketMetadataEnricher.NeedsEnrichment);
+            if (detailCount > 0)
+            {
+                _operationState.BeginStage("Loading Crypto market details", detailCount);
+                normalized = (await _cryptoMetadataEnricher.EnrichAsync(
+                    normalized,
+                    (completed, total) => _ = Dispatcher.InvokeAsync(() =>
+                        _operationState.Report("Loading Crypto market details", completed, total)),
+                    cancellationToken)).ToList();
+                normalized = TerminalUniverseLoadPolicy.NormalizeApiFallback(universe, normalized, _knownEtfEpics);
+            }
+        }
         ApplyUniverse(universe, normalized, EmptyCandles(), EmptyCandlesByResolution());
         StatusText.Text = $"{_instruments.Count} {UniverseLabel(universe).ToLowerInvariant()} loaded from Capital.com API.";
     }

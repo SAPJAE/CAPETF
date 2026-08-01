@@ -32,6 +32,10 @@ public static class SyntheticBasketBuilderTests
     {
         CryptoUniverseRecognizesOpenEligibleInstrumentsAndDeduplicatesEpics();
         CapitalApiClientUsesAllMarketsForEmptySearchAndParsesCryptoRows();
+        CryptoMetadataEnrichmentBuildsAuthoritativeCurrencyGroupsAndResolvesThePreset();
+        CryptoMetadataEnrichmentDeduplicatesRequestsAndCachesSuccessfulDetails();
+        CryptoMetadataEnrichmentToleratesFailuresAndReappliesOpenableFiltering();
+        CryptoMetadataEnrichmentHonorsCancellationReportsProgressAndBoundsConcurrency();
         CapComTerminalExposesGroupedCryptoUniverse();
         TerminalUniverseUiCoordinatorRestoresKnownEtfExclusionAfterCrypto();
         SavedAndOpenBasketsRestoreTheirUniverseInBothDirections();
@@ -1701,6 +1705,192 @@ public static class SyntheticBasketBuilderTests
         AssertNear(3200.25m, ethereum.Bid ?? 0m, "ETH/USD bid");
         AssertNear(3201.25m, ethereum.Offer ?? 0m, "ETH/USD offer");
     }
+
+    private static void CryptoMetadataEnrichmentBuildsAuthoritativeCurrencyGroupsAndResolvesThePreset()
+    {
+        var summaries = new[]
+        {
+            CryptoMetadataFixture("ETH-USD", "ETH/USD", "Ethereum / US Dollar", ""),
+            CryptoMetadataFixture("BTC-USD", "BTC/USD", "Bitcoin / US Dollar", ""),
+            CryptoMetadataFixture("BTC-EUR", "BTC/EUR", "Bitcoin / Euro", ""),
+        };
+        var details = new Dictionary<string, MarketInstrument>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ETH-USD"] = CryptoMetadataFixture("ETH-USD", "ETH/USD", "Ethereum / US Dollar", "USD", minDealSize: 0.01m),
+            ["BTC-USD"] = CryptoMetadataFixture("BTC-USD", "BTC/USD", "Bitcoin / US Dollar", "USD", minDealSize: 0.001m),
+            ["BTC-EUR"] = CryptoMetadataFixture("BTC-EUR", "BTC/EUR", "Bitcoin / Euro", "EUR", minDealSize: 0.001m),
+        };
+
+        var enriched = EnrichCryptoMetadata(
+            summaries,
+            (epic, _) => Task.FromResult<MarketInstrument?>(details[epic]));
+
+        AssertSequence(enriched.Select(item => item.Currency), "USD", "USD", "EUR");
+        var grouped = TerminalCryptoUniverseGrouping.Normalize(enriched);
+        AssertSequence(
+            grouped.Select(item => item.Group),
+            "Crypto / USD / All",
+            "Crypto / USD / All",
+            "Crypto / EUR / All");
+        var resolved = ManualSyntheticBasketFactory.Resolve(
+            "Crypto / USD / All",
+            ManualSyntheticFormula.Parse(ManualSyntheticFormula.CryptoPreset),
+            grouped);
+        AssertSequence(resolved.Select(item => item.Epic), "ETH-USD", "BTC-USD");
+        AssertNear(0.01m, resolved[0].MinDealSize ?? 0m, "ETH/USD details must provide the authoritative minimum deal size");
+        AssertNear(0.001m, resolved[1].MinDealSize ?? 0m, "BTC/USD details must provide the authoritative minimum deal size");
+    }
+
+    private static void CryptoMetadataEnrichmentDeduplicatesRequestsAndCachesSuccessfulDetails()
+    {
+        var requests = 0;
+        Task<MarketInstrument?> Load(string epic, CancellationToken _)
+        {
+            requests++;
+            return Task.FromResult<MarketInstrument?>(CryptoMetadataFixture(epic, "ETH/USD", "Ethereum / US Dollar", "USD"));
+        }
+
+        var enricher = CreateCryptoMetadataEnricher(Load, maximumConcurrency: 2);
+        var duplicateRows = new[]
+        {
+            CryptoMetadataFixture("ETH-USD", "ETH/USD", "Ethereum / US Dollar", ""),
+            CryptoMetadataFixture("eth-usd", "ETH/USD", "Ethereum / US Dollar", ""),
+        };
+
+        var first = EnrichCryptoMetadata(enricher, duplicateRows);
+        var second = EnrichCryptoMetadata(enricher, [CryptoMetadataFixture("ETH-USD", "ETH/USD", "Ethereum / US Dollar", "")]);
+
+        AssertEqual(1, requests, "duplicate crypto summaries and a repeated universe load must share one successful detail request");
+        AssertSequence(first.Select(item => item.Currency), "USD", "USD");
+        AssertEqual("USD", second.Single().Currency, "cached detail metadata must restore the quote currency");
+    }
+
+    private static void CryptoMetadataEnrichmentToleratesFailuresAndReappliesOpenableFiltering()
+    {
+        Task<MarketInstrument?> Load(string epic, CancellationToken _) => epic switch
+        {
+            "CLOSE-ONLY" => Task.FromResult<MarketInstrument?>(CryptoMetadataFixture("CLOSE-ONLY", "CLOSE/USD", "Close only crypto", "USD", status: "CLOSE_ONLY")),
+            "UNAVAILABLE" => Task.FromException<MarketInstrument?>(new HttpRequestException("fixture detail failure")),
+            _ => throw new InvalidOperationException($"Unexpected fixture epic {epic}"),
+        };
+
+        var enriched = EnrichCryptoMetadata(
+            [
+                CryptoMetadataFixture("CLOSE-ONLY", "CLOSE/USD", "Close only crypto", "", status: "TRADEABLE"),
+                CryptoMetadataFixture("UNAVAILABLE", "UNAVAILABLE/USD", "Unavailable crypto", "", status: "TRADEABLE"),
+            ],
+            Load);
+
+        AssertEqual("USD", enriched.Single(item => item.Epic == "CLOSE-ONLY").Currency, "successful detail metadata must be retained before filtering");
+        AssertEqual("CLOSE_ONLY", enriched.Single(item => item.Epic == "CLOSE-ONLY").Status, "detail market status must replace the summary status");
+        AssertEqual("", enriched.Single(item => item.Epic == "UNAVAILABLE").Currency, "a failed detail request must leave its summary safely unresolved");
+        var accepted = TerminalUniverseLoadPolicy.NormalizeApiFallback(
+            TerminalUniverseKind.Crypto,
+            enriched,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        AssertSequence(accepted.Select(item => item.Epic), "UNAVAILABLE");
+    }
+
+    private static void CryptoMetadataEnrichmentHonorsCancellationReportsProgressAndBoundsConcurrency()
+    {
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        var cancellationObserved = false;
+        try
+        {
+            EnrichCryptoMetadata(
+                [CryptoMetadataFixture("CANCELLED", "CANCEL/USD", "Cancelled crypto", "")],
+                (_, _) => Task.FromResult<MarketInstrument?>(CryptoMetadataFixture("CANCELLED", "CANCEL/USD", "Cancelled crypto", "USD")),
+                cancellationToken: cancelled.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            cancellationObserved = true;
+        }
+        AssertTrue(cancellationObserved, "crypto metadata enrichment must propagate a requested cancellation");
+
+        var running = 0;
+        var peak = 0;
+        var progress = new List<(int Completed, int Total)>();
+        async Task<MarketInstrument?> Load(string epic, CancellationToken cancellationToken)
+        {
+            var active = Interlocked.Increment(ref running);
+            lock (progress) peak = Math.Max(peak, active);
+            try
+            {
+                await Task.Delay(20, cancellationToken);
+                return CryptoMetadataFixture(epic, $"{epic}/USD", $"{epic} crypto", "USD");
+            }
+            finally
+            {
+                Interlocked.Decrement(ref running);
+            }
+        }
+
+        var summaries = Enumerable.Range(1, 5)
+            .Select(index => CryptoMetadataFixture($"CRYPTO-{index}", $"CRYPTO{index}/USD", $"Crypto {index}", ""))
+            .ToList();
+        var enriched = EnrichCryptoMetadata(
+            summaries,
+            Load,
+            maximumConcurrency: 2,
+            progress: point =>
+            {
+                lock (progress) progress.Add(point);
+            });
+
+        AssertEqual(5, enriched.Count, "all successful detail rows must remain available");
+        AssertTrue(peak <= 2, "crypto metadata requests must not exceed the configured bounded concurrency");
+        AssertEqual((0, 5), progress.First(), "crypto metadata progress must start before requests complete");
+        AssertEqual((5, 5), progress.Last(), "crypto metadata progress must complete after all details settle");
+    }
+
+    private static CryptoMarketMetadataEnricher CreateCryptoMetadataEnricher(
+        Func<string, CancellationToken, Task<MarketInstrument?>> loadDetails,
+        int maximumConcurrency = 4)
+        => new(loadDetails, maximumConcurrency);
+
+    private static IReadOnlyList<MarketInstrument> EnrichCryptoMetadata(
+        IReadOnlyList<MarketInstrument> summaries,
+        Func<string, CancellationToken, Task<MarketInstrument?>> loadDetails,
+        int maximumConcurrency = 4,
+        Action<(int Completed, int Total)>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        EnrichCryptoMetadata(CreateCryptoMetadataEnricher(loadDetails, maximumConcurrency), summaries, progress, cancellationToken);
+
+    private static IReadOnlyList<MarketInstrument> EnrichCryptoMetadata(
+        CryptoMarketMetadataEnricher enricher,
+        IReadOnlyList<MarketInstrument> summaries,
+        Action<(int Completed, int Total)>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        Action<int, int>? report = progress is null ? null : (completed, total) => progress((completed, total));
+        return enricher.EnrichAsync(summaries, report, cancellationToken).GetAwaiter().GetResult();
+    }
+
+    private static MarketInstrument CryptoMetadataFixture(
+        string epic,
+        string symbol,
+        string name,
+        string currency,
+        string status = "TRADEABLE",
+        decimal? minDealSize = null) =>
+        new()
+        {
+            Epic = epic,
+            Symbol = symbol,
+            Name = name,
+            Type = "CRYPTOCURRENCIES",
+            Currency = currency,
+            Status = status,
+            LotSize = 1m,
+            MinDealSize = minDealSize,
+            MinSizeIncrement = minDealSize,
+            MarginFactor = 50m,
+            MarginFactorUnit = "PERCENTAGE",
+            Bid = 1m,
+            Offer = 2m,
+        };
 
     private static void CapComTerminalExposesGroupedCryptoUniverse()
     {
