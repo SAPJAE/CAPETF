@@ -213,6 +213,10 @@ public sealed partial class CapitalApiClient : IDisposable
             {
                 break;
             }
+            catch (CapitalApiException ex) when (rowsByTime.Count > 0 && ex.IsHistoryUnavailable)
+            {
+                break;
+            }
 
             using (doc)
             {

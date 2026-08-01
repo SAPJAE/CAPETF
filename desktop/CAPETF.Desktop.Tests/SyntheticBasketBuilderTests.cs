@@ -74,6 +74,7 @@ public static class SyntheticBasketBuilderTests
         CapitalPricePathSupportsDatedHistoryWindows();
         CapitalHistoryPagingWindowsMatchCapitalResolutions();
         CapitalHistoryPagingRetainsSuccessfulRowsAtTerminalBoundary();
+        CapitalHistoryPagingRetainsRowsWhenOlderHistoryIsNotFound();
         CapitalHistoryPagingDoesNotSwallowAuthFailure();
         SelectedHistoryUsesOneCapitalPagingAnchorAcrossAllLegs();
         SyntheticHistoryServiceMapsTerminalTimeframesToCapitalResolutions();
@@ -619,6 +620,19 @@ public static class SyntheticBasketBuilderTests
             AssertEqual(DateTimeOffset.Parse("2026-06-01T00:00:00Z"), rows[0].Time, $"{errorCode} older successful history page");
             AssertEqual(DateTimeOffset.Parse("2026-07-01T00:00:00Z"), rows[1].Time, $"{errorCode} newer successful history page");
         }
+    }
+
+    private static void CapitalHistoryPagingRetainsRowsWhenOlderHistoryIsNotFound()
+    {
+        var handler = new HistoryPagingHandler(
+            HttpStatusCode.NotFound,
+            "{\"errorCode\":\"error.prices.not-found\"}");
+        using var client = new CapitalApiClient(handler);
+        client.LoginAsync(TestCredentials()).GetAwaiter().GetResult();
+
+        var rows = client.GetAllAvailableOhlcPricesAsync("TEST", "DAY").GetAwaiter().GetResult();
+
+        AssertEqual(2, rows.Count, "older-history not-found boundary must retain all successful pages");
     }
 
     private static void CapitalHistoryPagingDoesNotSwallowAuthFailure()
