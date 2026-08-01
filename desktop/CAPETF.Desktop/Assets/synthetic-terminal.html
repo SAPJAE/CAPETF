@@ -2037,6 +2037,17 @@
       return matches.length === 1 ? matches[0] : null;
     }
 
+    function selectActiveChartExecution() {
+      const record = activeExecutionRecord();
+      if (!record) return false;
+      selectedDockExecutionId = String(getField(record, 'ExecutionId', 'executionId', ''));
+      tradeDockState.activeTab = 'baskets';
+      tradeDockState.minimized = false;
+      applyTradeDockState();
+      persistTradeDockState();
+      return true;
+    }
+
     function uniqueRiskPlan(executionId) {
       const matches = terminalRiskPlans.filter(plan =>
         String(getField(plan, 'ExecutionId', 'executionId', '')) === executionId);
@@ -3345,6 +3356,7 @@
       if (terminalTickFrame !== null) cancelAnimationFrame(terminalTickFrame);
       terminalTickFrame = null;
       apply(nextPayload, false);
+      if (selectActiveChartExecution()) renderTradeDock();
       scheduleMarginPreview();
       refreshTradingControls();
     };
@@ -3532,6 +3544,7 @@
       renderExecutionProgress(terminalExecutions[0] || null);
       renderPositions(terminalExecutions);
       renderAudit(terminalExecutions);
+      selectActiveChartExecution();
       renderTradeDock();
       renderPriceLines();
       if (terminalExecutions.length && workspace.classList.contains('ticket-hidden')) setRailCollapsed(false);

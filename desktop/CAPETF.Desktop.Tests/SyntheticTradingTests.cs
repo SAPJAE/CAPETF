@@ -850,6 +850,8 @@ public static class SyntheticTradingTests
                 { Epic: 'FFF', Direction: 'BUY', Multiplier: 1, FillLevel: 70, State: 'Open', DealId: 'DEAL-F' }
               ]
             }]);
+            assert.equal(selectedDockExecutionId, 'trade-1', 'an executed chart selects its linked synthetic execution');
+            assert.equal(tradeDockState.activeTab, 'baskets', 'an executed chart exposes synthetic risk controls');
             setTerminalBrokerSnapshot({
               Account: { AccountId: 'DEMO-1', Currency: 'USD' },
               Positions: [
@@ -2138,7 +2140,9 @@ public static class SyntheticTradingTests
             "GetRegisteredTicket(ticketId)",
             "RevalidateExecutionTicketAsync",
             "BeginExecution(ticketId)",
-            "RunStartedOperationAsync");
+            "RunStartedOperationAsync",
+            "PublishBrokerSnapshotAsync(token)",
+            "ActivateExecutedBasketChartAsync(execution.Ticket.TicketId");
         var previewBody = SliceSource(source, "private void PreviewSyntheticOrder", "protected override void OnClosing");
         AssertFalse(previewBody.Contains("CreatePositionAsync", StringComparison.Ordinal), "legacy preview must not create positions");
         AssertFalse(previewBody.Contains("ClosePositionAsync", StringComparison.Ordinal), "legacy preview must not close positions");

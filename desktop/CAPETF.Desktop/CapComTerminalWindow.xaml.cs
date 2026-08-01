@@ -1577,11 +1577,31 @@ public partial class CapComTerminalWindow : Window
                     token);
                 _marginPreview.InvalidateCaches();
                 await PublishBrokerSnapshotAsync(token);
+                await ActivateExecutedBasketChartAsync(execution.Ticket.TicketId, token);
             },
             cancellationToken);
         var finished = FinishSyntheticExecutionAsync(execution, operation);
         trackedOperation.Track(finished);
         await finished;
+    }
+
+    private async Task ActivateExecutedBasketChartAsync(string ticketId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_basket is null || string.IsNullOrWhiteSpace(ticketId)) return;
+        var matches = _terminalExecutions
+            .Where(record => string.Equals(record.TicketId, ticketId, StringComparison.Ordinal))
+            .ToArray();
+        if (matches.Length != 1) return;
+        var execution = matches[0];
+        if (!string.Equals(
+                execution.BasketId,
+                SyntheticTerminalChartPayload.DrawingIdentity(_basket),
+                StringComparison.Ordinal)) return;
+
+        await RenderSyntheticChartAsync(
+            _basket,
+            SyntheticTerminalWorkspace.ExecutionDrawingIdentity(execution.ExecutionId));
     }
 
     private async Task RevalidateExecutionTicketAsync(
