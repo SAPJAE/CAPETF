@@ -37,6 +37,7 @@ public static class SyntheticBasketBuilderTests
         CryptoMetadataEnrichmentDeduplicatesRequestsAndCachesSuccessfulDetails();
         CryptoMetadataEnrichmentToleratesFailuresAndReappliesOpenableFiltering();
         CryptoMetadataEnrichmentHonorsCancellationReportsProgressAndBoundsConcurrency();
+        CryptoGroupingDerivesExplicitQuoteCurrencyWhenCapitalOmitsCurrency();
         CapComTerminalExposesGroupedCryptoUniverse();
         TerminalUniverseUiCoordinatorRestoresKnownEtfExclusionAfterCrypto();
         SavedAndOpenBasketsRestoreTheirUniverseInBothDirections();
@@ -1909,6 +1910,41 @@ public static class SyntheticBasketBuilderTests
             Bid = 1m,
             Offer = 2m,
         };
+
+    private static void CryptoGroupingDerivesExplicitQuoteCurrencyWhenCapitalOmitsCurrency()
+    {
+        var normalized = TerminalCryptoUniverseGrouping.Normalize(
+        [
+            new MarketInstrument
+            {
+                Epic = "ETHUSD",
+                Name = "Ethereum/USD",
+                Symbol = "",
+                Type = "CRYPTOCURRENCIES",
+                Currency = "",
+            },
+            new MarketInstrument
+            {
+                Epic = "BTCUSD",
+                Name = "Bitcoin/USD",
+                Symbol = "",
+                Type = "CRYPTOCURRENCIES",
+                Currency = "",
+            },
+            new MarketInstrument
+            {
+                Epic = "UNKNOWN",
+                Name = "Unlabelled coin",
+                Symbol = "",
+                Type = "CRYPTOCURRENCIES",
+                Currency = "",
+            },
+        ]);
+
+        AssertEqual("Crypto / USD / All", normalized[0].Group, "explicit Ethereum/USD label must derive USD quote currency");
+        AssertEqual("Crypto / USD / All", normalized[1].Group, "explicit Bitcoin/USD label must derive USD quote currency");
+        AssertEqual("Crypto / Currency / All", normalized[2].Group, "unlabelled Crypto must retain the missing-currency fallback");
+    }
 
     private static void CapComTerminalExposesGroupedCryptoUniverse()
     {

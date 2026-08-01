@@ -81,7 +81,7 @@ public static class TerminalCryptoUniverseGrouping
     private static MarketInstrument Normalize(MarketInstrument instrument)
     {
         var currency = string.IsNullOrWhiteSpace(instrument.Currency)
-            ? "Currency"
+            ? ExplicitQuoteCurrency(instrument.Symbol) ?? ExplicitQuoteCurrency(instrument.Name) ?? "Currency"
             : instrument.Currency.Trim().ToUpperInvariant();
         return new MarketInstrument
         {
@@ -112,5 +112,17 @@ public static class TerminalCryptoUniverseGrouping
             LastTickAt = instrument.LastTickAt,
             Status = instrument.Status,
         };
+    }
+
+    private static string? ExplicitQuoteCurrency(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var trimmed = value.Trim();
+        var separator = trimmed.LastIndexOf('/');
+        if (separator < 0 || separator == trimmed.Length - 1) return null;
+        var suffix = trimmed[(separator + 1)..].Trim().ToUpperInvariant();
+        return suffix.Length is >= 3 and <= 5 && suffix.All(character => character is >= 'A' and <= 'Z')
+            ? suffix
+            : null;
     }
 }
