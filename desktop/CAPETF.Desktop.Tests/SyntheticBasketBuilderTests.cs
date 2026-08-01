@@ -16,6 +16,10 @@ public static class SyntheticBasketBuilderTests
         CryptoUniverseRecognizesOpenEligibleInstrumentsAndDeduplicatesEpics();
         CapitalApiClientUsesAllMarketsForEmptySearchAndParsesCryptoRows();
         CapComTerminalExposesGroupedCryptoUniverse();
+        TerminalUniverseUiCoordinatorRestoresKnownEtfExclusionAfterCrypto();
+        TerminalUniverseUiCoordinatorCachesUniversesSeparately();
+        TerminalUniverseUiCoordinatorClearsBeforeAFailedSwitchLoad();
+        TerminalUniverseUiCoordinatorBuildsBlocksAndSeedsForTheActiveUniverse();
     }
 
     public static void RunAll()
@@ -1686,29 +1690,6 @@ public static class SyntheticBasketBuilderTests
             throw new Exception("terminal universe selector must expose Crypto");
         }
 
-        var runner = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop.Tests", "Program.cs"));
-        if (!runner.Contains("\"crypto-universe\" or \"crypto-ui\"", StringComparison.Ordinal))
-        {
-            throw new Exception("terminal crypto UI must have a focused test runner alias");
-        }
-
-        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
-        foreach (var required in new[]
-        {
-            "TerminalUniverseKind.Crypto => \"Crypto\"",
-            "universe == TerminalUniverseKind.Crypto",
-            "universe != TerminalUniverseKind.Crypto",
-            "TerminalCryptoUniverseGrouping.Normalize",
-            "await LoadUniverseFromApiAsync(universe, cancellationToken);",
-            "await ClearTerminalChartAsync();",
-        })
-        {
-            if (!source.Contains(required, StringComparison.Ordinal))
-            {
-                throw new Exception($"terminal crypto universe must preserve its API/cache/chart contract: {required}");
-            }
-        }
-
         var normalize = typeof(SyntheticTerminalWorkspace).Assembly
             .GetType("CAPETF.Desktop.TerminalCryptoUniverseGrouping")?
             .GetMethod("Normalize");
@@ -1726,6 +1707,87 @@ public static class SyntheticBasketBuilderTests
         AssertEqual("Crypto / USD / All", crypto[0].Group, "crypto USD quote group");
         AssertEqual("Crypto / EUR / All", crypto[1].Group, "crypto EUR quote group");
         AssertEqual("Crypto / Currency / All", crypto[2].Group, "crypto missing quote fallback group");
+    }
+
+    private static void TerminalUniverseUiCoordinatorRestoresKnownEtfExclusionAfterCrypto()
+    {
+        var coordinator = new TerminalUniverseUiCoordinator();
+        var catalogLoads = 0;
+        coordinator.EnsureEtfCatalogFor(TerminalUniverseKind.Crypto, () => catalogLoads++);
+        AssertEqual(0, catalogLoads, "crypto selection must not load the ETF catalog");
+        coordinator.EnsureEtfCatalogFor(TerminalUniverseKind.Stocks, () => catalogLoads++);
+        AssertEqual(1, catalogLoads, "switching from crypto to stocks must initialize the ETF catalog");
+
+        var knownEtfs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "KNOWN-ETF" };
+        var candidates = new[]
+        {
+            new MarketInstrument { Epic = "KNOWN-ETF", Type = "SHARES", Status = "CLOSED" },
+            new MarketInstrument { Epic = "ORDINARY-SHARE", Type = "SHARES", Status = "CLOSED" },
+        }.Where(item => TerminalUniverse.Accepts(TerminalUniverseKind.Stocks, item, knownEtfs)).ToList();
+        AssertEqual(1, candidates.Count, "known ETF shares must be excluded after a stock universe switch");
+        AssertEqual("ORDINARY-SHARE", candidates[0].Epic, "ordinary shares must remain stock candidates");
+    }
+
+    private static void TerminalUniverseUiCoordinatorCachesUniversesSeparately()
+    {
+        var coordinator = new TerminalUniverseUiCoordinator();
+        var stocks = new[] { new MarketInstrument { Epic = "STOCK", Type = "SHARES" } };
+        var crypto = new[] { new MarketInstrument { Epic = "CRYPTO.BTCUSD.CFD.IP", Type = "CRYPTOCURRENCIES" } };
+        coordinator.Cache(TerminalUniverseKind.Stocks, stocks);
+        coordinator.Cache(TerminalUniverseKind.Crypto, crypto);
+
+        AssertTrue(coordinator.TryGetCached(TerminalUniverseKind.Stocks, out var cachedStocks), "stock universe must have its own cache entry");
+        AssertEqual("STOCK", cachedStocks[0].Epic, "stock cache contents");
+
+        AssertTrue(coordinator.TryGetCached(TerminalUniverseKind.Crypto, out var cachedCrypto), "crypto universe must have its own cache entry");
+        AssertEqual("CRYPTO.BTCUSD.CFD.IP", cachedCrypto[0].Epic, "crypto cache contents");
+    }
+
+    private static void TerminalUniverseUiCoordinatorClearsBeforeAFailedSwitchLoad()
+    {
+        var coordinator = new TerminalUniverseUiCoordinator();
+        var clears = 0;
+        try
+        {
+            coordinator.SwitchAsync(
+                (Func<Task>)(() =>
+                {
+                    clears++;
+                    return Task.CompletedTask;
+                }),
+                (Func<Task>)(() => Task.FromException(new InvalidOperationException("Capital API unavailable"))))
+                .GetAwaiter().GetResult();
+            throw new Exception("failed universe load must remain observable to the caller");
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "Capital API unavailable")
+        {
+        }
+
+        AssertEqual(1, clears, "switching universes must clear the prior basket and chart before a failed load");
+    }
+
+    private static void TerminalUniverseUiCoordinatorBuildsBlocksAndSeedsForTheActiveUniverse()
+    {
+        var coordinator = new TerminalUniverseUiCoordinator();
+        var stocks = new[]
+        {
+            new MarketInstrument { Epic = "STOCK", Name = "Ordinary Share", Symbol = "STOCK", Type = "SHARES", Region = "US", Currency = "USD", Sector = "All" },
+        };
+        var crypto = new[]
+        {
+            new MarketInstrument { Epic = "BTCUSD", Name = "Bitcoin", Symbol = "BTC", Type = "CRYPTOCURRENCIES", Region = "Crypto", Currency = "USD", Sector = "All" },
+            new MarketInstrument { Epic = "BTCEUR", Name = "Bitcoin EUR", Symbol = "BTCEUR", Type = "CRYPTOCURRENCIES", Region = "Crypto", Currency = "EUR", Sector = "All" },
+        };
+        coordinator.BuildControls(stocks);
+        var controls = coordinator.BuildControls(crypto);
+        var blocks = controls.Blocks;
+        var seeds = controls.SeedOptions;
+
+        AssertEqual("Crypto / EUR / All", blocks[0], "new universe blocks must be rebuilt from the active universe");
+        AssertTrue(seeds.Any(seed => seed.Contains("BTCEUR | Bitcoin EUR | Crypto / EUR / All", StringComparison.Ordinal)),
+            "new universe seed options must include instruments from the selected active block");
+        AssertTrue(seeds.All(seed => !seed.Contains("STOCK", StringComparison.Ordinal)),
+            "new universe seed options must not retain instruments from the prior universe");
     }
 
     private static void EncryptedEtfCacheKeepsOnlyEtfInstruments()

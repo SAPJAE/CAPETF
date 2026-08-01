@@ -28,7 +28,7 @@ public partial class CapComTerminalWindow : Window
     private readonly SemaphoreSlim _brokerRefreshGate = new(1, 1);
     private readonly List<MarketInstrument> _instruments = [];
     private readonly ObservableCollection<TerminalComponentRow> _components = [];
-    private readonly Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>> _instrumentsByUniverse = [];
+    private readonly TerminalUniverseUiCoordinator _universeUi = new();
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> _candlesByUniverse = [];
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>> _candlesByUniverseByResolution = [];
     private readonly EtfCatalogCache _etfCatalog = new();
@@ -113,9 +113,12 @@ public partial class CapComTerminalWindow : Window
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (_instrumentsByUniverse.TryGetValue(universe, out var instruments))
+            _universeUi.EnsureEtfCatalogFor(universe, () => _ = EnsureEtfCatalogLoaded());
+            if (_universeUi.TryGetCached(universe, out var instruments) &&
+                _candlesByUniverse.TryGetValue(universe, out var candles) &&
+                _candlesByUniverseByResolution.TryGetValue(universe, out var candlesByResolution))
             {
-                ApplyUniverse(universe, instruments, _candlesByUniverse[universe], _candlesByUniverseByResolution[universe]);
+                ApplyUniverse(universe, instruments, candles, candlesByResolution);
                 StatusText.Text = $"{_instruments.Count} {UniverseLabel(universe).ToLowerInvariant()} loaded from the selected universe cache.";
                 return;
             }
@@ -872,15 +875,10 @@ public partial class CapComTerminalWindow : Window
 
     private void RebuildBlocks()
     {
-        var blocks = _instruments
-            .GroupBy(item => item.Group)
-            .OrderByDescending(group => group.Count())
-            .Select(group => $"{group.Key}")
-            .ToList();
-
-        BlockBox.ItemsSource = blocks;
-        if (blocks.Count > 0) BlockBox.SelectedIndex = 0;
-        RebuildSeedOptions();
+        var controls = _universeUi.BuildControls(_instruments);
+        BlockBox.ItemsSource = controls.Blocks;
+        BlockBox.SelectedItem = controls.SelectedBlock;
+        ApplySeedOptions(controls.SeedOptions);
     }
 
     private void RefreshSavedBaskets(string? selectedName = null) =>
@@ -913,10 +911,14 @@ public partial class CapComTerminalWindow : Window
 
     private void RebuildSeedOptions()
     {
+        var options = _universeUi.BuildSeedOptions(_instruments, SelectedBlock());
+        ApplySeedOptions(options);
+    }
+
+    private void ApplySeedOptions(IReadOnlyList<string> options)
+    {
         if (SearchBox is null) return;
         var current = SearchBox.Text;
-        var block = SelectedBlock();
-        var options = SeedSearchOptionBuilder.BuildOptions(_instruments, block);
         SearchBox.ItemsSource = options;
         SearchBox.Text = current;
     }
@@ -929,9 +931,9 @@ public partial class CapComTerminalWindow : Window
         var universe = SelectedUniverse();
         await RunOperationAsync($"Loading {UniverseLabel(universe).ToLowerInvariant()} universe", async cancellationToken =>
         {
-            await LoadUniverseAsync(universe, cancellationToken);
-            _basket = null;
-            await ClearTerminalChartAsync();
+            await _universeUi.SwitchAsync(
+                ClearTerminalChartAsync,
+                () => LoadUniverseAsync(universe, cancellationToken));
         });
     }
 
@@ -1027,7 +1029,7 @@ public partial class CapComTerminalWindow : Window
         {
             accepted = TerminalCryptoUniverseGrouping.Normalize(accepted).ToList();
         }
-        _instrumentsByUniverse[universe] = accepted;
+        _universeUi.Cache(universe, accepted);
         _candlesByUniverse[universe] = candles;
         _candlesByUniverseByResolution[universe] = candlesByResolution;
         _instruments.Clear();
