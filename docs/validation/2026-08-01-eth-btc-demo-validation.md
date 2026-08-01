@@ -89,3 +89,45 @@ The controller confirmed the target application was closed. A local process chec
 | Post-publish process check | Target publish directory | PASS. Zero target-directory `CAPETF.exe` processes; the executable was not launched by this task. |
 
 The published build is ready for the controller's live retest of Crypto grouping and the ETH/BTC manual preset. No Capital.com connection, order, or other live-app action was performed by this task.
+
+## Controller Live Validation: Crypto Basket and Preflight
+
+The controller subsequently launched and drove the published Windows application against an authenticated Capital.com demo account. No live account was used. Existing unrelated demo positions were observed but not changed or closed.
+
+### Crypto Discovery and Formula
+
+- Capital.com returned 287 eligible Crypto instruments.
+- `Crypto / USD / All` loaded and resolved the API epics `ETHUSD` and `BTCUSD` from the explicit quote pairs `Ethereum/USD` and `Bitcoin/USD`.
+- Manual formula `9 ETHUSD + 0.2 BTCUSD` built as `SYN-CRYPTO-ETHBTC-01` with two legs.
+- Formula display retained the exact multipliers and showed current notional influence of approximately 57.14% ETH and 42.86% BTC.
+- Capital.com dealing rules reported ETH minimum/step `0.001` and BTC minimum/step `0.0001`.
+- The smallest exact ratio-preserving basket quantity was `0.001`, producing executable leg sizes `0.009 ETHUSD` and `0.0002 BTCUSD`.
+
+### History and Live Market Data
+
+| View | Observed shared range and count | Result |
+| --- | --- | --- |
+| Weekly | 2015-08-06 through 2026-07-27; 574 candles | PASS |
+| Daily | 2020-07 through 2026-08-01; 1,404 candles | PASS |
+| 4H | 2017-05-01 through 2026-08-01; 19,389 candles after full paging | PASS |
+
+Weekly, Daily, and 4H switches preserved the exact formula. The chart retained moving averages, bid/ask lines, drawing controls, interaction, and a live ongoing candle. Synthetic bid and ask remained nonzero and moved with fresh Capital.com WebSocket updates.
+
+### Live Defects Found and Corrected
+
+1. Capital.com market-detail responses for the two crypto epics supplied executable prices and dealing rules but omitted quote timestamps. Preflight originally rejected those undated REST snapshots despite a fresh WebSocket quote. Commit `eb28983` now overlays only a newer same-epic streamed quote onto the current rules snapshot. The five-minute age, future timestamp, positive price, status, margin, and demo gates remain enforced.
+2. The demo account initially reported `hedgingMode: false`. Capital.com documents `PUT /accounts/preferences` for changing that preference. Commit `d1e6b72` added a demo-only preference mutation, confirmed by a contract test; live-account preference mutation remains blocked before transport. The controller's next preflight enabled demo hedging and continued.
+
+### Final Frozen Preflight
+
+The host produced a demo-only frozen BUY ticket with:
+
+- basket quantity `0.00100`
+- `BUY 0.009 ETHUSD`
+- `BUY 0.0002 BTCUSD`
+- estimated margin approximately `USDd 14.70`
+- available demo funds approximately `USDd 20,786.53`
+- explicit acknowledgement that earlier accepted legs remain open if a later leg fails
+- a disabled final execution button until that acknowledgement is selected
+
+The confirmation dialog is open. No order has been submitted at the time of this update; action-time user confirmation is still required before the final demo execution click.
