@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CAPETF.Desktop;
 
@@ -21,6 +22,11 @@ public sealed record SavedSyntheticBasket(
     DateTimeOffset UpdatedAt,
     IReadOnlyList<SavedSyntheticComponent> Components)
 {
+    [JsonIgnore]
+    public string DisplayLabel => Strategy == SyntheticStrategyKind.ManualFormula
+        ? $"{Name} | {ManualSyntheticFormula.Format(Components)}"
+        : Name;
+
     public static SavedSyntheticBasket FromBasket(string name, SyntheticStrategyKind strategy, SyntheticBasket basket)
     {
         var now = DateTimeOffset.UtcNow;

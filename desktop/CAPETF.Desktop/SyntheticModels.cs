@@ -107,19 +107,22 @@ public static class SyntheticQuoteCalculator
 {
     public static void Refresh(SyntheticBasket basket)
     {
-        basket.BidPrice = SumStrict(basket.Components, component => component.Instrument.Bid);
-        basket.AskPrice = SumStrict(basket.Components, component => component.Instrument.Offer);
+        basket.BidPrice = SumStrict(basket.Components, bidSide: true);
+        basket.AskPrice = SumStrict(basket.Components, bidSide: false);
     }
 
     private static decimal? SumStrict(
         IEnumerable<SyntheticComponent> components,
-        Func<SyntheticComponent, decimal?> priceSelector)
+        bool bidSide)
     {
         decimal total = 0m;
         var count = 0;
         foreach (var component in components)
         {
-            var price = priceSelector(component);
+            var useBid = bidSide
+                ? component.FormulaMultiplier >= 0
+                : component.FormulaMultiplier < 0;
+            var price = useBid ? component.Instrument.Bid : component.Instrument.Offer;
             if (price is null || price <= 0) return null;
             total += price.Value * component.FormulaMultiplier;
             count++;

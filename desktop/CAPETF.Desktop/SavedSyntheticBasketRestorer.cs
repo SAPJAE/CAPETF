@@ -15,7 +15,10 @@ public static class SavedSyntheticBasketRestorer
         int minimumCandles)
     {
         var savedEpics = saved.Components.Select(component => component.Epic).ToList();
-        if (savedEpics.Count < 3 ||
+        var validComponentCount = saved.Strategy == SyntheticStrategyKind.ManualFormula
+            ? savedEpics.Count is >= 2 and <= 4
+            : savedEpics.Count >= 3;
+        if (!validComponentCount ||
             savedEpics.Any(string.IsNullOrWhiteSpace) ||
             savedEpics.Distinct(StringComparer.OrdinalIgnoreCase).Count() != savedEpics.Count)
         {
@@ -32,13 +35,15 @@ public static class SavedSyntheticBasketRestorer
         }
 
         var orderedInstruments = savedEpics.Select(epic => availableByEpic[epic][0]).ToList();
-        var basket = SyntheticBasketBuilder.BuildSavedFormula(
-            saved,
-            orderedInstruments,
-            history,
-            timeframe,
-            periodsPerYear,
-            minimumCandles);
+        var basket = saved.Strategy == SyntheticStrategyKind.ManualFormula
+            ? ManualSyntheticBasketFactory.Restore(saved, orderedInstruments, history, timeframe, minimumCandles)
+            : SyntheticBasketBuilder.BuildSavedFormula(
+                saved,
+                orderedInstruments,
+                history,
+                timeframe,
+                periodsPerYear,
+                minimumCandles);
         return basket is null ? null : new SavedSyntheticBasketRestoreResult(basket, saved.Strategy);
     }
 }

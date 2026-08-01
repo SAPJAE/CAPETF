@@ -192,6 +192,11 @@ public partial class CapComTerminalWindow : Window
         var strategy = SelectedStrategy();
         var periodsPerYear = PeriodsPerYear(resolution);
         var minCandles = MinimumCandles(resolution);
+        if (strategy == SyntheticStrategyKind.ManualFormula)
+        {
+            await BuildManualSyntheticAsync(block, resolution, minCandles, cancellationToken);
+            return;
+        }
         var candidates = SyntheticTerminalSelector.HistoryLoadCandidates(block, _instruments.Where(item => TerminalUniverse.Accepts(SelectedUniverse(), item, _knownEtfEpics)).ToList(), limit: 500);
         var activeCachedCandles = CachedCandlesForResolution(resolution);
         var candles = BuildCachedCandles(candidates, activeCachedCandles, resolution, minCandles, candidateLimit: 500, cancellationToken);
@@ -293,6 +298,47 @@ public partial class CapComTerminalWindow : Window
         await TryStartStreamingCurrentBasketAsync(buildStatus, cancellationToken);
     }
 
+    private async Task BuildManualSyntheticAsync(
+        string block,
+        string resolution,
+        int minimumCandles,
+        CancellationToken cancellationToken)
+    {
+        if (SelectedUniverse() != TerminalUniverseKind.Crypto)
+        {
+            throw new InvalidOperationException("Manual formulas require the Crypto universe.");
+        }
+
+        var formula = ManualSyntheticFormula.Parse(ManualFormulaBox.Text);
+        var selectedComponents = ManualSyntheticBasketFactory.Resolve(block, formula, _instruments);
+        StatusText.Text = $"Loading {resolution} history for manual formula...";
+        var selectedHistory = await LoadSelectedHistoryAsync(selectedComponents, resolution, cancellationToken);
+        if (selectedHistory.SharedCount < minimumCandles)
+        {
+            throw new InvalidOperationException(
+                $"The manual formula legs have only {selectedHistory.SharedCount} shared {resolution} candles; {minimumCandles} are required.");
+        }
+
+        _operationState.BeginStage("Building manual formula");
+        var symbol = formula.IsCryptoPreset ? "SYN-CRYPTO-ETHBTC-01" : "SYN-CRYPTO-MANUAL-01";
+        _basket = await Task.Run(() => ManualSyntheticBasketFactory.Create(
+            symbol,
+            block,
+            formula,
+            _instruments,
+            selectedHistory.CandlesByEpic,
+            resolution,
+            minimumCandles), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
+        _operationState.BeginStage("Rendering synthetic chart");
+        await RenderSyntheticChartAsync(_basket);
+        var buildStatus = $"{_basket.Symbol}: {_basket.Components.Count} manual legs, {HistoryRange(selectedHistory)}, direct formula scale.";
+        StatusText.Text = buildStatus;
+        await TryStartStreamingCurrentBasketAsync(buildStatus, cancellationToken);
+    }
+
     private void SaveBasket_Click(object sender, RoutedEventArgs e)
     {
         if (_basket is null)
@@ -378,6 +424,10 @@ public partial class CapComTerminalWindow : Window
 
         _basket = restored.Basket;
         StrategyBox.SelectedValue = restored.Strategy;
+        if (restored.Strategy == SyntheticStrategyKind.ManualFormula)
+        {
+            ManualFormulaBox.Text = ManualSyntheticFormula.Format(saved.Components);
+        }
         await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
         _operationState.BeginStage("Rendering synthetic chart");
         await Task.Yield();
@@ -727,13 +777,21 @@ public partial class CapComTerminalWindow : Window
         var history = await LoadSelectedHistoryAsync(selectedComponents, resolution, cancellationToken);
         _operationState.BeginStage("Building selected basket");
         await Task.Yield();
-        var rebuilt = SyntheticHistoryService.BuildSelected(
-            existingBasket.Block,
-            selectedComponents,
-            history,
-            resolution,
-            PeriodsPerYear(resolution),
-            MinimumCandles(resolution));
+        var strategy = SelectedStrategy();
+        var rebuilt = strategy == SyntheticStrategyKind.ManualFormula
+            ? ManualSyntheticBasketFactory.Restore(
+                SavedSyntheticBasket.FromBasket(existingBasket.Symbol, strategy, existingBasket),
+                selectedComponents,
+                history,
+                resolution,
+                MinimumCandles(resolution))
+            : SyntheticHistoryService.BuildSelected(
+                existingBasket.Block,
+                selectedComponents,
+                history,
+                resolution,
+                PeriodsPerYear(resolution),
+                MinimumCandles(resolution));
         if (rebuilt is null)
         {
             StatusText.Text = $"The selected legs have no usable shared {resolution} history.";
@@ -890,7 +948,7 @@ public partial class CapComTerminalWindow : Window
         try
         {
             SavedBasketsBox.ItemsSource = saved;
-            SavedBasketsBox.DisplayMemberPath = nameof(SavedSyntheticBasket.Name);
+            SavedBasketsBox.DisplayMemberPath = nameof(SavedSyntheticBasket.DisplayLabel);
             SavedBasketsBox.SelectedValuePath = nameof(SavedSyntheticBasket.Id);
             if (!string.IsNullOrWhiteSpace(selectedName))
             {
@@ -924,6 +982,18 @@ public partial class CapComTerminalWindow : Window
     }
 
     private void BlockBox_SelectionChanged(object sender, SelectionChangedEventArgs e) => RebuildSeedOptions();
+
+    private void StrategyBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ManualFormulaBox is null || SearchBox is null) return;
+        var isManual = SelectedStrategy() == SyntheticStrategyKind.ManualFormula;
+        ManualFormulaBox.Visibility = isManual ? Visibility.Visible : Visibility.Collapsed;
+        SearchBox.Visibility = isManual ? Visibility.Collapsed : Visibility.Visible;
+        if (isManual && string.IsNullOrWhiteSpace(ManualFormulaBox.Text))
+        {
+            ManualFormulaBox.Text = ManualSyntheticFormula.CryptoPreset;
+        }
+    }
 
     private async void UniverseBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {

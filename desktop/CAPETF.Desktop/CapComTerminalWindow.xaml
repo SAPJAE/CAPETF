@@ -83,7 +83,8 @@
                     <ComboBox x:Name="BlockBox" MinWidth="190" SelectionChanged="BlockBox_SelectionChanged"/>
                     <ComboBox x:Name="SearchBox" AutomationProperties.Name="Seed symbol" Width="230" IsEditable="True" IsTextSearchEnabled="True" StaysOpenOnEdit="True" ToolTip="Choose a symbol from the selected block, or type one." Margin="0,0,6,0"/>
                     <Button x:Name="ConnectButton" Content="Connect" Click="Connect_Click"/>
-                    <ComboBox x:Name="StrategyBox" MinWidth="170" ToolTip="Choose how the synthetic basket should be selected."/>
+                    <ComboBox x:Name="StrategyBox" MinWidth="170" ToolTip="Choose how the synthetic basket should be selected." SelectionChanged="StrategyBox_SelectionChanged"/>
+                    <TextBox x:Name="ManualFormulaBox" AutomationProperties.Name="Manual formula" Width="230" Text="9 ETHUSD + 0.2 BTCUSD" Visibility="Collapsed" ToolTip="Edit the manual basket formula."/>
                     <Button x:Name="BuildBasketButton" Content="Build Basket" Click="BuildSynthetic_Click" Background="#1D4ED8" BorderBrush="#60A5FA"/>
                     <Button Content="Save Basket" Click="SaveBasket_Click"/>
                     <ComboBox x:Name="SavedBasketsBox" MinWidth="190" SelectionChanged="SavedBaskets_SelectionChanged" ToolTip="Reload a saved synthetic basket."/>

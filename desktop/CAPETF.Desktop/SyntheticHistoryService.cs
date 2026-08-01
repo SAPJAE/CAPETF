@@ -181,7 +181,7 @@ public sealed class SyntheticHistoryService
     internal static int DistinctAlignmentKeyCount(IReadOnlyList<OhlcPoint> candles, string timeframe) =>
         candles.Select(candle => AlignmentKey(candle.Time, timeframe)).Distinct(StringComparer.Ordinal).Count();
 
-    private static string AlignmentKey(DateTimeOffset time, string timeframe) => timeframe switch
+    internal static string AlignmentKey(DateTimeOffset time, string timeframe) => timeframe switch
     {
         "Daily" => $"D:{time:yyyyMMdd}",
         "Weekly" => $"W:{WeekStart(time.Date):yyyyMMdd}",

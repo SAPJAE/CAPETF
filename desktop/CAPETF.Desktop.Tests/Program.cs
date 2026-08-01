@@ -4,7 +4,8 @@ var completedSuites = TestSuiteRunner.Run(
     args,
     SyntheticTradingTests.RunAll,
     SyntheticBasketBuilderTests.RunAll,
-    SyntheticBasketBuilderTests.RunCryptoUniverse);
+    SyntheticBasketBuilderTests.RunCryptoUniverse,
+    SyntheticBasketBuilderTests.RunManualFormula);
 foreach (var suite in completedSuites)
 {
     Console.WriteLine($"{suite} tests passed");
@@ -23,11 +24,20 @@ internal static class TestSuiteRunner
         Action runTrading,
         Action runBuilder,
         Action runCryptoUniverse)
+        => Run(arguments, runTrading, runBuilder, runCryptoUniverse, () => { });
+
+    public static IReadOnlyList<string> Run(
+        IReadOnlyList<string> arguments,
+        Action runTrading,
+        Action runBuilder,
+        Action runCryptoUniverse,
+        Action runManualFormula)
     {
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentNullException.ThrowIfNull(runTrading);
         ArgumentNullException.ThrowIfNull(runBuilder);
         ArgumentNullException.ThrowIfNull(runCryptoUniverse);
+        ArgumentNullException.ThrowIfNull(runManualFormula);
 
         var selection = arguments.Count == 0 ? "full" : arguments.Count == 1 ? arguments[0].Trim().ToLowerInvariant() : "invalid";
         var completed = new List<string>(3);
@@ -46,9 +56,14 @@ internal static class TestSuiteRunner
             runCryptoUniverse();
             completed.Add("CryptoUniverse");
         }
+        if (selection == "manual-formula")
+        {
+            runManualFormula();
+            completed.Add("ManualFormula");
+        }
         if (completed.Count == 0)
         {
-            throw new ArgumentException("Use no filter for the full suite, or specify 'trading', 'builder', or 'crypto-universe'.", nameof(arguments));
+            throw new ArgumentException("Use no filter for the full suite, or specify 'trading', 'builder', 'crypto-universe', or 'manual-formula'.", nameof(arguments));
         }
         return completed;
     }

@@ -11,6 +11,7 @@ public enum SyntheticStrategyKind
     DipInsideUptrend,
     HighMomentum,
     MeanReversion,
+    ManualFormula,
 }
 
 public sealed record SyntheticStrategy(SyntheticStrategyKind Kind, string Label);
@@ -22,6 +23,7 @@ public static class SyntheticStrategyCatalog
     public static IReadOnlyList<SyntheticStrategy> All { get; } =
     [
         new(SyntheticStrategyKind.SimilarToSelectedSymbol, "Similar to selected symbol"),
+        new(SyntheticStrategyKind.ManualFormula, "Manual formula"),
         new(SyntheticStrategyKind.DipInsideUptrend, "Dip inside uptrend"),
         new(SyntheticStrategyKind.BreakoutCandidate, "Breakout candidate"),
         new(SyntheticStrategyKind.BelowMa200, "Below 200 MA"),
