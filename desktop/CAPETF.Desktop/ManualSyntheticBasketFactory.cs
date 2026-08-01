@@ -215,6 +215,14 @@ public static class ManualSyntheticBasketFactory
                 instrument = ResolveTier(normalizedMatches, term.InstrumentToken, block);
             }
 
+            if (instrument is null && normalizedToken.Length >= 4)
+            {
+                var epicSegmentMatches = blockInstruments.Where(candidate =>
+                        EpicContainsIdentifierSegment(candidate.Epic, normalizedToken))
+                    .ToList();
+                instrument = ResolveTier(epicSegmentMatches, term.InstrumentToken, block);
+            }
+
             if (instrument is null)
             {
                 var outsideMatches = instruments.Where(candidate =>
@@ -268,6 +276,14 @@ public static class ManualSyntheticBasketFactory
         }
         return matches.Count == 1 ? matches[0] : null;
     }
+
+    private static bool EpicContainsIdentifierSegment(string epic, string normalizedToken) =>
+        (epic ?? "")
+            .Split(['.', '-', '_', '/', ' '], StringSplitOptions.RemoveEmptyEntries)
+            .Any(segment => string.Equals(
+                NormalizeIdentifier(segment),
+                normalizedToken,
+                StringComparison.Ordinal));
 
     private static SyntheticBasket Build(
         string symbol,

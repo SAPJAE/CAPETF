@@ -22,6 +22,7 @@ public static class SyntheticBasketBuilderTests
         ManualCryptoBuildAndRestoreSubscribeBothEpicsAndUpdateResolution();
         ManualFormulaResolvesExactIdentifiersAndRejectsInvalidTerms();
         ManualFormulaResolutionIsBlockLocalAndTiered();
+        ManualFormulaResolvesCapitalEpicPairSegmentsWithinSelectedBlock();
         ManualFormulaSaveRestorePreservesTwoLegStrategyAndExactMultipliers();
         ManualBasketStrategyIdentitySurvivesDropdownChanges();
         SignedSyntheticQuotesUseExecutableBidAskSides();
@@ -7912,6 +7913,22 @@ public static class SyntheticBasketBuilderTests
                 [normalizedSymbol, normalizedSymbolTwo, btc]),
             "ambiguous",
             "normalized-ID tier ambiguity");
+    }
+
+    private static void ManualFormulaResolvesCapitalEpicPairSegmentsWithinSelectedBlock()
+    {
+        const string usdBlock = "Crypto / USD / All";
+        var ethUsd = CreateCrypto("CS.D.ETHUSD.CFD.IP", "", "Ethereum / US Dollar", "USD", 1m, 2m);
+        var btcUsd = CreateCrypto("CS.D.BTCUSD.CFD.IP", "", "Bitcoin / US Dollar", "USD", 1m, 2m);
+        var unresolvedEthAlias = CreateCrypto("ETHUSD", "", "Ethereum", "Currency", 1m, 2m);
+
+        var resolved = ManualSyntheticBasketFactory.Resolve(
+            usdBlock,
+            ManualSyntheticFormula.Parse("9 ETHUSD + 0.2 BTCUSD"),
+            [unresolvedEthAlias, ethUsd, btcUsd]);
+
+        AssertEqual(ethUsd.Epic, resolved[0].Epic, "ETHUSD must resolve from the Capital epic pair segment in the selected block");
+        AssertEqual(btcUsd.Epic, resolved[1].Epic, "BTCUSD must resolve from the Capital epic pair segment in the selected block");
     }
 
     private static void SignedSyntheticQuotesUseExecutableBidAskSides()
