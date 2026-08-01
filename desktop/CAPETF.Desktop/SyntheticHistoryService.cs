@@ -86,7 +86,29 @@ public sealed class SyntheticHistoryService
         IReadOnlyList<MarketInstrument> selectedComponents,
         string timeframe,
         HistoryLoadResult apiHistory,
-        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> cachedHistory)
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> cachedHistory) =>
+        MergeSelectedHistory(
+            selectedComponents,
+            apiHistory,
+            cachedHistory,
+            time => AlignmentKey(time, timeframe));
+
+    public static HistoryLoadResult MergeSelectedManualHistory(
+        IReadOnlyList<MarketInstrument> selectedComponents,
+        string timeframe,
+        HistoryLoadResult apiHistory,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> cachedHistory) =>
+        MergeSelectedHistory(
+            selectedComponents,
+            apiHistory,
+            cachedHistory,
+            time => $"T:{time.ToUniversalTime().Ticks}");
+
+    private static HistoryLoadResult MergeSelectedHistory(
+        IReadOnlyList<MarketInstrument> selectedComponents,
+        HistoryLoadResult apiHistory,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> cachedHistory,
+        Func<DateTimeOffset, string> alignmentKey)
     {
         var components = selectedComponents
             .Where(component => !string.IsNullOrWhiteSpace(component.Epic))
@@ -100,11 +122,11 @@ public sealed class SyntheticHistoryService
             var rowsByKey = new Dictionary<string, OhlcPoint>(StringComparer.Ordinal);
             if (cachedHistory.TryGetValue(component.Epic, out var cachedRows))
             {
-                foreach (var row in cachedRows) rowsByKey[AlignmentKey(row.Time, timeframe)] = row;
+                foreach (var row in cachedRows) rowsByKey[alignmentKey(row.Time)] = row;
             }
             if (apiHistory.CandlesByEpic.TryGetValue(component.Epic, out var apiRows))
             {
-                foreach (var row in apiRows) rowsByKey[AlignmentKey(row.Time, timeframe)] = row;
+                foreach (var row in apiRows) rowsByKey[alignmentKey(row.Time)] = row;
             }
             if (rowsByKey.Count > 0)
             {
@@ -112,7 +134,7 @@ public sealed class SyntheticHistoryService
             }
         }
 
-        var sharedTimes = FindSharedTimes(merged, components, timeframe);
+        var sharedTimes = FindSharedTimes(merged, components, alignmentKey);
         return new HistoryLoadResult(
             merged,
             sharedTimes.Count == 0 ? null : sharedTimes[0],
@@ -163,11 +185,17 @@ public sealed class SyntheticHistoryService
     private static IReadOnlyList<DateTimeOffset> FindSharedTimes(
         IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candlesByEpic,
         IReadOnlyList<MarketInstrument> components,
-        string timeframe)
+        string timeframe) =>
+        FindSharedTimes(candlesByEpic, components, time => AlignmentKey(time, timeframe));
+
+    private static IReadOnlyList<DateTimeOffset> FindSharedTimes(
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candlesByEpic,
+        IReadOnlyList<MarketInstrument> components,
+        Func<DateTimeOffset, string> alignmentKey)
     {
         var rowsByKey = components
             .Select(component => candlesByEpic.TryGetValue(component.Epic, out var candles)
-                ? candles.GroupBy(candle => AlignmentKey(candle.Time, timeframe))
+                ? candles.GroupBy(candle => alignmentKey(candle.Time))
                     .ToDictionary(group => group.Key, group => group.Last().Time)
                 : new Dictionary<string, DateTimeOffset>())
             .ToList();

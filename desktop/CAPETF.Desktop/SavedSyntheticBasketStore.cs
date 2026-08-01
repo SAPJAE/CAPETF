@@ -21,14 +21,19 @@ public sealed record SavedSyntheticBasket(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     IReadOnlyList<SavedSyntheticComponent> Components,
-    decimal? BasketQuantity = null)
+    decimal? BasketQuantity = null,
+    TerminalUniverseKind? UniverseKind = null)
 {
     [JsonIgnore]
     public string DisplayLabel => Strategy == SyntheticStrategyKind.ManualFormula
         ? $"{Name} | {ManualSyntheticFormula.Format(Components)}"
         : Name;
 
-    public static SavedSyntheticBasket FromBasket(string name, SyntheticStrategyKind strategy, SyntheticBasket basket)
+    public static SavedSyntheticBasket FromBasket(
+        string name,
+        SyntheticStrategyKind strategy,
+        SyntheticBasket basket,
+        TerminalUniverseKind? universeKind = null)
     {
         var now = DateTimeOffset.UtcNow;
         var idSource = $"{basket.Symbol}-{string.Join("-", basket.Components.Select(component => component.Instrument.Epic))}";
@@ -46,7 +51,8 @@ public sealed record SavedSyntheticBasket(
                 string.IsNullOrWhiteSpace(component.Instrument.Currency) ? "" : component.Instrument.Currency.Trim(),
                 component.Weight,
                 component.FormulaMultiplier,
-                component.FormulaReferencePrice)).ToList());
+                component.FormulaReferencePrice)).ToList(),
+            UniverseKind: universeKind);
     }
 
     private static string StableId(string source)

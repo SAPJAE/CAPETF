@@ -14,10 +14,12 @@ public static class SyntheticBasketBuilderTests
     public static void RunManualFormula()
     {
         ManualFormulaBuildsExactCryptoPresetWithoutEqualNotionalRewriting();
+        ManualHistoryUsesExactUtcTimestampsAtDailyAndWeeklyResolutions();
         ManualCryptoHistoryAndRealtimeBarsUseDirectSharedFormula();
+        AutomaticBasketIgnoresNativeOhlcEvents();
         ManualCryptoTimeframesReloadLongestSharedHistory();
         CapitalStreamingParsesOhlcEventsForManualCryptoBars();
-        ManualCryptoBuildAndRestoreUseSharedStreamingPath();
+        ManualCryptoBuildAndRestoreSubscribeBothEpicsAndUpdateResolution();
         ManualFormulaResolvesExactIdentifiersAndRejectsInvalidTerms();
         ManualFormulaResolutionIsBlockLocalAndTiered();
         ManualFormulaSaveRestorePreservesTwoLegStrategyAndExactMultipliers();
@@ -32,6 +34,7 @@ public static class SyntheticBasketBuilderTests
         CapitalApiClientUsesAllMarketsForEmptySearchAndParsesCryptoRows();
         CapComTerminalExposesGroupedCryptoUniverse();
         TerminalUniverseUiCoordinatorRestoresKnownEtfExclusionAfterCrypto();
+        SavedAndOpenBasketsRestoreTheirUniverseInBothDirections();
         TerminalUniverseUiCoordinatorCachesUniversesSeparately();
         TerminalUniverseUiCoordinatorClearsBeforeAFailedSwitchLoad();
         TerminalUniverseUiCoordinatorBuildsBlocksAndSeedsForTheActiveUniverse();
@@ -1742,6 +1745,120 @@ public static class SyntheticBasketBuilderTests
         }.Where(item => TerminalUniverse.Accepts(TerminalUniverseKind.Stocks, item, knownEtfs)).ToList();
         AssertEqual(1, candidates.Count, "known ETF shares must be excluded after a stock universe switch");
         AssertEqual("ORDINARY-SHARE", candidates[0].Epic, "ordinary shares must remain stock candidates");
+    }
+
+    private static void SavedAndOpenBasketsRestoreTheirUniverseInBothDirections()
+    {
+        var now = DateTimeOffset.Parse("2026-08-01T00:00:00Z");
+        var knownEtfs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "ETF-A", "ETF-B", "ETF-C",
+        };
+        SavedSyntheticBasket Saved(
+            string id,
+            string block,
+            SyntheticStrategyKind strategy,
+            IReadOnlyList<string> epics,
+            TerminalUniverseKind? universe = null) =>
+            new(
+                id,
+                id,
+                $"SYN-{id}",
+                block,
+                strategy,
+                now,
+                now,
+                epics.Select(epic => new SavedSyntheticComponent(epic, epic, "USD", 100m / epics.Count, 1m, 100m)).ToArray(),
+                UniverseKind: universe);
+
+        SyntheticExecutionRecord Execution(string id, IReadOnlyList<string> epics, decimal? basketQuantity = null) =>
+            new(
+                id,
+                $"ticket-{id}",
+                $"SYN-{id}",
+                "BUY",
+                300m,
+                60m,
+                "USD",
+                now,
+                now,
+                SyntheticExecutionState.Open,
+                epics.Select(epic => new SyntheticExecutionLegRecord(
+                    epic, "BUY", 1m, 100m, basketQuantity ?? 1m, 100m, 20m, "USD",
+                    SyntheticExecutionLegState.Open, "", $"deal-{epic}", "", 100m, "", now, now, null, now)).ToArray(),
+                BasketQuantity: basketQuantity);
+
+        var savedStock = Saved(
+            "saved-stock", "US / USD / Technology", SyntheticStrategyKind.DipInsideUptrend,
+            ["STOCK-A", "STOCK-B", "STOCK-C"], TerminalUniverseKind.Stocks);
+        var legacySavedEtf = Saved(
+            "saved-etf", "US / USD / All", SyntheticStrategyKind.MeanReversion,
+            ["ETF-A", "ETF-B", "ETF-C"]);
+        var legacySavedCrypto = Saved(
+            "saved-crypto", "Crypto / USD / All", SyntheticStrategyKind.ManualFormula,
+            ["ETH", "BTC"]);
+        var stockExecution = Execution("open-stock", ["STOCK-A", "STOCK-B", "STOCK-C"]);
+        var etfExecution = Execution("open-etf", ["ETF-A", "ETF-B", "ETF-C"]);
+        var cryptoExecution = Execution("open-crypto", ["ETH", "BTC"], basketQuantity: 1m);
+
+        AssertEqual(TerminalUniverseKind.Stocks, SyntheticBasketUniverseResolver.Resolve(savedStock, knownEtfs),
+            "persisted stock universe identity");
+        AssertEqual(TerminalUniverseKind.ETFs, SyntheticBasketUniverseResolver.Resolve(legacySavedEtf, knownEtfs),
+            "legacy ETF universe identity uses known ETF membership");
+        AssertEqual(TerminalUniverseKind.Crypto, SyntheticBasketUniverseResolver.Resolve(legacySavedCrypto, knownEtfs),
+            "legacy manual Crypto block identity");
+        AssertEqual(TerminalUniverseKind.Stocks, SyntheticBasketUniverseResolver.Resolve(stockExecution, knownEtfs),
+            "open stock execution universe identity");
+        AssertEqual(TerminalUniverseKind.ETFs, SyntheticBasketUniverseResolver.Resolve(etfExecution, knownEtfs),
+            "open ETF execution universe identity");
+        AssertEqual(TerminalUniverseKind.Crypto, SyntheticBasketUniverseResolver.Resolve(cryptoExecution, knownEtfs),
+            "open manual crypto execution universe identity");
+
+        var coordinator = new TerminalUniverseUiCoordinator();
+        void AssertTransition(TerminalUniverseKind current, TerminalUniverseKind target, string label)
+        {
+            var selected = current;
+            TerminalUniverseKind? loaded = null;
+            var clears = 0;
+            coordinator.EnsureActiveAsync(
+                    current,
+                    target,
+                    [],
+                    knownEtfs,
+                    value => selected = value,
+                    () =>
+                    {
+                        clears++;
+                        return Task.CompletedTask;
+                    },
+                    value =>
+                    {
+                        loaded = value;
+                        return Task.CompletedTask;
+                    })
+                .GetAwaiter().GetResult();
+            AssertEqual(target, selected, $"{label} selects the restored universe");
+            AssertEqual<TerminalUniverseKind?>(target, loaded, $"{label} loads the restored universe before leg resolution");
+            AssertEqual(1, clears, $"{label} clears the prior universe state once");
+        }
+
+        AssertTransition(TerminalUniverseKind.Crypto, SyntheticBasketUniverseResolver.Resolve(savedStock, knownEtfs), "Crypto to saved Stocks");
+        AssertTransition(TerminalUniverseKind.Crypto, SyntheticBasketUniverseResolver.Resolve(legacySavedEtf, knownEtfs), "Crypto to saved ETFs");
+        AssertTransition(TerminalUniverseKind.Crypto, SyntheticBasketUniverseResolver.Resolve(stockExecution, knownEtfs), "Crypto to open Stocks");
+        AssertTransition(TerminalUniverseKind.Crypto, SyntheticBasketUniverseResolver.Resolve(etfExecution, knownEtfs), "Crypto to open ETFs");
+        AssertTransition(TerminalUniverseKind.Stocks, SyntheticBasketUniverseResolver.Resolve(legacySavedCrypto, knownEtfs), "Stocks to saved Crypto");
+        AssertTransition(TerminalUniverseKind.ETFs, SyntheticBasketUniverseResolver.Resolve(cryptoExecution, knownEtfs), "ETFs to open Crypto");
+
+        var legacyJson = JsonSerializer.Serialize(legacySavedEtf, new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        });
+        var deserializedLegacy = JsonSerializer.Deserialize<SavedSyntheticBasket>(legacyJson)
+            ?? throw new Exception("legacy saved basket JSON should deserialize");
+        AssertEqual<TerminalUniverseKind?>(null, deserializedLegacy.UniverseKind,
+            "legacy saved JSON without UniverseKind remains compatible");
+        AssertEqual(TerminalUniverseKind.ETFs, SyntheticBasketUniverseResolver.Resolve(deserializedLegacy, knownEtfs),
+            "legacy saved JSON still restores the ETF universe");
     }
 
     private static void TerminalUniverseUiCoordinatorCachesUniversesSeparately()
@@ -4872,8 +4989,7 @@ public static class SyntheticBasketBuilderTests
             "new CapitalStreamingClient()",
             "streaming.Disconnected += Streaming_Disconnected",
             "ReconnectStreamingAsync",
-            "SubscribeQuotesAsync",
-            "SubscribeOhlcAsync",
+            "SyntheticStreamingSubscription.SubscribeAsync",
         })
         {
             if (!source.Contains(required, StringComparison.Ordinal))
@@ -5490,7 +5606,7 @@ public static class SyntheticBasketBuilderTests
             "maxSelection: 36",
             "Task.Run(() => SyntheticTerminalSelector.SelectBest",
             "CapitalStreamingClient",
-            "SubscribeQuotesAsync",
+            "SyntheticStreamingSubscription.SubscribeAsync",
             "SyntheticTerminalLiveUpdate.Apply",
             "RebuildSeedOptions",
             "SeedText",
@@ -6825,11 +6941,17 @@ public static class SyntheticBasketBuilderTests
                 SyntheticBaselinePrice = 56m,
             });
 
-            store.Save(SavedSyntheticBasket.FromBasket("My SAP basket", SyntheticStrategyKind.DipInsideUptrend, basket));
+            store.Save(SavedSyntheticBasket.FromBasket(
+                "My SAP basket",
+                SyntheticStrategyKind.DipInsideUptrend,
+                basket,
+                TerminalUniverseKind.ETFs));
             var saved = store.LoadAll().Single();
 
             if (saved.Name != "My SAP basket") throw new Exception("saved basket should preserve user name");
             if (saved.Strategy != SyntheticStrategyKind.DipInsideUptrend) throw new Exception("saved basket should preserve strategy");
+            AssertEqual<TerminalUniverseKind?>(TerminalUniverseKind.ETFs, saved.UniverseKind,
+                "saved basket should preserve explicit universe identity");
             if (saved.Components.Count != 2) throw new Exception("saved basket should preserve component count");
             AssertNear(0.2625m, saved.Components[0].FormulaMultiplier, "saved basket should preserve formula multiplier");
             AssertNear(127m, saved.Components[0].ReferencePrice ?? 0m, "saved basket should preserve reference price");
@@ -6933,6 +7055,57 @@ public static class SyntheticBasketBuilderTests
         AssertNear(24011m, basket.AskPrice ?? 0m, "manual ask must use exact multipliers");
     }
 
+    private static void ManualHistoryUsesExactUtcTimestampsAtDailyAndWeeklyResolutions()
+    {
+        var monday = DateTimeOffset.Parse("2026-07-06T00:00:00Z");
+        var eth = CreateCrypto("CS.D.ETHUSD.CFD.IP", "ETHUSD", "Ethereum", "USD", 1999m, 2001m);
+        var btc = CreateCrypto("CS.D.BTCUSD.CFD.IP", "BTCUSD", "Bitcoin", "USD", 29990m, 30010m);
+        var exact = monday.AddDays(14);
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
+        {
+            [eth.Epic] =
+            [
+                FlatCandle(monday, 100m),
+                FlatCandle(monday.AddDays(7), 101m),
+                FlatCandle(exact, 102m),
+            ],
+            [btc.Epic] =
+            [
+                FlatCandle(monday.AddHours(12), 1000m),
+                FlatCandle(monday.AddDays(7).AddHours(12), 1001m),
+                FlatCandle(exact, 1002m),
+            ],
+        };
+
+        foreach (var timeframe in new[] { "Daily", "Weekly" })
+        {
+            var merged = SyntheticHistoryService.MergeSelectedManualHistory(
+                [eth, btc],
+                timeframe,
+                new HistoryLoadResult(candles, monday, exact, 3),
+                new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase));
+            AssertEqual(1, merged.SharedCount,
+                $"{timeframe} manual selected-history merge must count exact UTC matches only");
+            AssertEqual(exact, merged.SharedStart,
+                $"{timeframe} manual selected-history start must use the exact shared timestamp");
+            AssertEqual(exact, merged.SharedEnd,
+                $"{timeframe} manual selected-history end must use the exact shared timestamp");
+
+            var basket = ManualSyntheticBasketFactory.Create(
+                $"SYN-EXACT-{timeframe}",
+                "Crypto / USD / All",
+                ManualSyntheticFormula.Parse(ManualSyntheticFormula.CryptoPreset),
+                [eth, btc],
+                merged.CandlesByEpic,
+                timeframe,
+                minimumCandles: 1);
+
+            AssertSequence(basket.Candles.Select(candle => candle.Time), exact);
+            AssertNear(9m * 102m + 0.2m * 1002m, basket.Candles.Single().Close,
+                $"{timeframe} manual history must not combine same-date or same-week timestamps");
+        }
+    }
+
     private static void ManualCryptoHistoryAndRealtimeBarsUseDirectSharedFormula()
     {
         var day = DateTimeOffset.Parse("2026-07-27T00:00:00Z");
@@ -7002,6 +7175,68 @@ public static class SyntheticBasketBuilderTests
         AssertSequence(basket.Candles.Take(historical.Length), historical);
         AssertEqual(new OhlcPoint(barTime, 3880m, 4344m, 3416m, 4112m), basket.Candles[^1],
             "same-bucket component changes must recompute direct synthetic OHLC");
+    }
+
+    private static void AutomaticBasketIgnoresNativeOhlcEvents()
+    {
+        var time = DateTimeOffset.Parse("2026-07-27T00:00:00Z");
+        foreach (var (label, instrumentType) in new[] { ("stock", "SHARES"), ("ETF", "ETF") })
+        {
+            var basket = new SyntheticBasket
+            {
+                Symbol = $"SYN-AUTOMATIC-{label}",
+                Strategy = SyntheticStrategyKind.DipInsideUptrend,
+                BasketPrice = 100m,
+                LastUpdated = time,
+            };
+            foreach (var (suffix, price, multiplier) in new[]
+            {
+                ("A", 100m, 0.4m),
+                ("B", 200m, 0.2m),
+                ("C", 300m, 0.1m),
+            })
+            {
+                basket.Components.Add(new SyntheticComponent(
+                    new MarketInstrument
+                    {
+                        Epic = $"{label}-{suffix}",
+                        Name = $"{label} {suffix}",
+                        Type = instrumentType,
+                        Price = price,
+                    },
+                    100m / 3m, 10m, 10m) { FormulaMultiplier = multiplier });
+            }
+            basket.Candles.Add(FlatCandle(time, 100m));
+            var originalCandles = basket.Candles.ToArray();
+            var originalPrice = basket.BasketPrice;
+            var originalUpdated = basket.LastUpdated;
+
+            var builder = new SyntheticRealtimeBarBuilder();
+            builder.Reset(basket, "Daily");
+            foreach (var component in basket.Components)
+            {
+                AssertFalse(builder.Apply(basket, new CapitalOhlcUpdate(
+                    component.Instrument.Epic, "DAY", time.AddDays(1), 110m, 120m, 100m, 115m)),
+                    $"automatic {label} baskets must ignore native OHLC events");
+            }
+            AssertSequence(basket.Candles, originalCandles);
+            AssertEqual(originalPrice, basket.BasketPrice, $"automatic {label} price must remain quote-driven");
+            AssertEqual(originalUpdated, basket.LastUpdated, $"automatic {label} timestamp must remain quote-driven");
+
+            var socket = new FakeCapitalStreamingSocket(WebSocketState.Open);
+            var client = new CapitalStreamingClient(socket);
+            SyntheticStreamingSubscription.SubscribeAsync(
+                client,
+                new CapitalSession { Cst = "fixture-cst", SecurityToken = "fixture-token" },
+                basket,
+                "Daily").GetAwaiter().GetResult();
+            AssertEqual(1, socket.SentMessages.Count, $"automatic {label} streaming remains quote-only");
+            AssertStreamingSubscription(
+                socket.SentMessages.Single(),
+                "marketData.subscribe",
+                basket.Components.Select(component => component.Instrument.Epic).ToArray(),
+                null);
+        }
     }
 
     private static void ManualCryptoTimeframesReloadLongestSharedHistory()
@@ -7084,7 +7319,7 @@ public static class SyntheticBasketBuilderTests
             "nonpositive OHLC events are ignored");
     }
 
-    private static void ManualCryptoBuildAndRestoreUseSharedStreamingPath()
+    private static void ManualCryptoBuildAndRestoreSubscribeBothEpicsAndUpdateResolution()
     {
         var day = DateTimeOffset.Parse("2026-07-01T00:00:00Z");
         var eth = CreateCrypto("CS.D.ETHUSD.CFD.IP", "ETHUSD", "Ethereum", "USD", 1999m, 2001m);
@@ -7105,12 +7340,18 @@ public static class SyntheticBasketBuilderTests
 
         AssertSequence(SyntheticTerminalWorkspace.StreamingEpics(basket), eth.Epic, btc.Epic);
         AssertSequence(SyntheticTerminalWorkspace.StreamingEpics(restored.Basket), eth.Epic, btc.Epic);
-        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
-        var manualBuild = SliceSource(source, "private async Task BuildManualSyntheticAsync", "private void SaveBasket_Click");
-        var savedLoad = SliceSource(source, "private async Task LoadSavedBasketAsync", "private async Task LoadExecutionBasketAsync");
-        AssertContains(manualBuild, "TryStartStreamingCurrentBasketAsync", "manual build starts the shared stream");
-        AssertContains(savedLoad, "TryStartStreamingCurrentBasketAsync", "saved manual reload starts the shared stream");
-        AssertContains(source, "streaming.OhlcReceived += Streaming_OhlcReceived", "terminal consumes Capital ongoing bars");
+
+        var socket = new FakeCapitalStreamingSocket(WebSocketState.Open);
+        var client = new CapitalStreamingClient(socket);
+        var session = new CapitalSession { Cst = "fixture-cst", SecurityToken = "fixture-token" };
+        SyntheticStreamingSubscription.SubscribeAsync(client, session, basket, "Daily").GetAwaiter().GetResult();
+        SyntheticStreamingSubscription.SubscribeAsync(client, session, restored.Basket, "4H").GetAwaiter().GetResult();
+
+        AssertEqual(4, socket.SentMessages.Count, "build and saved restore must each send quote and OHLC subscriptions");
+        AssertStreamingSubscription(socket.SentMessages[0], "marketData.subscribe", [eth.Epic, btc.Epic], null);
+        AssertStreamingSubscription(socket.SentMessages[1], "OHLCMarketData.subscribe", [eth.Epic, btc.Epic], "DAY");
+        AssertStreamingSubscription(socket.SentMessages[2], "marketData.subscribe", [eth.Epic, btc.Epic], null);
+        AssertStreamingSubscription(socket.SentMessages[3], "OHLCMarketData.subscribe", [eth.Epic, btc.Epic], "HOUR_4");
     }
 
     private static void ManualFormulaResolvesExactIdentifiersAndRejectsInvalidTerms()
@@ -7660,6 +7901,31 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void AssertStreamingSubscription(
+        string json,
+        string expectedDestination,
+        IReadOnlyList<string> expectedEpics,
+        string? expectedResolution)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        AssertEqual(expectedDestination, root.GetProperty("destination").GetString(), "stream subscription destination");
+        AssertSequence(
+            root.GetProperty("payload").GetProperty("epics").EnumerateArray().Select(value => value.GetString() ?? ""),
+            expectedEpics.ToArray());
+        if (expectedResolution is null)
+        {
+            AssertFalse(root.GetProperty("payload").TryGetProperty("resolutions", out _),
+                "quote subscription must not contain an OHLC resolution");
+        }
+        else
+        {
+            AssertSequence(
+                root.GetProperty("payload").GetProperty("resolutions").EnumerateArray().Select(value => value.GetString() ?? ""),
+                expectedResolution);
+        }
+    }
+
     private static void AssertContains(string value, string expected, string message)
     {
         if (!value.Contains(expected, StringComparison.Ordinal))
@@ -8124,6 +8390,7 @@ public static class SyntheticBasketBuilderTests
     {
         public WebSocketState State { get; private set; } = state;
         public int DisposeCount { get; private set; }
+        public List<string> SentMessages { get; } = [];
 
         public Task ConnectAsync(Uri uri, CancellationToken cancellationToken)
         {
@@ -8131,8 +8398,11 @@ public static class SyntheticBasketBuilderTests
             return Task.CompletedTask;
         }
 
-        public Task SendAsync(ArraySegment<byte> bytes, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+        public Task SendAsync(ArraySegment<byte> bytes, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken)
+        {
+            SentMessages.Add(Encoding.UTF8.GetString(bytes.Array!, bytes.Offset, bytes.Count));
+            return Task.CompletedTask;
+        }
 
         public Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken)
         {

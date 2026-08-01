@@ -211,3 +211,161 @@ No whitespace errors. Git reported only LF-to-CRLF working-copy conversion warni
 - Automated validation used deterministic fixtures only. Live Capital.com demo stream validation belongs to Task 6.
 - Capital provides native `HOUR_4`, `DAY`, and `WEEK` bars. The existing 2H/6H quote-driven bucket path remains in place because Capital has no native 2H/6H OHLC stream resolution.
 - Streaming subscriptions remain session-scoped and reuse the existing reconnect behavior. This task does not introduce credentials, unattended execution, or any order mutation.
+
+---
+
+# Fix Round 1: Review Corrections
+
+## Status
+
+Fixed all three Important review findings and replaced the weak manual restore/streaming source checks with behavioral coverage. The fix base is `85087bc`.
+
+Manual historical candles now intersect only exact UTC instants at every resolution. Native OHLC mutation and subscriptions are limited to active `ManualFormula` baskets at `4H`, `Daily`, and `Weekly`; automatic Stock and ETF baskets remain quote-only. Saved baskets persist an optional universe identity, legacy JSON infers Crypto from the `Crypto /` block/manual strategy and ETFs from known ETF membership, and saved/open basket restoration loads the inferred universe before resolving legs in both directions.
+
+No credentials were read, no Capital.com connection was opened, and no order path was invoked.
+
+## Red Evidence
+
+Initial behavioral contracts were absent:
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- manual-formula
+```
+
+```text
+Exit code: 1
+SavedSyntheticBasket has no UniverseKind parameter/property
+SyntheticBasketUniverseResolver does not exist
+TerminalUniverseUiCoordinator has no EnsureActiveAsync
+SyntheticStreamingSubscription does not exist
+```
+
+After adding only those contracts, the exact-history fixture exposed the existing daily bucketing bug:
+
+```text
+Exit code: 1
+Expected 2026-07-20T00:00:00Z
+Got 2026-07-06T00:00:00Z | 2026-07-13T00:00:00Z | 2026-07-20T00:00:00Z
+```
+
+After correcting the factory intersection, the automatic-basket fixture exposed native OHLC mutation:
+
+```text
+Exit code: 1
+a complete automatic OHLC component set must still be ignored
+```
+
+The load-boundary fixture was then red on the missing exact manual merger, and the automatic streaming fixture was red until automatic baskets returned to quote-only behavior:
+
+```text
+Exit code: 1
+SyntheticHistoryService does not contain MergeSelectedManualHistory
+
+Exit code: 1
+automatic stock streaming remains quote-only. Expected 1, got 2
+```
+
+## Files
+
+- `desktop/CAPETF.Desktop/ManualSyntheticBasketFactory.cs`: exact UTC tick keys for every manual historical resolution and exact shared-range validation.
+- `desktop/CAPETF.Desktop/SyntheticHistoryService.cs`: separate exact-timestamp selected-history merge for manual baskets; automatic daily/weekly alignment remains unchanged.
+- `desktop/CAPETF.Desktop/SyntheticRealtimeBarBuilder.cs`: `ManualFormula` and supported-resolution guard at the OHLC mutation boundary.
+- `desktop/CAPETF.Desktop/SyntheticStreamingSubscription.cs`: shared quote subscription plus manual-only native OHLC subscription using the existing client methods.
+- `desktop/CAPETF.Desktop/SavedSyntheticBasketStore.cs`: optional persisted `UniverseKind`, compatible with legacy JSON that omits it.
+- `desktop/CAPETF.Desktop/SyntheticBasketUniverseResolver.cs`: saved/open universe inference from explicit metadata, Crypto block/manual identity, and known ETF membership.
+- `desktop/CAPETF.Desktop/TerminalUniverseUiCoordinator.cs`: behavioral select-clear-load coordination before leg resolution.
+- `desktop/CAPETF.Desktop/ActiveSyntheticBasketState.cs`: passes optional universe metadata into saved baskets.
+- `desktop/CAPETF.Desktop/CapComTerminalWindow.xaml.cs`: uses exact manual history, persists/restores universe identity, and routes subscriptions through the shared coordinator.
+- `desktop/CAPETF.Desktop.Tests/SyntheticBasketBuilderTests.cs`: mismatched same-date/week fixtures, Stock/ETF OHLC isolation, socket-observed subscriptions/resolution changes, legacy JSON, persisted universe, and bidirectional saved/open restoration.
+- `.superpowers/sdd/2026-08-01-crypto-synthetic-universe/task-5-report.md`: this Fix Round 1 report.
+
+## Verification
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- manual-formula
+```
+
+```text
+Exit code: 0; 3.8 seconds
+ManualFormula tests passed
+```
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- crypto-universe
+```
+
+```text
+Exit code: 0; 6.1 seconds
+CryptoUniverse tests passed
+```
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- trading
+```
+
+```text
+Exit code: 0; 6.6 seconds
+SyntheticTrading tests passed
+```
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- builder
+```
+
+```text
+Exit code: 0; 37.3 seconds
+SyntheticBasketBuilder tests passed
+```
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj
+```
+
+```text
+Exit code: 0; 38.5 seconds
+SyntheticTrading tests passed
+SyntheticBasketBuilder tests passed
+```
+
+```powershell
+dotnet build desktop/CAPETF.Desktop/CAPETF.Desktop.csproj -c Release
+```
+
+```text
+Exit code: 0; 3.6 seconds
+Build succeeded.
+0 Warning(s)
+0 Error(s)
+```
+
+```powershell
+git diff --check
+```
+
+```text
+Exit code: 0
+No whitespace errors. Git emitted only working-copy LF-to-CRLF conversion warnings.
+```
+
+## Self-Review
+
+- Confirmed manual history uses exact UTC ticks in both API/cache merge and direct formula construction for intraday, Daily, and Weekly resolutions.
+- Confirmed same calendar date or week is insufficient: ETH `00:00Z` and BTC `12:00Z` never combine, while the one exact fixture timestamp remains.
+- Confirmed realtime bucket alignment remains intentional and isolated to ongoing manual bars.
+- Confirmed automatic Stock and ETF baskets reject every native OHLC update without changing candles, price, or timestamp, and subscribe only to existing quote streaming.
+- Confirmed manual build and restored baskets emit exactly both ETH/BTC epics in quote and OHLC payloads, with `DAY` changing to `HOUR_4` after the timeframe update.
+- Confirmed explicit Stock/ETF/Crypto universe metadata wins; legacy manual/Crypto blocks and known ETF membership provide compatible fallback.
+- Confirmed Crypto-to-saved/open Stocks, Crypto-to-saved/open ETFs, Stocks-to-saved Crypto, and ETFs-to-open Crypto all select, clear, and load the target universe before leg lookup.
+- Confirmed manual trade workspace identity, entry, SL, TP, pending-order, and P/L tests remain green through the existing trading suite.
+- Confirmed automatic history alignment and quote update paths were not changed.
+
+## Commit
+
+- Base: `85087bc`
+- Subject: `Fix crypto basket integration review issues`
+- The final commit hash is returned in the task response because a commit cannot contain its own hash.
+
+## Concerns
+
+- Validation remains deterministic and offline. Live Capital.com demo stream verification is still deferred to Task 6.
+- Legacy ETF inference depends on the existing ETF catalog membership; newly saved baskets persist `UniverseKind` and do not depend on that fallback.

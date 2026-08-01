@@ -26,7 +26,8 @@ public sealed class SyntheticRealtimeBarBuilder
     {
         ArgumentNullException.ThrowIfNull(basket);
         ArgumentNullException.ThrowIfNull(update);
-        if (_timeframe is not ("4H" or "Daily" or "Weekly") ||
+        if (basket.Strategy != SyntheticStrategyKind.ManualFormula ||
+            !UsesNativeOhlc(_timeframe) ||
             !ReferenceEquals(_basket, basket) ||
             !string.Equals(update.Resolution, StreamingResolution(_timeframe), StringComparison.OrdinalIgnoreCase))
         {
@@ -93,4 +94,6 @@ public sealed class SyntheticRealtimeBarBuilder
         "Weekly" => "WEEK",
         _ => "HOUR",
     };
+
+    public static bool UsesNativeOhlc(string timeframe) => timeframe is "4H" or "Daily" or "Weekly";
 }

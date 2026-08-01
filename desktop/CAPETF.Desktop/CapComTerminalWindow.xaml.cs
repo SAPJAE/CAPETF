@@ -325,11 +325,18 @@ public partial class CapComTerminalWindow : Window
         var formula = ManualSyntheticFormula.Parse(ManualFormulaBox.Text);
         var selectedComponents = ManualSyntheticBasketFactory.Resolve(block, formula, _instruments);
         StatusText.Text = $"Loading {resolution} history for manual formula...";
-        var selectedHistory = await LoadSelectedHistoryAsync(selectedComponents, resolution, cancellationToken);
-        if (selectedHistory.SharedCount < minimumCandles)
+        var selectedHistory = await LoadSelectedHistoryAsync(
+            selectedComponents,
+            resolution,
+            cancellationToken,
+            exactTimestamps: true);
+        var sharedRange = ManualSyntheticBasketFactory.ExactSharedRange(
+            selectedHistory.CandlesByEpic,
+            selectedComponents.Select(component => component.Epic));
+        if (sharedRange.Count < minimumCandles)
         {
             throw new InvalidOperationException(
-                $"The manual formula legs have only {selectedHistory.SharedCount} shared {resolution} candles; {minimumCandles} are required.");
+                $"The manual formula legs have only {sharedRange.Count} exact shared {resolution} timestamps; {minimumCandles} are required.");
         }
 
         _operationState.BeginStage("Building manual formula");
@@ -348,7 +355,7 @@ public partial class CapComTerminalWindow : Window
         await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
         _operationState.BeginStage("Rendering synthetic chart");
         await RenderSyntheticChartAsync(_basket);
-        var buildStatus = $"{_basket.Symbol}: {_basket.Components.Count} manual legs, {HistoryRange(selectedHistory)}, direct formula scale.";
+        var buildStatus = $"{_basket.Symbol}: {_basket.Components.Count} manual legs, {BasketHistoryRange(_basket)}, direct formula scale.";
         StatusText.Text = buildStatus;
         await TryStartStreamingCurrentBasketAsync(buildStatus, cancellationToken);
     }
@@ -362,7 +369,7 @@ public partial class CapComTerminalWindow : Window
         }
 
         var name = _activeBasket.SuggestedSavedBasketName();
-        _savedBasketStore.Save(_activeBasket.CreateSavedBasket(name));
+        _savedBasketStore.Save(_activeBasket.CreateSavedBasket(name, SelectedUniverse()));
         RefreshSavedBaskets(name);
         StatusText.Text = $"Saved basket {name}.";
     }
@@ -400,7 +407,14 @@ public partial class CapComTerminalWindow : Window
 
     private async Task LoadSavedBasketAsync(SavedSyntheticBasket saved, CancellationToken cancellationToken)
     {
-        await EnsureBasketUniverseAsync(saved.Strategy, cancellationToken);
+        if (saved.UniverseKind is null &&
+            saved.Strategy != SyntheticStrategyKind.ManualFormula &&
+            !saved.Block.TrimStart().StartsWith("Crypto /", StringComparison.OrdinalIgnoreCase))
+        {
+            EnsureEtfCatalogLoaded();
+        }
+        var universe = SyntheticBasketUniverseResolver.Resolve(saved, _knownEtfEpics);
+        await EnsureBasketUniverseAsync(universe, cancellationToken);
 
         var resolution = SelectedResolution();
         var periodsPerYear = PeriodsPerYear(resolution);
@@ -416,7 +430,11 @@ public partial class CapComTerminalWindow : Window
         }
         var selectedInstruments = resolvedInstruments.Select(instrument => instrument!).ToList();
 
-        var selectedHistory = await LoadSelectedHistoryAsync(selectedInstruments, resolution, cancellationToken);
+        var selectedHistory = await LoadSelectedHistoryAsync(
+            selectedInstruments,
+            resolution,
+            cancellationToken,
+            exactTimestamps: saved.Strategy == SyntheticStrategyKind.ManualFormula);
         _operationState.BeginStage("Building selected basket");
         await Task.Yield();
         var restored = SavedSyntheticBasketRestorer.Restore(
@@ -444,7 +462,7 @@ public partial class CapComTerminalWindow : Window
         _operationState.BeginStage("Rendering synthetic chart");
         await Task.Yield();
         await RenderSyntheticChartAsync(_basket);
-        var loadStatus = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs, {HistoryRange(selectedHistory)}.";
+        var loadStatus = $"Loaded saved basket {saved.Name}: {_basket.Components.Count} legs, {BasketHistoryRange(_basket)}.";
         StatusText.Text = loadStatus;
         await TryStartStreamingCurrentBasketAsync(loadStatus, cancellationToken);
     }
@@ -457,19 +475,21 @@ public partial class CapComTerminalWindow : Window
         {
             throw new InvalidOperationException("The selected execution is no longer available. Refresh positions and try again.");
         }
-        await EnsureBasketUniverseAsync(
-            execution.BasketQuantity is > 0m
-                ? SyntheticStrategyKind.ManualFormula
-                : SyntheticStrategyKind.SimilarToSelectedSymbol,
-            cancellationToken);
+        if (execution.BasketQuantity is not > 0m) EnsureEtfCatalogLoaded();
+        var universe = SyntheticBasketUniverseResolver.Resolve(execution, _knownEtfEpics);
+        await EnsureBasketUniverseAsync(universe, cancellationToken);
 
-        var saved = SyntheticExecutionBasketSnapshot.Create(execution, _instruments);
+        var saved = SyntheticExecutionBasketSnapshot.Create(execution, _instruments) with { UniverseKind = universe };
         var selectedInstruments = saved.Components
             .Select(component => _instruments.Single(instrument =>
                 string.Equals(instrument.Epic, component.Epic, StringComparison.OrdinalIgnoreCase)))
             .ToList();
         var resolution = SelectedResolution();
-        var history = await LoadSelectedHistoryAsync(selectedInstruments, resolution, cancellationToken);
+        var history = await LoadSelectedHistoryAsync(
+            selectedInstruments,
+            resolution,
+            cancellationToken,
+            exactTimestamps: saved.Strategy == SyntheticStrategyKind.ManualFormula);
         _operationState.BeginStage("Restoring executed basket");
         await Task.Yield();
         var restored = SavedSyntheticBasketRestorer.Restore(
@@ -493,7 +513,7 @@ public partial class CapComTerminalWindow : Window
         await RenderSyntheticChartAsync(
             _basket,
             SyntheticTerminalWorkspace.ExecutionDrawingIdentity(execution.ExecutionId));
-        var status = $"Loaded executed basket {_basket.Symbol}: {_basket.Components.Count} legs, {HistoryRange(history)}.";
+        var status = $"Loaded executed basket {_basket.Symbol}: {_basket.Components.Count} legs, {BasketHistoryRange(_basket)}.";
         StatusText.Text = status;
         await TryStartStreamingCurrentBasketAsync(status, cancellationToken);
         await PublishBrokerSnapshotAsync(cancellationToken);
@@ -585,7 +605,8 @@ public partial class CapComTerminalWindow : Window
     private async Task<HistoryLoadResult> LoadSelectedHistoryAsync(
         IReadOnlyList<MarketInstrument> selectedComponents,
         string resolution,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool exactTimestamps = false)
     {
         await EnsureConnectedAsync(cancellationToken);
         _operationState.BeginStage($"Loading full {resolution} history", selectedComponents.Count);
@@ -597,11 +618,17 @@ public partial class CapComTerminalWindow : Window
         });
         var apiHistory = await _history.LoadSelectedAsync(selectedComponents, resolution, progress, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        return SyntheticHistoryService.MergeSelectedHistory(
-            selectedComponents,
-            resolution,
-            apiHistory,
-            CachedCandlesForResolution(resolution));
+        return exactTimestamps
+            ? SyntheticHistoryService.MergeSelectedManualHistory(
+                selectedComponents,
+                resolution,
+                apiHistory,
+                CachedCandlesForResolution(resolution))
+            : SyntheticHistoryService.MergeSelectedHistory(
+                selectedComponents,
+                resolution,
+                apiHistory,
+                CachedCandlesForResolution(resolution));
     }
 
     private async Task<HistoryLoadResult> LoadCandidateHistoryAsync(
@@ -625,6 +652,10 @@ public partial class CapComTerminalWindow : Window
             ? $"{history.SharedCount} shared candles from {history.SharedStart:yyyy-MM-dd} to {history.SharedEnd:yyyy-MM-dd}"
             : "no shared candles";
 
+    private static string BasketHistoryRange(SyntheticBasket basket) => basket.Candles.Count > 0
+        ? $"{basket.Candles.Count} shared candles from {basket.Candles[0].Time:yyyy-MM-dd} to {basket.Candles[^1].Time:yyyy-MM-dd}"
+        : "no shared candles";
+
     private async Task TryStartStreamingCurrentBasketAsync(string baseStatus, CancellationToken cancellationToken)
     {
         if (_basket is null)
@@ -640,9 +671,11 @@ public partial class CapComTerminalWindow : Window
 
     private async Task StartStreamingCurrentBasketAsync(CancellationToken cancellationToken)
     {
-        _operationState.BeginStage("Starting live stream", 2);
         await EnsureConnectedAsync(cancellationToken);
         if (_basket is null) return;
+        var subscriptionCount = _basket.Strategy == SyntheticStrategyKind.ManualFormula &&
+            SyntheticRealtimeBarBuilder.UsesNativeOhlc(SelectedResolution()) ? 2 : 1;
+        _operationState.BeginStage("Starting live stream", subscriptionCount);
 
         if (_streaming is null || !_streaming.IsConnected)
         {
@@ -662,14 +695,13 @@ public partial class CapComTerminalWindow : Window
         }
 
         var epics = SyntheticTerminalWorkspace.StreamingEpics(_basket);
-        await _streaming.SubscribeQuotesAsync(_api.Session!, epics, cancellationToken);
-        _operationState.Report("Starting live stream", 1, 2);
-        await _streaming.SubscribeOhlcAsync(
+        await SyntheticStreamingSubscription.SubscribeAsync(
+            _streaming,
             _api.Session!,
-            epics,
-            SyntheticRealtimeBarBuilder.StreamingResolution(SelectedResolution()),
+            _basket,
+            SelectedResolution(),
             cancellationToken);
-        _operationState.Report("Starting live stream", 2, 2);
+        _operationState.Report("Starting live stream", subscriptionCount, subscriptionCount);
         ConnectionText.Text = $"Streaming {_basket.Symbol}";
         StatusText.Text = $"Streaming {_basket.Symbol}: {epics.Count} component epics.";
     }
@@ -795,7 +827,11 @@ public partial class CapComTerminalWindow : Window
     {
         var resolution = SelectedResolution();
         var selectedComponents = existingBasket.Components.Select(component => component.Instrument).ToList();
-        var history = await LoadSelectedHistoryAsync(selectedComponents, resolution, cancellationToken);
+        var history = await LoadSelectedHistoryAsync(
+            selectedComponents,
+            resolution,
+            cancellationToken,
+            exactTimestamps: existingBasket.Strategy == SyntheticStrategyKind.ManualFormula);
         _operationState.BeginStage("Building selected basket");
         await Task.Yield();
         var rebuilt = _activeBasket.RebuildHistory(
@@ -814,7 +850,7 @@ public partial class CapComTerminalWindow : Window
         _operationState.BeginStage("Rendering synthetic chart");
         await Task.Yield();
         await RenderSyntheticChartAsync(_basket, _terminalDrawingIdentity);
-        var reloadStatus = $"{_basket.Symbol}: reloaded {resolution} history for the same {_basket.Components.Count} legs, {HistoryRange(history)}.";
+        var reloadStatus = $"{_basket.Symbol}: reloaded {resolution} history for the same {_basket.Components.Count} legs, {BasketHistoryRange(_basket)}.";
         StatusText.Text = reloadStatus;
         await TryStartStreamingCurrentBasketAsync(reloadStatus, cancellationToken);
     }
@@ -1056,33 +1092,33 @@ public partial class CapComTerminalWindow : Window
         };
 
     private async Task EnsureBasketUniverseAsync(
-        SyntheticStrategyKind strategy,
+        TerminalUniverseKind universe,
         CancellationToken cancellationToken)
     {
-        if (strategy != SyntheticStrategyKind.ManualFormula)
-        {
-            if (_instruments.Count == 0) await LoadStocksAsync(cancellationToken);
-            return;
-        }
+        await _universeUi.EnsureActiveAsync(
+            SelectedUniverse(),
+            universe,
+            _instruments,
+            _knownEtfEpics,
+            SelectUniverse,
+            ClearTerminalChartAsync,
+            selected => LoadUniverseAsync(selected, cancellationToken));
+    }
 
-        if (SelectedUniverse() != TerminalUniverseKind.Crypto)
+    private void SelectUniverse(TerminalUniverseKind universe)
+    {
+        if (SelectedUniverse() == universe) return;
+        _changingUniverseProgrammatically = true;
+        try
         {
-            _changingUniverseProgrammatically = true;
-            try
-            {
-                UniverseBox.SelectedItem = UniverseBox.Items
-                    .OfType<ComboBoxItem>()
-                    .First(item => string.Equals(item.Content?.ToString(), "Crypto", StringComparison.Ordinal));
-            }
-            finally
-            {
-                _changingUniverseProgrammatically = false;
-            }
+            var label = UniverseLabel(universe);
+            UniverseBox.SelectedItem = UniverseBox.Items
+                .OfType<ComboBoxItem>()
+                .First(item => string.Equals(item.Content?.ToString(), label, StringComparison.Ordinal));
         }
-
-        if (_instruments.Count == 0 || _instruments.Any(instrument => !CapitalInstrumentTypes.IsCrypto(instrument)))
+        finally
         {
-            await LoadUniverseAsync(TerminalUniverseKind.Crypto, cancellationToken);
+            _changingUniverseProgrammatically = false;
         }
     }
 

@@ -282,7 +282,7 @@ public static class ManualSyntheticBasketFactory
         if (minimumCandles < 1) throw new ArgumentOutOfRangeException(nameof(minimumCandles));
         ValidateResolvedBlock(block, resolved);
 
-        var rowsByKey = new List<Dictionary<string, OhlcPoint>>(resolved.Count);
+        var rowsByKey = new List<Dictionary<long, OhlcPoint>>(resolved.Count);
         foreach (var term in resolved)
         {
             if (!candles.TryGetValue(term.Instrument.Epic, out var rows))
@@ -292,8 +292,8 @@ public static class ManualSyntheticBasketFactory
 
             var keyed = rows
                 .OrderBy(row => row.Time)
-                .GroupBy(row => AlignmentKey(row.Time, timeframe), StringComparer.Ordinal)
-                .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
+                .GroupBy(row => ExactTimestampKey(row.Time))
+                .ToDictionary(group => group.Key, group => group.Last());
             if (keyed.Count < minimumCandles)
             {
                 throw new InvalidOperationException($"Not enough candle history is available for '{term.Instrument.Epic}'.");
@@ -301,7 +301,7 @@ public static class ManualSyntheticBasketFactory
             rowsByKey.Add(keyed);
         }
 
-        var sharedKeys = rowsByKey[0].Keys.ToHashSet(StringComparer.Ordinal);
+        var sharedKeys = rowsByKey[0].Keys.ToHashSet();
         foreach (var rows in rowsByKey.Skip(1)) sharedKeys.IntersectWith(rows.Keys);
         var orderedKeys = sharedKeys.OrderBy(key => rowsByKey[0][key].Time).ToList();
         if (orderedKeys.Count < minimumCandles)
@@ -413,10 +413,33 @@ public static class ManualSyntheticBasketFactory
         return parts[1];
     }
 
-    private static string AlignmentKey(DateTimeOffset time, string? timeframe) =>
-        string.IsNullOrWhiteSpace(timeframe)
-            ? $"T:{time.ToUniversalTime().Ticks}"
-            : SyntheticHistoryService.AlignmentKey(time, timeframe);
+    internal static (int Count, DateTimeOffset? Start, DateTimeOffset? End) ExactSharedRange(
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
+        IEnumerable<string> epics)
+    {
+        HashSet<long>? shared = null;
+        var times = new Dictionary<long, DateTimeOffset>();
+        foreach (var epic in epics)
+        {
+            if (!candles.TryGetValue(epic, out var rows)) return (0, null, null);
+            var keys = rows.Select(row => ExactTimestampKey(row.Time)).ToHashSet();
+            if (shared is null)
+            {
+                shared = keys;
+                foreach (var row in rows) times[ExactTimestampKey(row.Time)] = row.Time.ToUniversalTime();
+            }
+            else
+            {
+                shared.IntersectWith(keys);
+            }
+        }
+
+        if (shared is null || shared.Count == 0) return (0, null, null);
+        var ordered = shared.Order().ToArray();
+        return (ordered.Length, times[ordered[0]], times[ordered[^1]]);
+    }
+
+    private static long ExactTimestampKey(DateTimeOffset time) => time.ToUniversalTime().Ticks;
 
     private static string NormalizeIdentifier(string? value) =>
         new((value ?? "").Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());

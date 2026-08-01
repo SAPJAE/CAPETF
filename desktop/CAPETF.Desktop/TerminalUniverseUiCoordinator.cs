@@ -35,6 +35,31 @@ public sealed class TerminalUniverseUiCoordinator
         await loadAsync();
     }
 
+    public async Task EnsureActiveAsync(
+        TerminalUniverseKind current,
+        TerminalUniverseKind target,
+        IReadOnlyList<MarketInstrument> currentInstruments,
+        IReadOnlySet<string> knownEtfEpics,
+        Action<TerminalUniverseKind> select,
+        Func<Task> clearAsync,
+        Func<TerminalUniverseKind, Task> loadAsync)
+    {
+        ArgumentNullException.ThrowIfNull(currentInstruments);
+        ArgumentNullException.ThrowIfNull(knownEtfEpics);
+        ArgumentNullException.ThrowIfNull(select);
+        ArgumentNullException.ThrowIfNull(clearAsync);
+        ArgumentNullException.ThrowIfNull(loadAsync);
+
+        var changed = current != target;
+        var requiresLoad = changed || currentInstruments.Count == 0 ||
+            currentInstruments.Any(instrument => !TerminalUniverse.Accepts(target, instrument, knownEtfEpics));
+        if (changed) select(target);
+        if (requiresLoad)
+        {
+            await SwitchAsync(clearAsync, () => loadAsync(target));
+        }
+    }
+
     public TerminalUniverseControlState BuildControls(IReadOnlyList<MarketInstrument> instruments)
     {
         ArgumentNullException.ThrowIfNull(instruments);

@@ -24,10 +24,10 @@ public sealed class ActiveSyntheticBasketState
         return $"{basket.Symbol}-{suffix}";
     }
 
-    public SavedSyntheticBasket CreateSavedBasket(string name)
+    public SavedSyntheticBasket CreateSavedBasket(string name, TerminalUniverseKind? universeKind = null)
     {
         var basket = Basket ?? throw new InvalidOperationException("Build a synthetic basket before saving.");
-        return SavedSyntheticBasket.FromBasket(name, basket.Strategy, basket);
+        return SavedSyntheticBasket.FromBasket(name, basket.Strategy, basket, universeKind);
     }
 
     public SyntheticBasket? RebuildHistory(
