@@ -1,22 +1,38 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.Http;
+
 namespace CAPETF.Desktop;
 
 public sealed class CryptoMarketMetadataEnricher
 {
     public const int DefaultMaximumConcurrency = 4;
+    public static readonly TimeSpan DefaultMinimumRequestSpacing = TimeSpan.FromMilliseconds(110);
+    public const int DefaultMaximumAttempts = 3;
 
     private readonly Func<string, CancellationToken, Task<MarketInstrument?>> _loadDetails;
     private readonly int _maximumConcurrency;
+    private readonly TimeSpan _minimumRequestSpacing;
+    private readonly int _maximumAttempts;
+    private readonly SemaphoreSlim _requestGate = new(1, 1);
+    private long _nextRequestStartTimestamp;
     private readonly Dictionary<string, MarketInstrument> _detailsByEpic =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly object _cacheGate = new();
 
     public CryptoMarketMetadataEnricher(
         Func<string, CancellationToken, Task<MarketInstrument?>> loadDetails,
-        int maximumConcurrency = DefaultMaximumConcurrency)
+        int maximumConcurrency = DefaultMaximumConcurrency,
+        TimeSpan? minimumRequestSpacing = null,
+        int maximumAttempts = DefaultMaximumAttempts)
     {
         _loadDetails = loadDetails ?? throw new ArgumentNullException(nameof(loadDetails));
         if (maximumConcurrency < 1) throw new ArgumentOutOfRangeException(nameof(maximumConcurrency));
+        if (minimumRequestSpacing < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(minimumRequestSpacing));
+        if (maximumAttempts < 1) throw new ArgumentOutOfRangeException(nameof(maximumAttempts));
         _maximumConcurrency = maximumConcurrency;
+        _minimumRequestSpacing = minimumRequestSpacing ?? DefaultMinimumRequestSpacing;
+        _maximumAttempts = maximumAttempts;
     }
 
     public async Task<IReadOnlyList<MarketInstrument>> EnrichAsync(
@@ -62,7 +78,7 @@ public sealed class CryptoMarketMetadataEnricher
             {
                 try
                 {
-                    var details = await _loadDetails(candidate.Epic, token);
+                    var details = await LoadWithRetryAsync(candidate.Epic, token);
                     if (details is not null)
                     {
                         Cache(candidate.Epic, details);
@@ -91,6 +107,45 @@ public sealed class CryptoMarketMetadataEnricher
                 ? Merge(summary, details)
                 : summary)
             .ToList();
+    }
+
+    private async Task<MarketInstrument?> LoadWithRetryAsync(string epic, CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            await WaitForRequestSlotAsync(cancellationToken);
+            try
+            {
+                return await _loadDetails(epic, cancellationToken);
+            }
+            catch (CapitalApiException ex) when (
+                ex.StatusCode == HttpStatusCode.TooManyRequests && attempt < _maximumAttempts)
+            {
+            }
+            catch (HttpRequestException ex) when (
+                ex.StatusCode == HttpStatusCode.TooManyRequests && attempt < _maximumAttempts)
+            {
+            }
+        }
+    }
+
+    private async Task WaitForRequestSlotAsync(CancellationToken cancellationToken)
+    {
+        await _requestGate.WaitAsync(cancellationToken);
+        try
+        {
+            var remainingTicks = _nextRequestStartTimestamp - Stopwatch.GetTimestamp();
+            if (remainingTicks > 0)
+            {
+                await Task.Delay(TimeSpan.FromSeconds((double)remainingTicks / Stopwatch.Frequency), cancellationToken);
+            }
+            _nextRequestStartTimestamp = Stopwatch.GetTimestamp() +
+                (long)Math.Ceiling(_minimumRequestSpacing.TotalSeconds * Stopwatch.Frequency);
+        }
+        finally
+        {
+            _requestGate.Release();
+        }
     }
 
     public static bool NeedsEnrichment(MarketInstrument instrument) =>

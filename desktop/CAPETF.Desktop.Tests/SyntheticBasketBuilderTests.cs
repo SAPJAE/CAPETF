@@ -37,6 +37,7 @@ public static class SyntheticBasketBuilderTests
         CryptoMetadataEnrichmentDeduplicatesRequestsAndCachesSuccessfulDetails();
         CryptoMetadataEnrichmentToleratesFailuresAndReappliesOpenableFiltering();
         CryptoMetadataEnrichmentHonorsCancellationReportsProgressAndBoundsConcurrency();
+        CryptoMetadataEnrichmentPacesRequestsAndRetriesRateLimits();
         CryptoGroupingDerivesExplicitQuoteCurrencyWhenCapitalOmitsCurrency();
         CapComTerminalExposesGroupedCryptoUniverse();
         TerminalUniverseUiCoordinatorRestoresKnownEtfExclusionAfterCrypto();
@@ -1915,10 +1916,52 @@ public static class SyntheticBasketBuilderTests
         AssertEqual((5, 5), progress.Last(), "crypto metadata progress must complete after all details settle");
     }
 
+    private static void CryptoMetadataEnrichmentPacesRequestsAndRetriesRateLimits()
+    {
+        var starts = new List<long>();
+        var attempts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var clock = Stopwatch.StartNew();
+        Task<MarketInstrument?> Load(string epic, CancellationToken _)
+        {
+            lock (starts) starts.Add(clock.ElapsedMilliseconds);
+            int attempt;
+            lock (attempts)
+            {
+                attempts[epic] = attempts.GetValueOrDefault(epic) + 1;
+                attempt = attempts[epic];
+            }
+            if (epic == "RATE-LIMITED" && attempt == 1)
+            {
+                throw new CapitalApiException(HttpStatusCode.TooManyRequests, "Too Many Requests", "{}");
+            }
+            return Task.FromResult<MarketInstrument?>(CryptoMetadataFixture(epic, $"{epic}/USD", epic, "USD"));
+        }
+
+        var enricher = new CryptoMarketMetadataEnricher(
+            Load,
+            maximumConcurrency: 4,
+            minimumRequestSpacing: TimeSpan.FromMilliseconds(20),
+            maximumAttempts: 2);
+        var enriched = EnrichCryptoMetadata(
+            enricher,
+            [
+                CryptoMetadataFixture("FIRST", "FIRST/USD", "First", ""),
+                CryptoMetadataFixture("RATE-LIMITED", "RATE/USD", "Rate limited", ""),
+                CryptoMetadataFixture("THIRD", "THIRD/USD", "Third", ""),
+            ]);
+
+        AssertEqual(3, enriched.Count(item => item.Currency == "USD"), "a rate-limited crypto detail must be retried and enriched");
+        AssertEqual(2, attempts["RATE-LIMITED"], "HTTP 429 must use the bounded metadata retry path");
+        var orderedStarts = starts.OrderBy(value => value).ToList();
+        AssertTrue(
+            orderedStarts.Zip(orderedStarts.Skip(1), (left, right) => right - left).All(delta => delta >= 15),
+            "parallel metadata workers must preserve a global request-start interval");
+    }
+
     private static CryptoMarketMetadataEnricher CreateCryptoMetadataEnricher(
         Func<string, CancellationToken, Task<MarketInstrument?>> loadDetails,
         int maximumConcurrency = 4)
-        => new(loadDetails, maximumConcurrency);
+        => new(loadDetails, maximumConcurrency, TimeSpan.Zero);
 
     private static IReadOnlyList<MarketInstrument> EnrichCryptoMetadata(
         IReadOnlyList<MarketInstrument> summaries,
