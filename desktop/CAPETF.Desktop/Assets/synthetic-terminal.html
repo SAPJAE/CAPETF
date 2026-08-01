@@ -823,6 +823,14 @@
       font-size: 11px;
     }
 
+    #quantity-lots {
+      flex: 0 0 auto;
+      color: #93c5fd;
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
     #quantity {
       width: 140px;
       min-width: 0;
@@ -1355,7 +1363,8 @@
             <span id="trade-readiness-detail">Demo connection required</span>
           </div>
           <div id="quantity-row">
-            <label for="quantity">Basket notional</label>
+            <label for="quantity">Basket quantity</label>
+            <span id="quantity-lots">n/a</span>
             <input id="quantity" type="number" value="300" min="1" step="100" inputmode="decimal">
           </div>
           <div id="trade-actions">
@@ -1536,6 +1545,8 @@
     const componentSplitter = document.getElementById('component-splitter');
     const terminal = document.getElementById('terminal');
     const quantity = document.getElementById('quantity');
+    const quantityLots = document.getElementById('quantity-lots');
+    let activeBasketLotSize = null;
     const intervalButtons = Array.from(document.querySelectorAll('.interval'));
     const modeButtons = Array.from(document.querySelectorAll('.mode'));
     const maButtons = Array.from(document.querySelectorAll('.ma'));
@@ -1741,7 +1752,15 @@
     }
 
     function refreshTradingControls() {
-      const notionalValid = parseBasketNotional(quantity.value) !== null;
+      const basketQuantity = parseBasketNotional(quantity.value);
+      const notionalValid = basketQuantity !== null;
+      if (basketQuantity !== null && Number.isFinite(activeBasketLotSize) && activeBasketLotSize > 0) {
+        const lots = Math.round(basketQuantity / activeBasketLotSize);
+        const exactLots = Math.abs((lots * activeBasketLotSize) - basketQuantity) <= Math.max(1e-12, activeBasketLotSize * 1e-9);
+        quantityLots.textContent = exactLots ? `${lots} lot${lots === 1 ? '' : 's'}` : 'off lot grid';
+      } else {
+        quantityLots.textContent = 'n/a';
+      }
       const connected = terminalTradingMode.isDemo && terminalTradingMode.executionEnabled;
       const busy = tradingIsBusy();
       const canPreflight = connected && hasTradableBasket() && notionalValid && !busy;
@@ -3309,6 +3328,16 @@
       activeTerminalIdentity = nextTerminalIdentity;
       const suggestedBasketQuantity = Number(getField(
         nextPayload, 'SuggestedBasketQuantity', 'suggestedBasketQuantity', NaN));
+      activeBasketLotSize = Number.isFinite(suggestedBasketQuantity) && suggestedBasketQuantity > 0
+        ? suggestedBasketQuantity
+        : null;
+      if (activeBasketLotSize !== null) {
+        quantity.min = String(suggestedBasketQuantity);
+        quantity.step = String(suggestedBasketQuantity);
+      } else {
+        quantity.min = '0.00000001';
+        quantity.step = 'any';
+      }
       if (identityChanged && Number.isFinite(suggestedBasketQuantity) && suggestedBasketQuantity > 0) {
         quantity.value = String(suggestedBasketQuantity);
       }

@@ -2890,6 +2890,14 @@ public static class SyntheticBasketBuilderTests
             "the terminal must apply the host-owned suggested manual basket quantity");
         AssertTrue(html.Contains("identityChanged", StringComparison.Ordinal),
             "a timeframe refresh must not overwrite a user's quantity for the same synthetic identity");
+        AssertTrue(html.Contains("quantity.min = String(suggestedBasketQuantity)", StringComparison.Ordinal),
+            "manual quantity input must accept the smallest executable basket lot");
+        AssertTrue(html.Contains("quantity.step = String(suggestedBasketQuantity)", StringComparison.Ordinal),
+            "manual quantity input must advance in exact executable basket lots");
+        AssertTrue(html.Contains("id=\"quantity-lots\"", StringComparison.Ordinal),
+            "the terminal must show the executable-lot equivalent beside basket quantity");
+        AssertTrue(html.Contains("Math.round(basketQuantity / activeBasketLotSize)", StringComparison.Ordinal),
+            "the executable-lot equivalent must derive from the host-owned minimum quantity");
     }
 
     private static void TerminalPayloadUsesComponentIdentityAndExplicitQuoteFreshness()
