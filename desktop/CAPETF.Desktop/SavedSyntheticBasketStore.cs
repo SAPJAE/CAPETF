@@ -52,7 +52,7 @@ public sealed record SavedSyntheticBasket(
                 component.Weight,
                 component.FormulaMultiplier,
                 component.FormulaReferencePrice)).ToList(),
-            UniverseKind: universeKind);
+            UniverseKind: universeKind ?? basket.UniverseKind);
     }
 
     private static string StableId(string source)

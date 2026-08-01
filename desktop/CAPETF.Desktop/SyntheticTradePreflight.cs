@@ -184,7 +184,8 @@ public static class SyntheticTradePreflight
             margin.AccountCurrency,
             Array.AsReadOnly(legs),
             input.AccountId,
-            executable.BasketQuantity);
+            executable.BasketQuantity,
+            input.UniverseKind ?? input.Basket.UniverseKind);
 
         return new SyntheticPreflightResult(true, ticket, Array.Empty<SyntheticPreflightFailure>());
     }

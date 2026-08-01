@@ -448,7 +448,8 @@ public sealed class SyntheticBasketExecutionService
             SyntheticExecutionState.Submitting,
             legs,
             ticket.AccountId,
-            ticket.BasketQuantity);
+            ticket.BasketQuantity,
+            ticket.UniverseKind);
     }
 
     private async Task<ConfirmationResult> PollConfirmationAsync(string dealReference, CancellationToken cancellationToken)

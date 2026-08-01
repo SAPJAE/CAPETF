@@ -78,7 +78,8 @@ public sealed record SyntheticPreflightInput(
     DateTimeOffset NowUtc,
     SyntheticMarginSummary? Margin,
     string AccountId = "",
-    bool HedgingMode = false);
+    bool HedgingMode = false,
+    TerminalUniverseKind? UniverseKind = null);
 
 public sealed record SyntheticPreflightFailure(string Epic, string Reason);
 
@@ -103,7 +104,8 @@ public sealed record SyntheticExecutionTicket(
     string MarginCurrency,
     IReadOnlyList<SyntheticExecutionLeg> Legs,
     string AccountId = "",
-    decimal? BasketQuantity = null);
+    decimal? BasketQuantity = null,
+    TerminalUniverseKind? UniverseKind = null);
 
 public enum SyntheticExecutionState
 {
@@ -165,7 +167,8 @@ public sealed record SyntheticExecutionRecord(
     SyntheticExecutionState State,
     IReadOnlyList<SyntheticExecutionLegRecord> Legs,
     string AccountId = "",
-    decimal? BasketQuantity = null);
+    decimal? BasketQuantity = null,
+    TerminalUniverseKind? UniverseKind = null);
 
 public sealed record SyntheticPreflightResult(
     bool IsReady,

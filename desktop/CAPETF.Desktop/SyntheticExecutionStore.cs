@@ -197,6 +197,7 @@ public sealed class SyntheticExecutionStore
                 || execution.CreatedUtc == default
                 || execution.UpdatedUtc == default
                 || execution.UpdatedUtc < execution.CreatedUtc
+                || execution.UniverseKind is { } universeKind && !Enum.IsDefined(universeKind)
                 || !Enum.IsDefined(execution.State)
                 || execution.State is SyntheticExecutionState.Preflighting or SyntheticExecutionState.Ready
                 || execution.Legs is null

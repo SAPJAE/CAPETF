@@ -3515,9 +3515,37 @@ public static class SyntheticTradingTests
         AssertEqual(15m, negativeLeg.Quantity, "ticket copies executable quantity");
         AssertEqual(10m, negativeLeg.ReferencePrice, "ticket copies executable price");
         AssertEqual(30m, negativeLeg.EstimatedMargin, "ticket copies executable margin");
+        AssertEqual<TerminalUniverseKind?>(TerminalUniverseKind.ETFs, ticket.UniverseKind,
+            "preflight freezes the selected universe on the ticket");
 
         basket.Components.Single(component => component.Instrument.Epic == negativeLeg.Epic).Instrument.Bid = 99m;
         AssertEqual(10m, negativeLeg.ReferencePrice, "chart updates must not mutate a frozen ticket");
+
+        var gateway = AcceptedExecutionGateway(ticket.Legs.Select(leg => leg.Epic).ToArray());
+        var execution = CreateExecutionService(gateway)
+            .ExecuteAsync(ticket, IgnoreProgress, default).GetAwaiter().GetResult();
+        AssertEqual<TerminalUniverseKind?>(TerminalUniverseKind.ETFs, execution.UniverseKind,
+            "execution persistence keeps the ticket universe identity");
+        var saved = SyntheticExecutionBasketSnapshot.Create(
+            execution,
+            basket.Components.Select(component => component.Instrument).ToArray());
+        AssertEqual<TerminalUniverseKind?>(TerminalUniverseKind.ETFs, saved.UniverseKind,
+            "execution snapshot keeps the persisted universe identity");
+
+        var folder = Path.Combine(Path.GetTempPath(), $"capetf-universe-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var store = new SyntheticExecutionStore(Path.Combine(folder, "executions.json"));
+            store.SaveAsync([execution], default).GetAwaiter().GetResult();
+            var persisted = store.LoadAsync(default).GetAwaiter().GetResult().Single();
+            AssertEqual<TerminalUniverseKind?>(TerminalUniverseKind.ETFs, persisted.UniverseKind,
+                "execution JSON persists the frozen universe identity");
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
     }
 
     private static void ExecutionWaitsForAcceptedConfirmationBeforeSubmittingNextLeg()
@@ -3955,7 +3983,8 @@ public static class SyntheticTradingTests
             now ?? DateTimeOffset.Parse("2026-07-30T12:00:00Z"),
             CreateMarginSummary(),
             "account-123",
-            true);
+            true,
+            TerminalUniverseKind.ETFs);
 
     private static SyntheticPreflightInput CreateThreeLegPreflightInput() =>
         CreatePreflightInput(CreateBasket([

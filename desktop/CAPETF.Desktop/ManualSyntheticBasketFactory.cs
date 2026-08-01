@@ -322,6 +322,7 @@ public static class ManualSyntheticBasketFactory
         {
             Symbol = symbol.Trim(),
             Block = block.Trim(),
+            UniverseKind = TerminalUniverseKind.Crypto,
             Strategy = SyntheticStrategyKind.ManualFormula,
             BasketPrice = syntheticCandles[^1].Close,
             LastUpdated = syntheticCandles[^1].Time,

@@ -67,7 +67,8 @@ public static class SyntheticExecutionBasketSnapshot
                 isManual && totalNotional > 0m ? leg.Notional / totalNotional * 100m : 100m / execution.Legs.Count,
                 leg.Multiplier,
                 leg.ReferencePrice)).ToArray(),
-            execution.BasketQuantity);
+            execution.BasketQuantity,
+            execution.UniverseKind);
     }
 
     private static string CommonValue(IEnumerable<string> values, string fallback)

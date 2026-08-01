@@ -35,6 +35,7 @@ public static class SyntheticBasketBuilderTests
         CapComTerminalExposesGroupedCryptoUniverse();
         TerminalUniverseUiCoordinatorRestoresKnownEtfExclusionAfterCrypto();
         SavedAndOpenBasketsRestoreTheirUniverseInBothDirections();
+        LegacyUniverseResolutionProbesUncataloguedEtfsAndRejectsUnresolvedRecords();
         TerminalUniverseUiCoordinatorCachesUniversesSeparately();
         TerminalUniverseUiCoordinatorClearsBeforeAFailedSwitchLoad();
         TerminalUniverseUiCoordinatorBuildsBlocksAndSeedsForTheActiveUniverse();
@@ -1771,7 +1772,11 @@ public static class SyntheticBasketBuilderTests
                 epics.Select(epic => new SavedSyntheticComponent(epic, epic, "USD", 100m / epics.Count, 1m, 100m)).ToArray(),
                 UniverseKind: universe);
 
-        SyntheticExecutionRecord Execution(string id, IReadOnlyList<string> epics, decimal? basketQuantity = null) =>
+        SyntheticExecutionRecord Execution(
+            string id,
+            IReadOnlyList<string> epics,
+            decimal? basketQuantity = null,
+            TerminalUniverseKind? universe = null) =>
             new(
                 id,
                 $"ticket-{id}",
@@ -1786,7 +1791,8 @@ public static class SyntheticBasketBuilderTests
                 epics.Select(epic => new SyntheticExecutionLegRecord(
                     epic, "BUY", 1m, 100m, basketQuantity ?? 1m, 100m, 20m, "USD",
                     SyntheticExecutionLegState.Open, "", $"deal-{epic}", "", 100m, "", now, now, null, now)).ToArray(),
-                BasketQuantity: basketQuantity);
+                BasketQuantity: basketQuantity,
+                UniverseKind: universe);
 
         var savedStock = Saved(
             "saved-stock", "US / USD / Technology", SyntheticStrategyKind.DipInsideUptrend,
@@ -1797,9 +1803,12 @@ public static class SyntheticBasketBuilderTests
         var legacySavedCrypto = Saved(
             "saved-crypto", "Crypto / USD / All", SyntheticStrategyKind.ManualFormula,
             ["ETH", "BTC"]);
-        var stockExecution = Execution("open-stock", ["STOCK-A", "STOCK-B", "STOCK-C"]);
-        var etfExecution = Execution("open-etf", ["ETF-A", "ETF-B", "ETF-C"]);
-        var cryptoExecution = Execution("open-crypto", ["ETH", "BTC"], basketQuantity: 1m);
+        var stockExecution = Execution(
+            "open-stock", ["STOCK-A", "STOCK-B", "STOCK-C"], universe: TerminalUniverseKind.Stocks);
+        var etfExecution = Execution(
+            "open-etf", ["ETF-A", "ETF-B", "ETF-C"], universe: TerminalUniverseKind.ETFs);
+        var cryptoExecution = Execution(
+            "open-crypto", ["ETH", "BTC"], basketQuantity: 1m, universe: TerminalUniverseKind.Crypto);
 
         AssertEqual(TerminalUniverseKind.Stocks, SyntheticBasketUniverseResolver.Resolve(savedStock, knownEtfs),
             "persisted stock universe identity");
@@ -1859,6 +1868,141 @@ public static class SyntheticBasketBuilderTests
             "legacy saved JSON without UniverseKind remains compatible");
         AssertEqual(TerminalUniverseKind.ETFs, SyntheticBasketUniverseResolver.Resolve(deserializedLegacy, knownEtfs),
             "legacy saved JSON still restores the ETF universe");
+    }
+
+    private static void LegacyUniverseResolutionProbesUncataloguedEtfsAndRejectsUnresolvedRecords()
+    {
+        var now = DateTimeOffset.Parse("2026-08-01T00:00:00Z");
+        var knownEtfs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var epics = new[] { "API-ETF-A", "API-ETF-B", "API-ETF-C" };
+        var saved = new SavedSyntheticBasket(
+            "legacy-api-etf",
+            "Legacy API ETF",
+            "SYN-API-ETF",
+            "US / USD / All",
+            SyntheticStrategyKind.MeanReversion,
+            now,
+            now,
+            epics.Select(epic => new SavedSyntheticComponent(epic, epic, "USD", 100m / 3m, 1m, 100m)).ToArray());
+        var execution = new SyntheticExecutionRecord(
+            "legacy-api-etf-execution",
+            "legacy-api-etf-ticket",
+            "SYN-API-ETF",
+            "BUY",
+            300m,
+            60m,
+            "USD",
+            now,
+            now,
+            SyntheticExecutionState.Open,
+            epics.Select(epic => new SyntheticExecutionLegRecord(
+                epic, "BUY", 1m, 100m, 1m, 100m, 20m, "USD",
+                SyntheticExecutionLegState.Open, "", $"deal-{epic}", "", 100m, "", now, now, null, now)).ToArray());
+        var caches = new Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>>
+        {
+            [TerminalUniverseKind.Crypto] =
+            [
+                new MarketInstrument { Epic = "BTCUSD", Type = "CRYPTOCURRENCIES", Status = "TRADEABLE" },
+            ],
+        };
+        var probes = new List<string>();
+        Task<MarketInstrument?> Probe(string epic, CancellationToken _)
+        {
+            probes.Add(epic);
+            return Task.FromResult<MarketInstrument?>(new MarketInstrument
+            {
+                Epic = epic,
+                Name = $"{epic} Exchange Traded Fund",
+                Type = "ETF",
+                Currency = "USD",
+                Status = "TRADEABLE",
+            });
+        }
+
+        var typedCache = new Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>>
+        {
+            [TerminalUniverseKind.Stocks] = epics.Select(epic => new MarketInstrument
+            {
+                Epic = epic,
+                Type = "ETF",
+                Status = "TRADEABLE",
+            }).ToArray(),
+        };
+        var typedCacheResolution = SyntheticBasketUniverseResolver.ResolveAsync(
+            saved,
+            knownEtfs,
+            typedCache,
+            (_, _) => throw new Exception("typed cache resolution must not probe Capital metadata"))
+            .GetAwaiter().GetResult();
+        AssertEqual(TerminalUniverseKind.ETFs, typedCacheResolution.Universe,
+            "Capital ETF type metadata overrides a stale non-ETF cache label");
+
+        var savedResolution = SyntheticBasketUniverseResolver.ResolveAsync(
+            saved, knownEtfs, caches, Probe).GetAwaiter().GetResult();
+        AssertEqual(TerminalUniverseKind.ETFs, savedResolution.Universe,
+            "an uncatalogued Capital ETF type must restore a legacy saved basket to ETFs");
+        AssertSequence(savedResolution.Instruments.Select(instrument => instrument.Epic), epics);
+        AssertSequence(probes, epics);
+        var coordinator = new TerminalUniverseUiCoordinator();
+        var selectedUniverse = TerminalUniverseKind.Crypto;
+        TerminalUniverseKind? loadedUniverse = null;
+        coordinator.EnsureActiveAsync(
+                TerminalUniverseKind.Crypto,
+                savedResolution.Universe,
+                caches[TerminalUniverseKind.Crypto],
+                knownEtfs,
+                universe => selectedUniverse = universe,
+                () => Task.CompletedTask,
+                universe =>
+                {
+                    loadedUniverse = universe;
+                    return Task.CompletedTask;
+                })
+            .GetAwaiter().GetResult();
+        AssertEqual(TerminalUniverseKind.ETFs, selectedUniverse,
+            "uncatalogued ETF restore switches the selector away from Crypto");
+        AssertEqual<TerminalUniverseKind?>(TerminalUniverseKind.ETFs, loadedUniverse,
+            "uncatalogued ETF restore loads ETFs before resolving legs");
+
+        probes.Clear();
+        var executionResolution = SyntheticBasketUniverseResolver.ResolveAsync(
+            execution, knownEtfs, caches, Probe).GetAwaiter().GetResult();
+        AssertEqual(TerminalUniverseKind.ETFs, executionResolution.Universe,
+            "an uncatalogued Capital ETF type must restore a legacy open execution to ETFs");
+        AssertSequence(executionResolution.Instruments.Select(instrument => instrument.Epic), epics);
+        AssertSequence(probes, epics);
+
+        var legacyExecutionJson = JsonSerializer.Serialize(execution, new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        });
+        var deserializedExecution = JsonSerializer.Deserialize<SyntheticExecutionRecord>(legacyExecutionJson)
+            ?? throw new Exception("legacy execution JSON should deserialize");
+        AssertEqual<TerminalUniverseKind?>(null, deserializedExecution.UniverseKind,
+            "legacy execution JSON without UniverseKind remains compatible");
+
+        var ambiguousCaches = new Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>>
+        {
+            [TerminalUniverseKind.Stocks] = epics.Select(epic => new MarketInstrument { Epic = epic }).ToArray(),
+            [TerminalUniverseKind.ETFs] = epics.Select(epic => new MarketInstrument { Epic = epic }).ToArray(),
+        };
+        AssertThrows<InvalidOperationException>(
+            () => SyntheticBasketUniverseResolver.ResolveAsync(
+                saved,
+                knownEtfs,
+                ambiguousCaches,
+                (_, _) => Task.FromResult<MarketInstrument?>(null)).GetAwaiter().GetResult(),
+            "ambiguous",
+            "legacy epics present in multiple universe caches");
+
+        AssertThrows<InvalidOperationException>(
+            () => SyntheticBasketUniverseResolver.ResolveAsync(
+                execution,
+                knownEtfs,
+                new Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>>(),
+                (_, _) => Task.FromResult<MarketInstrument?>(null)).GetAwaiter().GetResult(),
+            "missing universe metadata",
+            "legacy execution with no cache or Capital metadata");
     }
 
     private static void TerminalUniverseUiCoordinatorCachesUniversesSeparately()
@@ -6923,6 +7067,7 @@ public static class SyntheticBasketBuilderTests
             {
                 Symbol = "SYN-SAP-DIP-01",
                 Block = "Europe / EUR / All",
+                UniverseKind = TerminalUniverseKind.ETFs,
                 AverageVolatilityPct = 21.5m,
                 SimilarityScore = 88.2m,
                 BasketPrice = 100m,
@@ -6944,8 +7089,7 @@ public static class SyntheticBasketBuilderTests
             store.Save(SavedSyntheticBasket.FromBasket(
                 "My SAP basket",
                 SyntheticStrategyKind.DipInsideUptrend,
-                basket,
-                TerminalUniverseKind.ETFs));
+                basket));
             var saved = store.LoadAll().Single();
 
             if (saved.Name != "My SAP basket") throw new Exception("saved basket should preserve user name");
@@ -7038,6 +7182,8 @@ public static class SyntheticBasketBuilderTests
             candles);
 
         AssertEqual(2, basket.Components.Count, "manual preset must contain exactly two legs");
+        AssertEqual<TerminalUniverseKind?>(TerminalUniverseKind.Crypto, basket.UniverseKind,
+            "manual basket build freezes Crypto universe identity");
         AssertEqual(eth.Epic, basket.Components[0].Instrument.Epic, "ETH leg must remain first");
         AssertEqual(btc.Epic, basket.Components[1].Instrument.Epic, "BTC leg must remain second");
         AssertEqual(9m, basket.Components[0].FormulaMultiplier, "ETH multiplier must remain exact");

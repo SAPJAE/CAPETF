@@ -45,6 +45,7 @@ public static class SavedSyntheticBasketRestorer
                 periodsPerYear,
                 minimumCandles);
         if (basket is null) return null;
+        basket.UniverseKind = saved.UniverseKind ?? basket.UniverseKind;
         basket.Strategy = saved.Strategy;
         return new SavedSyntheticBasketRestoreResult(basket, saved.Strategy);
     }

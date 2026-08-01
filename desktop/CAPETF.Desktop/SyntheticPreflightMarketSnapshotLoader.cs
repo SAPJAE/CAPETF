@@ -120,6 +120,8 @@ internal sealed class SyntheticPreflightMarketSnapshotLoader
         {
             Symbol = source.Symbol,
             Block = source.Block,
+            UniverseKind = source.UniverseKind,
+            Strategy = source.Strategy,
             AverageVolatilityPct = source.AverageVolatilityPct,
             SimilarityScore = source.SimilarityScore,
             BasketPrice = source.BasketPrice,

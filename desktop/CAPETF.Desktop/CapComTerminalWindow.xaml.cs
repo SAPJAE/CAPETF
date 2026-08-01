@@ -300,6 +300,7 @@ public partial class CapComTerminalWindow : Window
             StatusText.Text = $"The selected legs have no usable shared {resolution} history.";
             return;
         }
+        _basket.UniverseKind = SelectedUniverse();
         _activeBasket.Activate(_basket, strategy);
 
         await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
@@ -407,14 +408,13 @@ public partial class CapComTerminalWindow : Window
 
     private async Task LoadSavedBasketAsync(SavedSyntheticBasket saved, CancellationToken cancellationToken)
     {
-        if (saved.UniverseKind is null &&
-            saved.Strategy != SyntheticStrategyKind.ManualFormula &&
-            !saved.Block.TrimStart().StartsWith("Crypto /", StringComparison.OrdinalIgnoreCase))
-        {
-            EnsureEtfCatalogLoaded();
-        }
-        var universe = SyntheticBasketUniverseResolver.Resolve(saved, _knownEtfEpics);
+        var universeResolution = await ResolveBasketUniverseAsync(saved, cancellationToken);
+        var universe = universeResolution.Universe;
         await EnsureBasketUniverseAsync(universe, cancellationToken);
+        await EnsureBasketLegsAvailableAsync(
+            universeResolution,
+            saved.Components.Select(component => component.Epic).ToArray(),
+            cancellationToken);
 
         var resolution = SelectedResolution();
         var periodsPerYear = PeriodsPerYear(resolution);
@@ -452,6 +452,7 @@ public partial class CapComTerminalWindow : Window
         }
 
         _basket = restored.Basket;
+        _basket.UniverseKind = universe;
         _activeBasket.Activate(_basket, restored.Strategy);
         StrategyBox.SelectedValue = restored.Strategy;
         if (restored.Strategy == SyntheticStrategyKind.ManualFormula)
@@ -475,11 +476,15 @@ public partial class CapComTerminalWindow : Window
         {
             throw new InvalidOperationException("The selected execution is no longer available. Refresh positions and try again.");
         }
-        if (execution.BasketQuantity is not > 0m) EnsureEtfCatalogLoaded();
-        var universe = SyntheticBasketUniverseResolver.Resolve(execution, _knownEtfEpics);
+        var universeResolution = await ResolveBasketUniverseAsync(execution, cancellationToken);
+        var universe = universeResolution.Universe;
         await EnsureBasketUniverseAsync(universe, cancellationToken);
+        await EnsureBasketLegsAvailableAsync(
+            universeResolution,
+            execution.Legs.Select(leg => leg.Epic).ToArray(),
+            cancellationToken);
 
-        var saved = SyntheticExecutionBasketSnapshot.Create(execution, _instruments) with { UniverseKind = universe };
+        var saved = SyntheticExecutionBasketSnapshot.Create(execution, _instruments);
         var selectedInstruments = saved.Components
             .Select(component => _instruments.Single(instrument =>
                 string.Equals(instrument.Epic, component.Epic, StringComparison.OrdinalIgnoreCase)))
@@ -505,6 +510,7 @@ public partial class CapComTerminalWindow : Window
         }
 
         _basket = restored.Basket;
+        _basket.UniverseKind = universe;
         _activeBasket.Activate(_basket, restored.Strategy);
         StrategyBox.SelectedValue = restored.Strategy;
         await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
@@ -846,6 +852,7 @@ public partial class CapComTerminalWindow : Window
         }
 
         _basket = RenameBasket(rebuilt, existingBasket.Symbol, existingBasket.Block);
+        _basket.UniverseKind = existingBasket.UniverseKind;
         await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
         _operationState.BeginStage("Rendering synthetic chart");
         await Task.Yield();
@@ -1105,6 +1112,104 @@ public partial class CapComTerminalWindow : Window
             selected => LoadUniverseAsync(selected, cancellationToken));
     }
 
+    private async Task<SyntheticBasketUniverseResolution> ResolveBasketUniverseAsync(
+        SavedSyntheticBasket saved,
+        CancellationToken cancellationToken)
+    {
+        if (!SyntheticBasketUniverseResolver.TryResolve(saved, _knownEtfEpics, out _))
+        {
+            EnsureEtfCatalogLoaded();
+        }
+        return await SyntheticBasketUniverseResolver.ResolveAsync(
+            saved,
+            _knownEtfEpics,
+            CachedUniverseInstruments(),
+            ProbeInstrumentAsync,
+            cancellationToken);
+    }
+
+    private async Task<SyntheticBasketUniverseResolution> ResolveBasketUniverseAsync(
+        SyntheticExecutionRecord execution,
+        CancellationToken cancellationToken)
+    {
+        if (!SyntheticBasketUniverseResolver.TryResolve(execution, _knownEtfEpics, out _))
+        {
+            EnsureEtfCatalogLoaded();
+        }
+        return await SyntheticBasketUniverseResolver.ResolveAsync(
+            execution,
+            _knownEtfEpics,
+            CachedUniverseInstruments(),
+            ProbeInstrumentAsync,
+            cancellationToken);
+    }
+
+    private IReadOnlyDictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>> CachedUniverseInstruments()
+    {
+        var result = new Dictionary<TerminalUniverseKind, IReadOnlyList<MarketInstrument>>();
+        foreach (var universe in Enum.GetValues<TerminalUniverseKind>())
+        {
+            if (_universeUi.TryGetCached(universe, out var instruments)) result[universe] = instruments;
+        }
+        if (!result.ContainsKey(SelectedUniverse()) && _instruments.Count > 0)
+        {
+            result[SelectedUniverse()] = _instruments.ToArray();
+        }
+        return result;
+    }
+
+    private async Task<MarketInstrument?> ProbeInstrumentAsync(string epic, CancellationToken cancellationToken)
+    {
+        await EnsureConnectedAsync(cancellationToken);
+        return await _api.GetMarketDetailsAsync(epic, cancellationToken);
+    }
+
+    private async Task EnsureBasketLegsAvailableAsync(
+        SyntheticBasketUniverseResolution resolution,
+        IReadOnlyList<string> requiredEpics,
+        CancellationToken cancellationToken)
+    {
+        var instruments = _instruments
+            .Concat(resolution.Instruments)
+            .Where(instrument => !string.IsNullOrWhiteSpace(instrument.Epic))
+            .GroupBy(instrument => instrument.Epic, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+        var available = instruments.Select(instrument => instrument.Epic).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var epic in requiredEpics.Where(epic => !available.Contains(epic)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var instrument = await ProbeInstrumentAsync(epic, cancellationToken);
+            if (instrument is null || !string.Equals(instrument.Epic?.Trim(), epic, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Basket leg {epic} is missing from the resolved {UniverseLabel(resolution.Universe)} universe.");
+            }
+            instruments.Add(instrument);
+            available.Add(epic);
+        }
+
+        var invalid = requiredEpics.FirstOrDefault(epic =>
+        {
+            var instrument = instruments.First(candidate =>
+                string.Equals(candidate.Epic, epic, StringComparison.OrdinalIgnoreCase));
+            return !TerminalUniverse.Accepts(resolution.Universe, instrument, _knownEtfEpics);
+        });
+        if (invalid is not null)
+        {
+            throw new InvalidOperationException(
+                $"Basket leg {invalid} does not match the resolved {UniverseLabel(resolution.Universe)} universe type.");
+        }
+
+        if (instruments.Count != _instruments.Count)
+        {
+            ApplyUniverse(
+                resolution.Universe,
+                instruments,
+                _cachedCandlesByEpic,
+                _cachedCandlesByEpicByResolution);
+        }
+    }
+
     private void SelectUniverse(TerminalUniverseKind universe)
     {
         if (SelectedUniverse() == universe) return;
@@ -1226,6 +1331,7 @@ public partial class CapComTerminalWindow : Window
         {
             Symbol = symbol,
             Block = block,
+            UniverseKind = source.UniverseKind,
             Strategy = source.Strategy,
             AverageVolatilityPct = source.AverageVolatilityPct,
             SimilarityScore = source.SimilarityScore,
@@ -1390,7 +1496,8 @@ public partial class CapComTerminalWindow : Window
             DateTimeOffset.UtcNow,
             margin,
             accountId,
-            preferences.HedgingMode));
+            preferences.HedgingMode,
+            basket.UniverseKind ?? SelectedUniverse()));
         result = _tradingCoordinator.RegisterPreflight(result);
         await PublishTerminalPreflightAsync(result);
     }

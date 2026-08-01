@@ -369,3 +369,156 @@ No whitespace errors. Git emitted only working-copy LF-to-CRLF conversion warnin
 
 - Validation remains deterministic and offline. Live Capital.com demo stream verification is still deferred to Task 6.
 - Legacy ETF inference depends on the existing ETF catalog membership; newly saved baskets persist `UniverseKind` and do not depend on that fallback.
+
+---
+
+# Fix Round 2: Legacy ETF Universe Resolution
+
+## Status
+
+Fixed the remaining Important finding from base `ead8dac`.
+
+New baskets, preflight tickets, persisted executions, and execution-derived saved snapshots now freeze `UniverseKind`. Legacy saved baskets and execution records that omit it are resolved from known ETF membership, all available per-universe caches, and Capital instrument type metadata. Unresolved artifacts probe every epic in stable basket order, load the single resolved universe, and merge type-compatible probed instruments before leg restoration. Missing and ambiguous evidence now fail explicitly; there is no silent Stock default.
+
+No credentials were read, no live Capital.com request was made by the deterministic tests, and no order was submitted.
+
+## Red Evidence
+
+The first focused run failed on every missing persistence and resolver contract:
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- crypto-universe
+```
+
+```text
+Exit code: 1
+SyntheticExecutionRecord has no UniverseKind parameter
+SyntheticBasketUniverseResolver does not contain ResolveAsync
+SyntheticExecutionTicket/Record do not expose UniverseKind
+SyntheticPreflightInput does not accept universe identity
+```
+
+After those contracts were introduced, the build-level fixture independently proved manual baskets had not frozen Crypto identity:
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- manual-formula
+```
+
+```text
+Exit code: 1
+manual basket build freezes Crypto universe identity. Expected Crypto, got null
+```
+
+These failures were caused by the missing production properties and async evidence resolver, not test setup.
+
+## Behavior
+
+- An uncatalogued API fallback epic with Capital type `ETF` resolves to `TerminalUniverseKind.ETFs` even when `_knownEtfEpics` is empty.
+- Capital type metadata takes precedence over a stale per-universe cache label.
+- Known ETF catalog membership remains a supported legacy shortcut.
+- Legacy saved and open execution forms both probe in exact component/leg order when cache evidence is insufficient.
+- A legacy artifact present in multiple candidate caches remains ambiguous if Capital metadata cannot disambiguate it and throws a clear error.
+- An artifact absent from caches and Capital metadata throws a clear missing-metadata error.
+- Crypto-to-uncatalogued-ETF restoration selects and loads ETFs before existing leg snapshot/history restoration.
+- Probed target-universe instruments are merged into the existing universe/cache path; no parallel universe or execution system was added.
+
+## Files
+
+- `desktop/CAPETF.Desktop/SyntheticModels.cs`: adds basket-level optional universe identity.
+- `desktop/CAPETF.Desktop/SyntheticTradeModels.cs`: adds compatible optional universe identity to preflight input, ticket, and execution record.
+- `desktop/CAPETF.Desktop/SyntheticTradePreflight.cs`: freezes basket/selected universe on the ticket.
+- `desktop/CAPETF.Desktop/SyntheticBasketExecutionService.cs`: carries ticket universe into persisted execution records.
+- `desktop/CAPETF.Desktop/SyntheticExecutionStore.cs`: validates present universe values while accepting legacy missing values.
+- `desktop/CAPETF.Desktop/SyntheticExecutionBasketSnapshot.cs`: carries persisted execution universe into saved snapshots.
+- `desktop/CAPETF.Desktop/SavedSyntheticBasketStore.cs`: defaults new saved snapshots to the basket's frozen universe.
+- `desktop/CAPETF.Desktop/SyntheticBasketUniverseResolver.cs`: deterministic explicit, catalog, cache, type, probe, missing, and ambiguity resolution.
+- `desktop/CAPETF.Desktop/CapComTerminalWindow.xaml.cs`: resolves before leg lookup, loads the target universe, merges probed typed legs, and freezes universe at build/preflight/restore.
+- `desktop/CAPETF.Desktop/ManualSyntheticBasketFactory.cs`: freezes Crypto identity at manual build.
+- `desktop/CAPETF.Desktop/SyntheticPreflightMarketSnapshotLoader.cs`: preserves universe and strategy through fresh detached preflight snapshots.
+- `desktop/CAPETF.Desktop/SavedSyntheticBasketRestorer.cs`: preserves saved universe during basket reconstruction.
+- `desktop/CAPETF.Desktop.Tests/SyntheticBasketBuilderTests.cs`: uncatalogued ETF, legacy saved/open, cache metadata, deterministic probe, reverse transition, ambiguity, missing metadata, and legacy JSON coverage.
+- `desktop/CAPETF.Desktop.Tests/SyntheticTradingTests.cs`: preflight-to-ticket-to-execution-to-store-to-snapshot universe persistence coverage.
+- `.superpowers/sdd/2026-08-01-crypto-synthetic-universe/task-5-report.md`: this Fix Round 2 report.
+
+## Verification
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- manual-formula
+```
+
+```text
+Exit code: 0; 3.7 seconds
+ManualFormula tests passed
+```
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- crypto-universe
+```
+
+```text
+Exit code: 0; 3.8 seconds
+CryptoUniverse tests passed
+```
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- trading
+```
+
+```text
+Exit code: 0; 6.2 seconds
+SyntheticTrading tests passed
+```
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj -- builder
+```
+
+```text
+Exit code: 0; 39.4 seconds
+SyntheticBasketBuilder tests passed
+```
+
+```powershell
+dotnet run --project desktop/CAPETF.Desktop.Tests/CAPETF.Desktop.Tests.csproj
+```
+
+```text
+Exit code: 0; 38.9 seconds
+SyntheticTrading tests passed
+SyntheticBasketBuilder tests passed
+```
+
+```powershell
+dotnet build desktop/CAPETF.Desktop/CAPETF.Desktop.csproj -c Release
+```
+
+```text
+Exit code: 0; 3.5 seconds
+Build succeeded.
+0 Warning(s)
+0 Error(s)
+```
+
+## Self-Review
+
+- Confirmed new UI-built automatic baskets and factory-built manual baskets receive explicit universe identity before save or preflight.
+- Confirmed fresh preflight cloning preserves both strategy and universe, and the ticket, execution record, JSON store, and execution snapshot retain it unchanged.
+- Confirmed optional model fields deserialize legacy saved/execution JSON without migration.
+- Confirmed explicit persisted universe, manual Crypto identity, and all-known-ETF fallback do not invoke metadata probes.
+- Confirmed legacy cache evidence evaluates every epic and uses Capital `ETF`, `SHARES`, and `CRYPTOCURRENCIES` types instead of relying solely on catalog membership.
+- Confirmed insufficient cache evidence probes all epics deterministically and authoritative Capital type metadata disambiguates stale cache labels.
+- Confirmed only one universe shared by every leg is accepted; missing and ambiguous outcomes identify the affected epic evidence.
+- Confirmed target loading and probed instrument augmentation happen before `SyntheticExecutionBasketSnapshot.Create` or saved leg resolution.
+- Confirmed the existing history, chart, streaming, ledger, preflight, and execution paths remain in use.
+- Confirmed Stock, ETF, Crypto, manual formula, trading, and full builder regressions pass.
+
+## Commit
+
+- Base: `ead8dac`
+- Subject: `Fix legacy ETF universe restoration`
+- The final commit hash is returned in the task response because a commit cannot contain its own hash.
+
+## Concerns
+
+- Live API fallback restoration still depends on Capital returning instrument type metadata for uncached legacy epics. Missing or contradictory metadata now stops restoration with a clear error instead of selecting Stocks silently.
+- Live Capital.com demo verification remains deferred; all automated checks are deterministic and offline.
