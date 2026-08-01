@@ -468,9 +468,18 @@
     }
 
     #trade-dock-table .dock-action-cell {
+      position: sticky;
+      z-index: 1;
+      right: 0;
       width: 34px;
       padding: 2px 4px;
+      background: #09111f;
       text-align: center;
+    }
+
+    #trade-dock-table th.dock-action-cell {
+      z-index: 3;
+      background: #0d1728;
     }
 
     .dock-close-button {
@@ -2504,9 +2513,10 @@
       }
       tradeDockTable.setAttribute('aria-label', view.label);
       const headerRow = document.createElement('tr');
-      for (const [label] of view.columns) {
+      for (const [label, , , renderer] of view.columns) {
         const heading = document.createElement('th');
         heading.textContent = label;
+        if (renderer === renderSyntheticCloseAction) heading.className = 'dock-action-cell';
         headerRow.appendChild(heading);
       }
       const head = document.createElement('thead');

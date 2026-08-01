@@ -829,6 +829,7 @@ public static class SyntheticTradingTests
             assert.match(tableText(), /basket-1.*BUY.*1 open \/ 1 issue \/ 1 closed.*n\/a.*n\/a.*n\/a.*220\.0000.*260\.0000.*USDd 72\.50.*n\/a.*Needs attention/);
             assert.doesNotMatch(tableText(), /basket-closed/);
             assert.equal(element('close-synthetic-host-execution-1').getAttribute('aria-label'), 'Close basket-1');
+            assert.match(element('trade-dock-table').children[0].children[0].children[11].className, /dock-action-cell/);
             assert.match(element('trade-dock-table').children[1].children[0].children[10].children[0].className, /dock-state-badge/);
             assert.equal(syntheticBasketRows([{
               ExecutionId: 'numeric-leg-states', BasketId: 'numeric', State: 7,
