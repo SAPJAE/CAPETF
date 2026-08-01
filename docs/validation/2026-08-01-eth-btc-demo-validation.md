@@ -4,9 +4,9 @@ Date: 2026-08-01
 
 ## Scope
 
-This record covers only automated verification and preparation of the local publish folder. No credentials were used, no connection to Capital.com was attempted, CAPETF was not launched or driven, and no order was submitted.
+This record covers automated verification, publishing, and hands-on validation of the published Windows application against an authenticated Capital.com demo account. Existing unrelated demo positions were observed but not changed or closed. No crypto order has been submitted because the final transaction requires action-time user confirmation.
 
-Base commit: `a09e5c5b7c532d52f09ebb90fb37c588230fac7a`
+Validated commit: `05f4c19` (`Bound submitted position recovery window`)
 
 ## Automated Evidence
 
@@ -28,18 +28,18 @@ Before publishing, the only detected `CAPETF.exe` process was running from the e
 - Runtime: self-contained `win-x64`
 - Publish directory is ignored by `.gitignore` via `desktop/**/publish/`.
 
-## Pending Hands-On Validation
+## Hands-On Validation Status
 
-The controller must perform and record the following in a locally authorized CAPETF session. These checks have not been performed by this task.
+The published executable was launched and driven in a locally authorized Capital.com demo session.
 
-- Launch the published executable and connect to Capital.com demo.
-- Select Crypto and `Crypto / USD / All`, choose Manual formula, load `9 ETHUSD + 0.2 BTCUSD`, and build.
-- Validate nonzero current Bid/Ask, shared history, chart interaction and timeframes, a live ongoing candle, formula display, dealing rules, available margin, the smallest ratio-valid quantity, trade prechecks, and trade dock state.
-- Record actual epics, deal rules, basket quantity, leg quantities, prices, margin, and screenshots.
-- At the irreversible demo-order confirmation boundary, obtain action-time user confirmation before submitting any demo order.
-- After confirmed submission only, poll confirmations and positions; verify both legs correlate to one synthetic execution, running P/L, and chart entry/SL/TP plan overlays. Do not close positions automatically.
+- PASS: connected to Capital.com demo and loaded the API-backed Crypto universe.
+- PASS: selected `Crypto / USD / All`, chose Manual formula, retained `9 ETHUSD + 0.2 BTCUSD`, and built the two-leg synthetic.
+- PASS: validated nonzero live Bid/Ask, shared history, interactive chart, formula display, dealing rules, available margin, ratio-valid quantity, prechecks, and trade dock account state.
+- PASS: recorded epics, deal rules, basket quantity, leg quantities, prices, and margin without recording credentials or account identifiers.
+- PENDING: obtain action-time user confirmation and submit the final demo order.
+- PENDING: after confirmed submission, verify both broker positions correlate to the synthetic execution, running P/L, and chart overlays. Positions must remain open.
 
-No live validation result, account information, API secret, token, order, position, price, margin value, or screenshot is asserted in this document.
+No API secret, password, token, or account identifier is recorded in this document.
 
 ## Live Validation Round 1: Crypto Metadata Blocker and Fix
 
@@ -130,4 +130,41 @@ The host produced a demo-only frozen BUY ticket with:
 - explicit acknowledgement that earlier accepted legs remain open if a later leg fails
 - a disabled final execution button until that acknowledgement is selected
 
-The confirmation dialog is open. No order has been submitted at the time of this update; action-time user confirmation is still required before the final demo execution click.
+The confirmation dialog was opened for inspection only. No order was submitted; action-time user confirmation remained required before the final demo execution click.
+
+## Final Published-Binary Validation
+
+The final self-contained publish was rebuilt from commit `05f4c19` and then launched directly from the publish folder.
+
+| Evidence | Observed result |
+| --- | --- |
+| Executable | `desktop/publish/cap.com-terminal-v4-complete/CAPETF.exe` |
+| Size | 151,552 bytes |
+| Last-write UTC | `2026-08-01T15:00:05.0574596Z` |
+| SHA-256 | `CF83276476794C91F9DC4B978ED74FE9F4D06B81AB771FE022E60632171ECABC` |
+| Publish shape | 495 files; zero `.zip` files |
+| Independent safety review | No Critical or Important findings after the submitted-position recovery window fix |
+
+### Final Runtime Evidence
+
+- Capital.com demo connected successfully and reported account state, open positions, pending orders, available funds, and margin. Existing PLTR and HOOD positions remained untouched.
+- The final Crypto load returned 229 currently eligible instruments after metadata enrichment and openability filtering.
+- `Crypto / USD / All` resolved `ETHUSD` and `BTCUSD` and built `SYN-CRYPTO-ETHBTC-01` from the exact formula `9 ETHUSD + 0.2 BTCUSD`.
+- Weekly intersection history contained 574 candles from 2015-08-06 through 2026-07-27. The interactive chart rendered that history with moving averages, Bid/Ask lines, drawing tools, zoom, pan, and live synthetic quote updates.
+- The formula pane showed ETH minimum/step `0.001` and BTC minimum/step `0.0001`.
+- The application automatically selected the smallest exact ratio-preserving basket quantity `0.001`, producing `0.009 ETHUSD` and `0.0002 BTCUSD`.
+- A fresh live BUY preflight showed nonzero ETH/BTC prices, synthetic Bid/Ask, estimated margin `USDd 14.74`, available margin `USDd 20,786.53`, and after-buy availability `USDd 20,771.79`.
+- The frozen ticket required acknowledgement of partial-execution risk and kept `Confirm Demo Order` disabled until acknowledgement.
+
+### Final Safeguards Included
+
+- Each leg is revalidated immediately before execution for current quote age, market status, minimum size, increment, maximum size, allowed direction, and available margin.
+- Crypto metadata requests use global pacing, bounded concurrency, and bounded retry for transient HTTP 429 failures.
+- Intraday aggregation aligns each instrument to deterministic fixed UTC buckets and discards incomplete buckets before intersection.
+- Saved manual baskets include exact canonical multipliers in their identity, so different ratios cannot overwrite one another.
+- Submitted-leg recovery requires one unambiguous exact broker position within a fixed two-minute submission window; later matching positions are not claimed.
+- Execution-store atomic replacement retries bounded transient Windows/OneDrive file locks.
+
+### Transaction Boundary
+
+The fresh ticket expired while waiting for the required action-time user confirmation. The acknowledgement was not selected and `Confirm Demo Order` was not clicked. Therefore no ETH or BTC order was submitted, and no crypto position exists from this validation run. A new preflight ticket must be generated after explicit confirmation before the final two demo orders can be sent.
