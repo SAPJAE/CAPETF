@@ -1528,30 +1528,34 @@ public partial class CapComTerminalWindow : Window
         await PublishTerminalPreflightAsync(result);
     }
 
-    private Task ExecuteSyntheticBasketAsync(Guid ticketId)
+    private async Task ExecuteSyntheticBasketAsync(Guid ticketId)
     {
         var cancellationToken = _windowLifetime.Token;
-        if (cancellationToken.IsCancellationRequested) return Task.CompletedTask;
+        if (cancellationToken.IsCancellationRequested) return;
         const string operationName = "Executing synthetic basket";
         if (!_operationState.TryBegin(operationName))
         {
             _windowLifetime.TryApply(() => StatusText.Text = $"{_operationState.Label} is already running.");
-            return Task.CompletedTask;
+            return;
         }
 
         SyntheticHostExecution? execution = null;
         SyntheticTradingWindowLifecycleCoordinator.TrackedOperation? trackedOperation = null;
         try
         {
+            var frozenTicket = _tradingCoordinator.GetRegisteredTicket(ticketId);
+            await RevalidateExecutionTicketAsync(frozenTicket, cancellationToken);
             execution = _tradingCoordinator.BeginExecution(ticketId);
             trackedOperation = _tradingLifecycle.BeginOperation();
         }
         catch (Exception ex)
         {
+            _tradingCoordinator.DiscardTicket(ticketId);
             execution?.Dispose();
             _operationState.Fail(ex.Message);
             _windowLifetime.TryApply(() => StatusText.Text = ex.Message);
-            return PublishTerminalExecutionErrorAsync(ex.Message);
+            await PublishTerminalExecutionErrorAsync(ex.Message);
+            return;
         }
 
         var operation = RunStartedOperationAsync(
@@ -1570,7 +1574,52 @@ public partial class CapComTerminalWindow : Window
             cancellationToken);
         var finished = FinishSyntheticExecutionAsync(execution, operation);
         trackedOperation.Track(finished);
-        return finished;
+        await finished;
+    }
+
+    private async Task RevalidateExecutionTicketAsync(
+        SyntheticExecutionTicket frozenTicket,
+        CancellationToken cancellationToken)
+    {
+        var basket = _basket ?? throw new InvalidOperationException("The confirmed basket is no longer loaded.");
+        if (!string.Equals(
+                frozenTicket.BasketId,
+                SyntheticTerminalChartPayload.DrawingIdentity(basket),
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The loaded basket changed after confirmation. Run preflight again.");
+        }
+
+        await EnsureConnectedAsync(cancellationToken);
+        _operationState.BeginStage("Final market checks", basket.Components.Count);
+        var snapshotResult = await _preflightMarketSnapshots.LoadAsync(
+            basket,
+            cancellationToken,
+            (completed, total) => _operationState.Report("Final market checks", completed, total));
+        if (snapshotResult.Basket is null)
+        {
+            SyntheticExecutionTicketRevalidation.Validate(
+                frozenTicket,
+                new SyntheticPreflightResult(false, null, snapshotResult.Failures));
+            return;
+        }
+
+        var currentBasket = snapshotResult.Basket;
+        var preferences = await _api.GetAccountPreferencesAsync(cancellationToken);
+        _marginPreview.InvalidateCaches();
+        var margin = await _marginPreview.BuildAsync(currentBasket, frozenTicket.RequestedNotional, cancellationToken);
+        var current = SyntheticTradePreflight.Build(new SyntheticPreflightInput(
+            _api.IsDemoTradingSession,
+            SyntheticTerminalChartPayload.DrawingIdentity(currentBasket),
+            currentBasket,
+            frozenTicket.Side,
+            frozenTicket.RequestedNotional,
+            DateTimeOffset.UtcNow,
+            margin,
+            _api.Session?.CurrentAccountId ?? "",
+            preferences.HedgingMode,
+            frozenTicket.UniverseKind));
+        SyntheticExecutionTicketRevalidation.Validate(frozenTicket, current);
     }
 
     private static async Task FinishSyntheticExecutionAsync(

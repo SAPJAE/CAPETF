@@ -385,6 +385,26 @@ internal sealed class SyntheticTradingHostCoordinator : IDisposable
         }
     }
 
+    public SyntheticExecutionTicket GetRegisteredTicket(Guid ticketId)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        lock (_ticketGate)
+        {
+            PurgeExpiredTicketsLocked();
+            if (!_tickets.TryGetValue(ticketId, out var ticket))
+            {
+                throw new InvalidOperationException("Execution ticket is missing, expired, or has already been used.");
+            }
+            EnsureAccountOwnership(ticket.AccountId, "execution ticket");
+            return ticket with { Legs = Array.AsReadOnly(ticket.Legs.Select(leg => leg with { }).ToArray()) };
+        }
+    }
+
+    public void DiscardTicket(Guid ticketId)
+    {
+        lock (_ticketGate) _tickets.Remove(ticketId);
+    }
+
     public async Task<SyntheticExecutionRecord> ExecuteAsync(
         SyntheticHostExecution execution,
         Func<SyntheticExecutionRecord, Task> publishProgress,

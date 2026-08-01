@@ -41,6 +41,7 @@ public static class SyntheticTradingTests
         TradingBrowserParserRejectsMalformedShapesWithoutThrowing();
         TradingBrowserHandlerTurnsMalformedAndSemanticFailuresIntoRejections();
         HostConsumesFrozenTicketsBeforeExecutionAndRejectsReuse();
+        FinalExecutionRevalidationRejectsChangedSafetyStateAndLegs();
         HostRejectsExpiredTicketsWithoutMutation();
         HostDuplicateGuardDoesNotConsumeTheBlockedTicket();
         HostDemoGateBlocksExecutionAndCloseMutations();
@@ -1850,6 +1851,35 @@ public static class SyntheticTradingTests
         AssertEqual(0, gateway.CreateInvocations, "expired ticket must fail before gateway mutation");
     }
 
+    private static void FinalExecutionRevalidationRejectsChangedSafetyStateAndLegs()
+    {
+        var frozen = CreateHostTicket(Guid.Parse("23232323-2323-2323-2323-232323232323"));
+        var refreshed = frozen with { TicketId = Guid.NewGuid().ToString("N") };
+
+        SyntheticExecutionTicketRevalidation.Validate(
+            frozen,
+            new SyntheticPreflightResult(true, refreshed, []));
+
+        var changedLeg = refreshed with
+        {
+            Legs = [refreshed.Legs[0] with { Quantity = refreshed.Legs[0].Quantity + 1m }],
+        };
+        AssertThrows<InvalidOperationException>(
+            () => SyntheticExecutionTicketRevalidation.Validate(
+                frozen,
+                new SyntheticPreflightResult(true, changedLeg, [])),
+            "changed executable quantity must invalidate final confirmation");
+
+        var safetyFailure = new SyntheticPreflightResult(
+            false,
+            null,
+            [new SyntheticPreflightFailure("AAPL", "Quote is older than five minutes.")]);
+        var exception = AssertThrows<InvalidOperationException>(
+            () => SyntheticExecutionTicketRevalidation.Validate(frozen, safetyFailure),
+            "a changed safety state must block final execution");
+        AssertContains(exception.Message, "older than five minutes", "final safety failure reason");
+    }
+
     private static void HostDuplicateGuardDoesNotConsumeTheBlockedTicket()
     {
         using var directory = new TemporaryDirectory();
@@ -2088,7 +2118,7 @@ public static class SyntheticTradingTests
             "PublishTerminalRiskPlansAsync(request.ExecutionId, request.Revision)",
             "risk-plan clear success must echo execution and revision identity");
 
-        var preflightBody = SliceSource(source, "private async Task PreflightSyntheticBasketAsync", "private Task ExecuteSyntheticBasketAsync");
+        var preflightBody = SliceSource(source, "private async Task PreflightSyntheticBasketAsync", "private async Task ExecuteSyntheticBasketAsync");
         AssertFalse(
             preflightBody.Contains("RefreshBasketMarketDetailsAsync", StringComparison.Ordinal),
             "trading preflight must not treat the mutable basket refresh as authoritative");
@@ -2099,12 +2129,13 @@ public static class SyntheticTradingTests
             "BuildAsync(freshBasket",
             "SyntheticTradePreflight.Build",
             "RegisterPreflight");
-        var executeBody = SliceSource(source, "private Task ExecuteSyntheticBasketAsync", "private static async Task FinishSyntheticExecutionAsync");
-        AssertTrue(
-            executeBody.IndexOf("BeginExecution(ticketId)", StringComparison.Ordinal)
-            < executeBody.IndexOf("await ", StringComparison.Ordinal),
-            "ticket consumption must happen before the execute path can await");
-        AssertOrdered(executeBody, "_operationState.TryBegin", "BeginExecution(ticketId)", "RunStartedOperationAsync");
+        var executeBody = SliceSource(source, "private async Task ExecuteSyntheticBasketAsync", "private async Task RevalidateExecutionTicketAsync");
+        AssertOrdered(executeBody,
+            "_operationState.TryBegin",
+            "GetRegisteredTicket(ticketId)",
+            "RevalidateExecutionTicketAsync",
+            "BeginExecution(ticketId)",
+            "RunStartedOperationAsync");
         var previewBody = SliceSource(source, "private void PreviewSyntheticOrder", "protected override void OnClosing");
         AssertFalse(previewBody.Contains("CreatePositionAsync", StringComparison.Ordinal), "legacy preview must not create positions");
         AssertFalse(previewBody.Contains("ClosePositionAsync", StringComparison.Ordinal), "legacy preview must not close positions");
