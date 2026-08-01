@@ -191,3 +191,15 @@ public sealed class MarketInstrument : INotifyPropertyChanged
 public sealed record ChartPoint(DateTimeOffset Time, decimal Close);
 
 public sealed record QuoteUpdate(string Epic, decimal? Bid, decimal? Offer, decimal? Price, DateTimeOffset Time);
+
+public sealed record CapitalOhlcUpdate(
+    string Epic,
+    string Resolution,
+    DateTimeOffset Time,
+    decimal Open,
+    decimal High,
+    decimal Low,
+    decimal Close)
+{
+    public OhlcPoint Candle => new(Time, Open, High, Low, Close);
+}

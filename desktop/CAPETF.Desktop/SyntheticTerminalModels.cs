@@ -62,6 +62,15 @@ public static class SyntheticTerminalWorkspace
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(40)
             .ToList();
+
+    public static string ExecutionDrawingIdentity(string executionId)
+    {
+        if (string.IsNullOrWhiteSpace(executionId))
+        {
+            throw new ArgumentException("Execution ID is required.", nameof(executionId));
+        }
+        return $"execution-{executionId.Trim()}";
+    }
 }
 
 public static class TerminalCryptoUniverseGrouping

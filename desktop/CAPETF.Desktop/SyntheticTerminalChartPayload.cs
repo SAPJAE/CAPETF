@@ -4,7 +4,10 @@ public static class SyntheticTerminalChartPayload
 {
     private static readonly TimeSpan FreshQuoteAge = TimeSpan.FromMinutes(5);
 
-    public static SyntheticTerminalPayload Build(SyntheticBasket basket, DateTimeOffset? now = null)
+    public static SyntheticTerminalPayload Build(
+        SyntheticBasket basket,
+        DateTimeOffset? now = null,
+        string? drawingIdentity = null)
     {
         var observedAt = now ?? DateTimeOffset.UtcNow;
         var candles = basket.Candles
@@ -19,7 +22,7 @@ public static class SyntheticTerminalChartPayload
 
         return new SyntheticTerminalPayload(
             basket.Symbol,
-            DrawingIdentity(basket),
+            string.IsNullOrWhiteSpace(drawingIdentity) ? DrawingIdentity(basket) : drawingIdentity.Trim(),
             basket.Block,
             CurrencyLabel(basket),
             basket.BidPrice,

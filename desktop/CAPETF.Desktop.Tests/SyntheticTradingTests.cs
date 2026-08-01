@@ -36,6 +36,7 @@ public static class SyntheticTradingTests
         ManualPreflightRejectsUnsafeMarketRulesAndCurrencies();
         ManualPreflightRejectsInsufficientMargin();
         ManualExecutionBasketSnapshotPreservesFormulaAndQuantity();
+        ManualCryptoWorkspacePreservesExecutionIdentityAcrossChartUpdates();
         TradingBrowserParserRejectsMalformedShapesWithoutThrowing();
         TradingBrowserHandlerTurnsMalformedAndSemanticFailuresIntoRejections();
         HostConsumesFrozenTicketsBeforeExecutionAndRejectsReuse();
@@ -1097,6 +1098,61 @@ public static class SyntheticTradingTests
               mutationCountAfterClose,
               'a consumed close confirmation cannot submit twice');
 
+            setTerminalData({
+              DrawingIdentity: 'execution-manual-crypto-1', Symbol: 'SYN-CRYPTO-ETHBTC-01',
+              Block: 'Crypto / USD / All', CurrencyLabel: 'USD', Candles: [],
+              Components: [
+                { Epic: 'CS.D.ETHUSD.CFD.IP', FormulaMultiplier: 9, DisplayMultiplier: 9 },
+                { Epic: 'CS.D.BTCUSD.CFD.IP', FormulaMultiplier: 0.2, DisplayMultiplier: 0.2 }
+              ]
+            });
+            setTerminalExecutions([{
+              ExecutionId: 'manual-crypto-1', BasketId: 'SYN-CRYPTO-ETHBTC-01|CS.D.BTCUSD.CFD.IP|CS.D.ETHUSD.CFD.IP',
+              BasketQuantity: 0.5, Side: 'BUY', EstimatedMargin: 3300, MarginCurrency: 'USD',
+              AccountId: 'DEMO-1', State: 'Open',
+              Legs: [
+                { Epic: 'CS.D.ETHUSD.CFD.IP', Direction: 'BUY', Multiplier: 9, FillLevel: 2000, Quantity: 4.5, State: 'Open', DealId: 'DEAL-ETH' },
+                { Epic: 'CS.D.BTCUSD.CFD.IP', Direction: 'BUY', Multiplier: 0.2, FillLevel: 30000, Quantity: 0.1, State: 'Open', DealId: 'DEAL-BTC' }
+              ]
+            }]);
+            setTerminalBrokerSnapshot({
+              Account: { AccountId: 'DEMO-1', Currency: 'USD' },
+              Positions: [
+                { DealId: 'DEAL-ETH', Epic: 'CS.D.ETHUSD.CFD.IP', Direction: 'BUY', Size: 4.5, Level: 2000, Bid: 1990, Offer: 2000, StopLevel: 1900, ProfitLevel: 2200, UnrealizedProfitLoss: -12.5 },
+                { DealId: 'DEAL-BTC', Epic: 'CS.D.BTCUSD.CFD.IP', Direction: 'BUY', Size: 0.1, Level: 30000, Bid: 29900, Offer: 30000, StopLevel: 28000, ProfitLevel: 33000, UnrealizedProfitLoss: 4.25 }
+              ],
+              WorkingOrders: [
+                { DealId: 'ORDER-ETH', Epic: 'CS.D.ETHUSD.CFD.IP', Direction: 'BUY', Size: 4.5, OrderLevel: 1950, OrderType: 'LIMIT', StopLevel: 1850, ProfitLevel: 2150 },
+                { DealId: 'ORDER-BTC', Epic: 'CS.D.BTCUSD.CFD.IP', Direction: 'BUY', Size: 0.1, OrderLevel: 29000, OrderType: 'LIMIT', StopLevel: 27500, ProfitLevel: 32500 }
+              ]
+            });
+            setTerminalRiskPlans([{
+              ExecutionId: 'manual-crypto-1', BasketId: 'SYN-CRYPTO-ETHBTC-01|CS.D.BTCUSD.CFD.IP|CS.D.ETHUSD.CFD.IP',
+              Side: 'BUY', StopLoss: 22500, TakeProfit: 26500
+            }]);
+
+            const manualView = activeSyntheticTradeView();
+            assert.equal(manualView.entry, 24000, 'manual entry uses exact persisted 9 ETH + 0.2 BTC fills');
+            assert.equal(manualView.currentBid, 23890, 'manual current bid uses broker component sides');
+            assert.equal(manualView.currentAsk, 24000, 'manual current ask uses broker component sides');
+            assert.equal(manualView.runningProfitLoss, -8.25, 'manual basket P/L sums current broker positions');
+            assert.equal(manualView.brokerStopLoss, 22700, 'manual broker SL aggregates exact multipliers');
+            assert.equal(manualView.brokerTakeProfit, 26400, 'manual broker TP aggregates exact multipliers');
+            assert.equal(manualView.planStopLoss, 22500, 'manual PLAN SL stays linked by execution identity');
+            assert.equal(manualView.planTakeProfit, 26500, 'manual PLAN TP stays linked by execution identity');
+            assert.match(manualView.formula, /9 x CS\.D\.ETHUSD\.CFD\.IP.*0\.2 x CS\.D\.BTCUSD\.CFD\.IP/);
+            assert.deepEqual(
+              activePriceLines.filter(line => ['Entry', 'Broker SL', 'Broker TP', 'PLAN SL', 'PLAN TP'].includes(line.title)).map(line => line.title),
+              ['Entry', 'Broker SL', 'Broker TP', 'PLAN SL', 'PLAN TP'],
+              'manual execution renders every trusted ledger and risk overlay');
+            const manualRow = syntheticBasketRows(terminalExecutions, terminalBrokerSnapshot, terminalRiskPlans)[0];
+            assert.equal(manualRow.syntheticEntry, 24000);
+            assert.equal(manualRow.profitLoss, -8.25);
+            assert.equal(manualRow.planStopLoss, 22500);
+            assert.equal(manualRow.planTakeProfit, 26500);
+            assert.deepEqual(pendingOrderRows(terminalBrokerSnapshot).map(row => row.symbol),
+              ['CS.D.ETHUSD.CFD.IP', 'CS.D.BTCUSD.CFD.IP']);
+
             for (const message of allMessages) {
               for (const forbidden of ['epic', 'direction', 'quantity', 'price', 'dealId']) {
                 assert.equal(Object.hasOwn(message, forbidden), false, `browser message leaked ${forbidden}`);
@@ -1588,6 +1644,57 @@ public static class SyntheticTradingTests
         AssertEqual(0.5m, restoredBasket.BasketQuantity, "persisted saved basket quantity");
         AssertEqual(9m, restoredBasket.Components[0].FormulaMultiplier, "persisted saved ETH multiplier");
         AssertEqual(0.2m, restoredBasket.Components[1].FormulaMultiplier, "persisted saved BTC multiplier");
+    }
+
+    private static void ManualCryptoWorkspacePreservesExecutionIdentityAcrossChartUpdates()
+    {
+        var now = DateTimeOffset.Parse("2026-08-01T12:00:00Z");
+        var basket = CreateManualRatioBasket(now);
+        basket.Candles.Add(new OhlcPoint(now.AddDays(-1), 23800m, 24100m, 23700m, 23900m));
+        SyntheticQuoteCalculator.Refresh(basket);
+        var executionIdentity = SyntheticTerminalWorkspace.ExecutionDrawingIdentity("manual-crypto-1");
+
+        var payload = SyntheticTerminalChartPayload.Build(basket, now, executionIdentity);
+        AssertEqual("execution-manual-crypto-1", payload.DrawingIdentity,
+            "open manual execution payload must use the trade workspace identity");
+        AssertEqual("SYN-CRYPTO-ETHBTC-01", payload.Symbol, "manual execution chart retains the basket symbol");
+        AssertEqual("9|0.2", string.Join("|", payload.Components.Select(component => component.FormulaMultiplier)),
+            "manual execution payload formula multipliers");
+
+        var tick = SyntheticTerminalLiveUpdate.Apply(
+            basket,
+            new QuoteUpdate("CS.D.ETHUSD.CFD.IP", 1995m, 2005m, 2000m, now.AddMinutes(1)),
+            now.AddMinutes(1),
+            "Daily",
+            executionIdentity);
+        AssertEqual(executionIdentity, tick.Tick?.DrawingIdentity,
+            "live quote ticks must remain attached to the loaded manual execution chart");
+        AssertEqual(9m * 1995m + 0.2m * 29900m, tick.Tick?.BidPrice ?? 0m, "manual execution live bid");
+        AssertEqual(9m * 2005m + 0.2m * 30000m, tick.Tick?.AskPrice ?? 0m, "manual execution live ask");
+
+        var source = ReadRepositoryFile("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs");
+        var executionLoad = SliceSource(source, "private async Task LoadExecutionBasketAsync", "private static IReadOnlyList<MarketInstrument> SelectSyntheticCandidates");
+        AssertContains(executionLoad, "SyntheticTerminalWorkspace.ExecutionDrawingIdentity(execution.ExecutionId)",
+            "loading an execution routes the existing chart through its ledger identity");
+        AssertContains(source, "_terminalDrawingIdentity", "streamed ticks retain the active execution identity");
+
+        var html = ReadRepositoryFile("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html");
+        foreach (var required in new[]
+        {
+            "activeExecutionRecord()",
+            "matchExecutionPositions(record, terminalBrokerSnapshot)",
+            "executionEntry(record)",
+            "brokerExecutionProfitLoss(record, snapshot)",
+            "pendingOrderRows(terminalBrokerSnapshot || {})",
+            "addPriceLine(view.entry, 'Entry'",
+            "addPriceLine(view.brokerStopLoss, 'Broker SL'",
+            "addPriceLine(view.brokerTakeProfit, 'Broker TP'",
+            "addPriceLine(view.planStopLoss, 'PLAN SL'",
+            "addPriceLine(view.planTakeProfit, 'PLAN TP'",
+        })
+        {
+            AssertContains(html, required, $"manual crypto uses the existing trade workspace contract: {required}");
+        }
     }
 
     private static void TradingBrowserParserRejectsMalformedShapesWithoutThrowing()

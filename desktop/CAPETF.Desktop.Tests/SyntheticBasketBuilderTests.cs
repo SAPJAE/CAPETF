@@ -14,6 +14,10 @@ public static class SyntheticBasketBuilderTests
     public static void RunManualFormula()
     {
         ManualFormulaBuildsExactCryptoPresetWithoutEqualNotionalRewriting();
+        ManualCryptoHistoryAndRealtimeBarsUseDirectSharedFormula();
+        ManualCryptoTimeframesReloadLongestSharedHistory();
+        CapitalStreamingParsesOhlcEventsForManualCryptoBars();
+        ManualCryptoBuildAndRestoreUseSharedStreamingPath();
         ManualFormulaResolvesExactIdentifiersAndRejectsInvalidTerms();
         ManualFormulaResolutionIsBlockLocalAndTiered();
         ManualFormulaSaveRestorePreservesTwoLegStrategyAndExactMultipliers();
@@ -6929,6 +6933,186 @@ public static class SyntheticBasketBuilderTests
         AssertNear(24011m, basket.AskPrice ?? 0m, "manual ask must use exact multipliers");
     }
 
+    private static void ManualCryptoHistoryAndRealtimeBarsUseDirectSharedFormula()
+    {
+        var day = DateTimeOffset.Parse("2026-07-27T00:00:00Z");
+        var eth = CreateCrypto("CS.D.ETHUSD.CFD.IP", "ETHUSD", "Ethereum / US Dollar", "USD", 1999m, 2001m);
+        var btc = CreateCrypto("CS.D.BTCUSD.CFD.IP", "BTCUSD", "Bitcoin / US Dollar", "USD", 29990m, 30010m);
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
+        {
+            [eth.Epic] =
+            [
+                new OhlcPoint(day, 100m, 110m, 90m, 105m),
+                new OhlcPoint(day.AddDays(1), 200m, 220m, 180m, 210m),
+                new OhlcPoint(day.AddDays(2), 300m, 330m, 270m, 315m),
+            ],
+            [btc.Epic] =
+            [
+                new OhlcPoint(day, 1000m, 1050m, 950m, 1020m),
+                new OhlcPoint(day.AddDays(2), 1200m, 1260m, 1140m, 1230m),
+            ],
+        };
+        var basket = ManualSyntheticBasketFactory.Create(
+            "SYN-CRYPTO-ETHBTC-01",
+            "Crypto / USD / All",
+            ManualSyntheticFormula.Parse(ManualSyntheticFormula.CryptoPreset),
+            [eth, btc],
+            candles,
+            "Daily",
+            minimumCandles: 2);
+
+        AssertSequence(basket.Candles.Select(candle => candle.Time), day, day.AddDays(2));
+        AssertSequence(
+            basket.Candles.Select(candle => (candle.Open, candle.High, candle.Low, candle.Close)),
+            (1100m, 1200m, 1000m, 1149m),
+            (2940m, 3222m, 2658m, 3081m));
+        AssertNear(23989m, basket.BidPrice ?? 0m, "manual crypto bid is 9 * ETH bid + 0.2 * BTC bid");
+        AssertNear(24011m, basket.AskPrice ?? 0m, "manual crypto ask is 9 * ETH offer + 0.2 * BTC offer");
+
+        var historical = basket.Candles.ToArray();
+        var quoteResult = SyntheticTerminalLiveUpdate.Apply(
+            basket,
+            new QuoteUpdate(eth.Epic, 2009m, 2011m, 2010m, day.AddDays(3).AddMinutes(1)),
+            now: day.AddDays(3).AddMinutes(1),
+            timeframe: "Daily");
+        AssertTrue(quoteResult.Matched, "manual ETH tick must use the shared quote route");
+        AssertEqual(historical.Length + 1, basket.Candles.Count, "a live tick appends only the ongoing candle");
+        AssertSequence(basket.Candles.Take(historical.Length), historical);
+        AssertNear(9m * 2009m + 0.2m * 29990m, basket.BidPrice ?? 0m, "live ETH tick refreshes formula bid");
+        AssertNear(9m * 2011m + 0.2m * 30010m, basket.AskPrice ?? 0m, "live ETH tick refreshes formula ask");
+
+        var builder = new SyntheticRealtimeBarBuilder();
+        builder.Reset(basket, "Daily");
+        var barTime = day.AddDays(3);
+        AssertFalse(builder.Apply(basket, new CapitalOhlcUpdate(
+            eth.Epic, "DAY", barTime, 400m, 440m, 360m, 420m)),
+            "one component bar cannot synthesize an incomplete basket candle");
+        AssertTrue(builder.Apply(basket, new CapitalOhlcUpdate(
+            btc.Epic, "DAY", barTime, 1400m, 1470m, 1330m, 1435m)),
+            "the second shared component bar completes the synthetic ongoing candle");
+        AssertEqual(historical.Length + 1, basket.Candles.Count, "OHLC completion updates the ongoing candle without truncating history");
+        AssertSequence(basket.Candles.Take(historical.Length), historical);
+        AssertEqual(new OhlcPoint(barTime, 3880m, 4254m, 3506m, 4067m), basket.Candles[^1],
+            "ongoing OHLC must use the direct 9 ETH + 0.2 BTC formula");
+
+        AssertTrue(builder.Apply(basket, new CapitalOhlcUpdate(
+            eth.Epic, "DAY", barTime, 400m, 450m, 350m, 425m)),
+            "an updated component bar must replace only the current synthetic candle");
+        AssertEqual(historical.Length + 1, basket.Candles.Count, "same-bucket OHLC updates cannot append duplicates");
+        AssertSequence(basket.Candles.Take(historical.Length), historical);
+        AssertEqual(new OhlcPoint(barTime, 3880m, 4344m, 3416m, 4112m), basket.Candles[^1],
+            "same-bucket component changes must recompute direct synthetic OHLC");
+    }
+
+    private static void ManualCryptoTimeframesReloadLongestSharedHistory()
+    {
+        var eth = CreateCrypto("CS.D.ETHUSD.CFD.IP", "ETHUSD", "Ethereum", "USD", 1999m, 2001m);
+        var btc = CreateCrypto("CS.D.BTCUSD.CFD.IP", "BTCUSD", "Bitcoin", "USD", 29990m, 30010m);
+        var formula = ManualSyntheticFormula.Parse(ManualSyntheticFormula.CryptoPreset);
+        var initialDay = DateTimeOffset.Parse("2026-07-01T00:00:00Z");
+        var initialRows = new[] { FlatCandle(initialDay, 100m), FlatCandle(initialDay.AddDays(1), 101m) };
+        var active = new ActiveSyntheticBasketState();
+        active.Activate(ManualSyntheticBasketFactory.Create(
+            "SYN-CRYPTO-ETHBTC-01", "Crypto / USD / All", formula, [eth, btc],
+            new Dictionary<string, IReadOnlyList<OhlcPoint>> { [eth.Epic] = initialRows, [btc.Epic] = initialRows },
+            "Daily", 2), SyntheticStrategyKind.ManualFormula);
+
+        foreach (var fixture in new[]
+        {
+            (Timeframe: "Weekly", Start: DateTimeOffset.Parse("2026-05-04T00:00:00Z"), Step: TimeSpan.FromDays(7), Shared: 5),
+            (Timeframe: "Daily", Start: DateTimeOffset.Parse("2026-07-01T00:00:00Z"), Step: TimeSpan.FromDays(1), Shared: 7),
+            (Timeframe: "4H", Start: DateTimeOffset.Parse("2026-07-28T00:00:00Z"), Step: TimeSpan.FromHours(4), Shared: 9),
+        })
+        {
+            var ethRows = Enumerable.Range(0, fixture.Shared + 2)
+                .Select(index => FlatCandle(fixture.Start.AddTicks(fixture.Step.Ticks * index), 100m + index)).ToList();
+            var btcRows = Enumerable.Range(0, fixture.Shared)
+                .Select(index => FlatCandle(fixture.Start.AddTicks(fixture.Step.Ticks * index), 1000m + index)).ToList();
+            var history = new HistoryLoadResult(
+                new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [eth.Epic] = ethRows,
+                    [btc.Epic] = btcRows,
+                },
+                fixture.Start,
+                fixture.Start.AddTicks(fixture.Step.Ticks * (fixture.Shared - 1)),
+                fixture.Shared);
+
+            var rebuilt = active.RebuildHistory(history, fixture.Timeframe, periodsPerYear: 365, minimumCandles: 2)
+                ?? throw new Exception($"manual {fixture.Timeframe} history should rebuild");
+            AssertEqual("SYN-CRYPTO-ETHBTC-01", rebuilt.Symbol, "timeframe reload preserves manual basket symbol");
+            AssertEqual(SyntheticStrategyKind.ManualFormula, rebuilt.Strategy, "timeframe reload preserves manual strategy");
+            AssertSequence(rebuilt.Components.Select(component => component.Instrument.Epic), eth.Epic, btc.Epic);
+            AssertSequence(rebuilt.Components.Select(component => component.FormulaMultiplier), 9m, 0.2m);
+            AssertEqual(fixture.Shared, rebuilt.Candles.Count, $"{fixture.Timeframe} reload uses the longest strict shared history");
+            active.Activate(rebuilt, SyntheticStrategyKind.ManualFormula);
+        }
+    }
+
+    private static void CapitalStreamingParsesOhlcEventsForManualCryptoBars()
+    {
+        const string json =
+            """
+            {
+              "status": "OK",
+              "destination": "ohlc.event",
+              "payload": {
+                "resolution": "HOUR_4",
+                "epic": "CS.D.ETHUSD.CFD.IP",
+                "type": "classic",
+                "priceType": "bid",
+                "t": 1785542400000,
+                "h": 3210.5,
+                "l": 3160.25,
+                "o": 3180.75,
+                "c": 3201.5
+              }
+            }
+            """;
+
+        var update = CapitalStreamingClient.ParseOhlcUpdate(json)
+            ?? throw new Exception("Capital OHLC event must parse");
+        AssertEqual("CS.D.ETHUSD.CFD.IP", update.Epic, "streamed OHLC epic");
+        AssertEqual("HOUR_4", update.Resolution, "streamed OHLC resolution");
+        AssertEqual(DateTimeOffset.FromUnixTimeMilliseconds(1785542400000), update.Time, "streamed OHLC source time");
+        AssertEqual(new OhlcPoint(update.Time, 3180.75m, 3210.5m, 3160.25m, 3201.5m), update.Candle,
+            "streamed OHLC values");
+        AssertEqual("HOUR_4", SyntheticRealtimeBarBuilder.StreamingResolution("4H"), "4H uses Capital native ongoing bars");
+        AssertEqual("DAY", SyntheticRealtimeBarBuilder.StreamingResolution("Daily"), "daily ongoing bar resolution");
+        AssertEqual("WEEK", SyntheticRealtimeBarBuilder.StreamingResolution("Weekly"), "weekly ongoing bar resolution");
+        AssertEqual(null, CapitalStreamingClient.ParseOhlcUpdate(json.Replace("3210.5", "0", StringComparison.Ordinal)),
+            "nonpositive OHLC events are ignored");
+    }
+
+    private static void ManualCryptoBuildAndRestoreUseSharedStreamingPath()
+    {
+        var day = DateTimeOffset.Parse("2026-07-01T00:00:00Z");
+        var eth = CreateCrypto("CS.D.ETHUSD.CFD.IP", "ETHUSD", "Ethereum", "USD", 1999m, 2001m);
+        var btc = CreateCrypto("CS.D.BTCUSD.CFD.IP", "BTCUSD", "Bitcoin", "USD", 29990m, 30010m);
+        var rows = new[] { FlatCandle(day, 100m), FlatCandle(day.AddDays(1), 101m) };
+        var history = new HistoryLoadResult(
+            new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
+            {
+                [eth.Epic] = rows,
+                [btc.Epic] = rows,
+            }, day, day.AddDays(1), 2);
+        var basket = ManualSyntheticBasketFactory.Create(
+            "SYN-CRYPTO-ETHBTC-01", "Crypto / USD / All", ManualSyntheticFormula.Parse(ManualSyntheticFormula.CryptoPreset),
+            [eth, btc], history.CandlesByEpic, "Daily", 2);
+        var saved = SavedSyntheticBasket.FromBasket("ETH BTC", SyntheticStrategyKind.ManualFormula, basket);
+        var restored = SavedSyntheticBasketRestorer.Restore(saved, [eth, btc], history, "Daily", 365, 2)
+            ?? throw new Exception("saved manual crypto basket should restore");
+
+        AssertSequence(SyntheticTerminalWorkspace.StreamingEpics(basket), eth.Epic, btc.Epic);
+        AssertSequence(SyntheticTerminalWorkspace.StreamingEpics(restored.Basket), eth.Epic, btc.Epic);
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        var manualBuild = SliceSource(source, "private async Task BuildManualSyntheticAsync", "private void SaveBasket_Click");
+        var savedLoad = SliceSource(source, "private async Task LoadSavedBasketAsync", "private async Task LoadExecutionBasketAsync");
+        AssertContains(manualBuild, "TryStartStreamingCurrentBasketAsync", "manual build starts the shared stream");
+        AssertContains(savedLoad, "TryStartStreamingCurrentBasketAsync", "saved manual reload starts the shared stream");
+        AssertContains(source, "streaming.OhlcReceived += Streaming_OhlcReceived", "terminal consumes Capital ongoing bars");
+    }
+
     private static void ManualFormulaResolvesExactIdentifiersAndRejectsInvalidTerms()
     {
         var day = DateTimeOffset.Parse("2026-07-01T00:00:00Z");
@@ -7465,6 +7649,34 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception($"{message}. Expected {expected}, got {actual}");
         }
+    }
+
+    private static void AssertSequence<T>(IEnumerable<T> actual, params T[] expected)
+    {
+        var actualRows = actual.ToArray();
+        if (!actualRows.SequenceEqual(expected))
+        {
+            throw new Exception($"Sequence mismatch. Expected {string.Join(" | ", expected)}, got {string.Join(" | ", actualRows)}");
+        }
+    }
+
+    private static void AssertContains(string value, string expected, string message)
+    {
+        if (!value.Contains(expected, StringComparison.Ordinal))
+        {
+            throw new Exception($"{message}. Expected source to contain '{expected}'.");
+        }
+    }
+
+    private static string SliceSource(string source, string start, string end)
+    {
+        var startIndex = source.IndexOf(start, StringComparison.Ordinal);
+        var endIndex = source.IndexOf(end, startIndex + Math.Max(start.Length, 1), StringComparison.Ordinal);
+        if (startIndex < 0 || endIndex <= startIndex)
+        {
+            throw new Exception($"Source boundaries missing: {start} -> {end}");
+        }
+        return source[startIndex..endIndex];
     }
 
     private static void SavedBasketRestorePreservesExactFormulaAndRejectsMissingEpics()

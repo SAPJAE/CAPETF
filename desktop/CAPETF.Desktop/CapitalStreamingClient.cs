@@ -39,6 +39,7 @@ public sealed class CapitalStreamingClient : IAsyncDisposable
     private int _disposeStarted;
 
     public event EventHandler<QuoteUpdate>? QuoteReceived;
+    public event EventHandler<CapitalOhlcUpdate>? OhlcReceived;
     public event EventHandler<string>? StatusChanged;
     public event EventHandler<string>? Disconnected;
 
@@ -182,6 +183,18 @@ public sealed class CapitalStreamingClient : IAsyncDisposable
                 return;
             }
 
+            if (destination == "ohlc.event")
+            {
+                var update = ParseOhlcUpdate(root);
+                if (update is null)
+                {
+                    StatusChanged?.Invoke(this, "Realtime OHLC ignored: payload is incomplete or invalid.");
+                    return;
+                }
+                OhlcReceived?.Invoke(this, update);
+                return;
+            }
+
             if (!string.IsNullOrWhiteSpace(destination))
             {
                 StatusChanged?.Invoke(this, destination);
@@ -212,6 +225,48 @@ public sealed class CapitalStreamingClient : IAsyncDisposable
             return DateTimeOffset.FromUnixTimeMilliseconds(ms);
         }
         return null;
+    }
+
+    internal static CapitalOhlcUpdate? ParseOhlcUpdate(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return ParseOhlcUpdate(document.RootElement);
+    }
+
+    private static CapitalOhlcUpdate? ParseOhlcUpdate(JsonElement root)
+    {
+        if (!root.TryGetProperty("destination", out var destination) ||
+            !string.Equals(destination.GetString(), "ohlc.event", StringComparison.Ordinal) ||
+            !root.TryGetProperty("payload", out var payload))
+        {
+            return null;
+        }
+
+        var epic = ReadString(payload, "epic") ?? "";
+        var resolution = ReadString(payload, "resolution") ?? "";
+        var open = ReadDecimal(payload, "o");
+        var high = ReadDecimal(payload, "h");
+        var low = ReadDecimal(payload, "l");
+        var close = ReadDecimal(payload, "c");
+        if (string.IsNullOrWhiteSpace(epic) || string.IsNullOrWhiteSpace(resolution) ||
+            open is not > 0m || high is not > 0m || low is not > 0m || close is not > 0m ||
+            high < low || high < open || high < close || low > open || low > close ||
+            !payload.TryGetProperty("t", out var timestamp) ||
+            timestamp.ValueKind != JsonValueKind.Number || !timestamp.TryGetInt64(out var milliseconds))
+        {
+            return null;
+        }
+
+        DateTimeOffset time;
+        try
+        {
+            time = DateTimeOffset.FromUnixTimeMilliseconds(milliseconds);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+        return new CapitalOhlcUpdate(epic, resolution, time, open.Value, high.Value, low.Value, close.Value);
     }
 
     public async ValueTask DisposeAsync()

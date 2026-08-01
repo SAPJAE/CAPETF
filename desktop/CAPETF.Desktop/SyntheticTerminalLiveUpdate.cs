@@ -8,7 +8,8 @@ public static class SyntheticTerminalLiveUpdate
         SyntheticBasket basket,
         QuoteUpdate quote,
         DateTimeOffset? now = null,
-        string? timeframe = null)
+        string? timeframe = null,
+        string? drawingIdentity = null)
     {
         var observedAt = now ?? DateTimeOffset.UtcNow;
         var result = SyntheticLiveUpdate.ApplyQuote(basket, quote, timeframe);
@@ -19,18 +20,27 @@ public static class SyntheticTerminalLiveUpdate
             result.Matched,
             result.CandleChanged,
             result.Matched
-                ? new SyntheticTerminalTickPayload(
-                    SyntheticTerminalChartPayload.DrawingIdentity(basket),
-                    candle is null ? null : new TerminalCandle(
-                        candle.Time.ToUnixTimeSeconds(), candle.Open, candle.High, candle.Low, candle.Close),
-                    basket.BidPrice,
-                    basket.AskPrice,
-                    basket.Components.Select(component => new TerminalComponentQuote(
-                        component.Instrument.Epic,
-                        component.Instrument.Bid,
-                        component.Instrument.Offer,
-                        component.Instrument.LastTickAt,
-                        SyntheticTerminalChartPayload.QuoteStatus(component.Instrument.LastTickAt, observedAt))).ToList())
+                ? BuildTick(basket, candle, observedAt, drawingIdentity)
                 : null);
     }
+
+    public static SyntheticTerminalTickPayload BuildTick(
+        SyntheticBasket basket,
+        OhlcPoint? candle,
+        DateTimeOffset observedAt,
+        string? drawingIdentity = null) =>
+        new(
+            string.IsNullOrWhiteSpace(drawingIdentity)
+                ? SyntheticTerminalChartPayload.DrawingIdentity(basket)
+                : drawingIdentity.Trim(),
+            candle is null ? null : new TerminalCandle(
+                candle.Time.ToUnixTimeSeconds(), candle.Open, candle.High, candle.Low, candle.Close),
+            basket.BidPrice,
+            basket.AskPrice,
+            basket.Components.Select(component => new TerminalComponentQuote(
+                component.Instrument.Epic,
+                component.Instrument.Bid,
+                component.Instrument.Offer,
+                component.Instrument.LastTickAt,
+                SyntheticTerminalChartPayload.QuoteStatus(component.Instrument.LastTickAt, observedAt))).ToList());
 }

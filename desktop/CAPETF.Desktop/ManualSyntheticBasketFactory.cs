@@ -347,7 +347,7 @@ public static class ManualSyntheticBasketFactory
         return basket;
     }
 
-    private static OhlcPoint BuildCandle(
+    internal static OhlcPoint BuildCandle(
         DateTimeOffset time,
         IReadOnlyList<(decimal Multiplier, OhlcPoint Candle)> legs)
     {

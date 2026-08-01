@@ -25,6 +25,7 @@ public partial class CapComTerminalWindow : Window
     private readonly SyntheticTradingWindowLifecycleCoordinator _tradingLifecycle = new();
     private readonly TerminalOperationState _operationState = new();
     private readonly ActiveSyntheticBasketState _activeBasket = new();
+    private readonly SyntheticRealtimeBarBuilder _realtimeBars = new();
     private readonly WindowLifetime _windowLifetime = new();
     private readonly SemaphoreSlim _brokerRefreshGate = new(1, 1);
     private readonly List<MarketInstrument> _instruments = [];
@@ -52,7 +53,9 @@ public partial class CapComTerminalWindow : Window
     private bool _loadingSavedBaskets;
     private SyntheticTerminalPayload? _pendingPayload;
     private bool _chartReady;
+    private bool _changingUniverseProgrammatically;
     private bool _streamReconnectScheduled;
+    private string _terminalDrawingIdentity = "";
     private CancellationTokenSource? _marginPreviewRefresh;
     private decimal _marginPreviewNotional = 300m;
     private readonly Task _brokerRefreshLoop;
@@ -397,10 +400,7 @@ public partial class CapComTerminalWindow : Window
 
     private async Task LoadSavedBasketAsync(SavedSyntheticBasket saved, CancellationToken cancellationToken)
     {
-        if (_instruments.Count == 0)
-        {
-            await LoadStocksAsync(cancellationToken);
-        }
+        await EnsureBasketUniverseAsync(saved.Strategy, cancellationToken);
 
         var resolution = SelectedResolution();
         var periodsPerYear = PeriodsPerYear(resolution);
@@ -457,10 +457,11 @@ public partial class CapComTerminalWindow : Window
         {
             throw new InvalidOperationException("The selected execution is no longer available. Refresh positions and try again.");
         }
-        if (_instruments.Count == 0)
-        {
-            await LoadStocksAsync(cancellationToken);
-        }
+        await EnsureBasketUniverseAsync(
+            execution.BasketQuantity is > 0m
+                ? SyntheticStrategyKind.ManualFormula
+                : SyntheticStrategyKind.SimilarToSelectedSymbol,
+            cancellationToken);
 
         var saved = SyntheticExecutionBasketSnapshot.Create(execution, _instruments);
         var selectedInstruments = saved.Components
@@ -489,7 +490,9 @@ public partial class CapComTerminalWindow : Window
         await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
         _operationState.BeginStage("Rendering executed basket");
         await Task.Yield();
-        await RenderSyntheticChartAsync(_basket);
+        await RenderSyntheticChartAsync(
+            _basket,
+            SyntheticTerminalWorkspace.ExecutionDrawingIdentity(execution.ExecutionId));
         var status = $"Loaded executed basket {_basket.Symbol}: {_basket.Components.Count} legs, {HistoryRange(history)}.";
         StatusText.Text = status;
         await TryStartStreamingCurrentBasketAsync(status, cancellationToken);
@@ -647,6 +650,7 @@ public partial class CapComTerminalWindow : Window
             cancellationToken.ThrowIfCancellationRequested();
             var streaming = new CapitalStreamingClient();
             streaming.QuoteReceived += Streaming_QuoteReceived;
+            streaming.OhlcReceived += Streaming_OhlcReceived;
             streaming.StatusChanged += (_, message) =>
             {
                 if (_windowLifetime.IsClosing) return;
@@ -660,7 +664,11 @@ public partial class CapComTerminalWindow : Window
         var epics = SyntheticTerminalWorkspace.StreamingEpics(_basket);
         await _streaming.SubscribeQuotesAsync(_api.Session!, epics, cancellationToken);
         _operationState.Report("Starting live stream", 1, 2);
-        await _streaming.SubscribeOhlcAsync(_api.Session!, epics, SyntheticHistoryService.RequestResolution(SelectedResolution()), cancellationToken);
+        await _streaming.SubscribeOhlcAsync(
+            _api.Session!,
+            epics,
+            SyntheticRealtimeBarBuilder.StreamingResolution(SelectedResolution()),
+            cancellationToken);
         _operationState.Report("Starting live stream", 2, 2);
         ConnectionText.Text = $"Streaming {_basket.Symbol}";
         StatusText.Text = $"Streaming {_basket.Symbol}: {epics.Count} component epics.";
@@ -805,7 +813,7 @@ public partial class CapComTerminalWindow : Window
         await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
         _operationState.BeginStage("Rendering synthetic chart");
         await Task.Yield();
-        await RenderSyntheticChartAsync(_basket);
+        await RenderSyntheticChartAsync(_basket, _terminalDrawingIdentity);
         var reloadStatus = $"{_basket.Symbol}: reloaded {resolution} history for the same {_basket.Components.Count} legs, {HistoryRange(history)}.";
         StatusText.Text = reloadStatus;
         await TryStartStreamingCurrentBasketAsync(reloadStatus, cancellationToken);
@@ -822,7 +830,8 @@ public partial class CapComTerminalWindow : Window
                 _basket,
                 update,
                 observedAt,
-                SelectedResolution());
+                SelectedResolution(),
+                _terminalDrawingIdentity);
             if (!result.Matched) return;
             if (result.Tick is not null) _ = SendTerminalTickAsync(result.Tick);
             ChartMetaText.Text = $"{_pendingPayload?.CurrencyLabel ?? ""} | bid {FormatQuote(_basket.BidPrice)} | ask {FormatQuote(_basket.AskPrice)}";
@@ -1000,13 +1009,30 @@ public partial class CapComTerminalWindow : Window
 
     private async void UniverseBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_api.Session is null) return;
+        if (_api.Session is null || _changingUniverseProgrammatically) return;
         var universe = SelectedUniverse();
         await RunOperationAsync($"Loading {UniverseLabel(universe).ToLowerInvariant()} universe", async cancellationToken =>
         {
             await _universeUi.SwitchAsync(
                 ClearTerminalChartAsync,
                 () => LoadUniverseAsync(universe, cancellationToken));
+        });
+    }
+
+    private async void Streaming_OhlcReceived(object? sender, CapitalOhlcUpdate update)
+    {
+        if (_windowLifetime.IsClosing) return;
+        await Dispatcher.InvokeAsync(() =>
+        {
+            if (_windowLifetime.IsClosing || _basket is null || !_realtimeBars.Apply(_basket, update)) return;
+            var observedAt = DateTimeOffset.UtcNow;
+            var tick = SyntheticTerminalLiveUpdate.BuildTick(
+                _basket,
+                _basket.Candles[^1],
+                observedAt,
+                _terminalDrawingIdentity);
+            _ = SendTerminalTickAsync(tick);
+            StatusText.Text = $"{_basket.Symbol}: ongoing {SelectedResolution()} candle {update.Time.ToLocalTime():yyyy-MM-dd HH:mm}.";
         });
     }
 
@@ -1028,6 +1054,37 @@ public partial class CapComTerminalWindow : Window
             "Crypto" => TerminalUniverseKind.Crypto,
             _ => TerminalUniverseKind.Stocks,
         };
+
+    private async Task EnsureBasketUniverseAsync(
+        SyntheticStrategyKind strategy,
+        CancellationToken cancellationToken)
+    {
+        if (strategy != SyntheticStrategyKind.ManualFormula)
+        {
+            if (_instruments.Count == 0) await LoadStocksAsync(cancellationToken);
+            return;
+        }
+
+        if (SelectedUniverse() != TerminalUniverseKind.Crypto)
+        {
+            _changingUniverseProgrammatically = true;
+            try
+            {
+                UniverseBox.SelectedItem = UniverseBox.Items
+                    .OfType<ComboBoxItem>()
+                    .First(item => string.Equals(item.Content?.ToString(), "Crypto", StringComparison.Ordinal));
+            }
+            finally
+            {
+                _changingUniverseProgrammatically = false;
+            }
+        }
+
+        if (_instruments.Count == 0 || _instruments.Any(instrument => !CapitalInstrumentTypes.IsCrypto(instrument)))
+        {
+            await LoadUniverseAsync(TerminalUniverseKind.Crypto, cancellationToken);
+        }
+    }
 
     private static string UniverseLabel(TerminalUniverseKind universe) =>
         universe switch
@@ -1209,9 +1266,13 @@ public partial class CapComTerminalWindow : Window
             }));
     }
 
-    private async Task RenderSyntheticChartAsync(SyntheticBasket basket)
+    private async Task RenderSyntheticChartAsync(SyntheticBasket basket, string? drawingIdentity = null)
     {
-        var payload = SyntheticTerminalChartPayload.Build(basket);
+        _terminalDrawingIdentity = string.IsNullOrWhiteSpace(drawingIdentity)
+            ? SyntheticTerminalChartPayload.DrawingIdentity(basket)
+            : drawingIdentity.Trim();
+        _realtimeBars.Reset(basket, SelectedResolution());
+        var payload = SyntheticTerminalChartPayload.Build(basket, drawingIdentity: _terminalDrawingIdentity);
         SymbolText.Text = $"{payload.Symbol}  {payload.Block}";
         ChartMetaText.Text = $"{payload.CurrencyLabel} | bid {FormatQuote(payload.BidPrice)} | ask {FormatQuote(payload.AskPrice)}";
         SyntheticFormulaText.Text = string.Join(Environment.NewLine + "+ ", basket.Components.Select(component =>
@@ -1578,6 +1639,8 @@ public partial class CapComTerminalWindow : Window
             clearBasket: true,
             reason: "Build a synthetic basket to preview margin.");
         _pendingPayload = null;
+        _terminalDrawingIdentity = "";
+        _realtimeBars.Clear();
         SymbolText.Text = "No synthetic symbol";
         ChartMetaText.Text = "No synthetic basket could be built for the current seed and block.";
         SyntheticFormulaText.Text = "No formula yet.";
