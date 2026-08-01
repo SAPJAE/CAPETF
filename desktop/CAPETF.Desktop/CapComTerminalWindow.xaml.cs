@@ -113,11 +113,16 @@ public partial class CapComTerminalWindow : Window
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var etfCache = EnsureEtfCatalogLoaded();
             if (_instrumentsByUniverse.TryGetValue(universe, out var instruments))
             {
                 ApplyUniverse(universe, instruments, _candlesByUniverse[universe], _candlesByUniverseByResolution[universe]);
                 StatusText.Text = $"{_instruments.Count} {UniverseLabel(universe).ToLowerInvariant()} loaded from the selected universe cache.";
+                return;
+            }
+
+            if (universe == TerminalUniverseKind.Crypto)
+            {
+                await LoadUniverseFromApiAsync(universe, cancellationToken);
                 return;
             }
 
@@ -139,6 +144,7 @@ public partial class CapComTerminalWindow : Window
             }
             else
             {
+                var etfCache = EnsureEtfCatalogLoaded();
                 StatusText.Text = "Loading cached ETFs...";
                 if (etfCache is not null && etfCache.Instruments.Count > 0)
                 {
@@ -161,7 +167,7 @@ public partial class CapComTerminalWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = $"Cached {UniverseLabel(universe).ToLowerInvariant()} load failed; trying Capital.com API. {ex.Message}";
-            await LoadStocksFromApiAsync(cancellationToken);
+            await LoadUniverseFromApiAsync(universe, cancellationToken);
         }
     }
 
@@ -445,7 +451,10 @@ public partial class CapComTerminalWindow : Window
     private async Task LoadUniverseFromApiAsync(TerminalUniverseKind universe, CancellationToken cancellationToken)
     {
         await EnsureConnectedAsync(cancellationToken);
-        EnsureEtfCatalogLoaded();
+        if (universe != TerminalUniverseKind.Crypto)
+        {
+            EnsureEtfCatalogLoaded();
+        }
         StatusText.Text = $"Loading Capital.com {UniverseLabel(universe).ToLowerInvariant()}...";
         var markets = await _api.SearchMarketsAsync(TerminalUniverseLoadPolicy.ApiSearchTerm(universe, SeedText()), cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -937,12 +946,22 @@ public partial class CapComTerminalWindow : Window
         BlockBox.SelectedItem?.ToString() ?? _instruments.FirstOrDefault()?.Group ?? "US / USD / Other";
 
     private TerminalUniverseKind SelectedUniverse() =>
-        (UniverseBox.SelectedItem as ComboBoxItem)?.Content?.ToString() == "ETFs"
-            ? TerminalUniverseKind.ETFs
-            : TerminalUniverseKind.Stocks;
+        (UniverseBox.SelectedItem as ComboBoxItem)?.Content?.ToString() switch
+        {
+            "Stocks" => TerminalUniverseKind.Stocks,
+            "ETFs" => TerminalUniverseKind.ETFs,
+            "Crypto" => TerminalUniverseKind.Crypto,
+            _ => TerminalUniverseKind.Stocks,
+        };
 
     private static string UniverseLabel(TerminalUniverseKind universe) =>
-        universe == TerminalUniverseKind.ETFs ? "ETFs" : "Stocks";
+        universe switch
+        {
+            TerminalUniverseKind.Stocks => "Stocks",
+            TerminalUniverseKind.ETFs => "ETFs",
+            TerminalUniverseKind.Crypto => "Crypto",
+            _ => throw new ArgumentOutOfRangeException(nameof(universe), universe, null),
+        };
 
     private EtfDataLoadResult? EnsureEtfCatalogLoaded()
     {
@@ -1004,6 +1023,10 @@ public partial class CapComTerminalWindow : Window
         IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> candlesByResolution)
     {
         var accepted = instruments.Where(item => TerminalUniverse.Accepts(universe, item, _knownEtfEpics)).ToList();
+        if (universe == TerminalUniverseKind.Crypto)
+        {
+            accepted = TerminalCryptoUniverseGrouping.Normalize(accepted).ToList();
+        }
         _instrumentsByUniverse[universe] = accepted;
         _candlesByUniverse[universe] = candles;
         _candlesByUniverseByResolution[universe] = candlesByResolution;

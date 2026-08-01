@@ -15,6 +15,7 @@ public static class SyntheticBasketBuilderTests
     {
         CryptoUniverseRecognizesOpenEligibleInstrumentsAndDeduplicatesEpics();
         CapitalApiClientUsesAllMarketsForEmptySearchAndParsesCryptoRows();
+        CapComTerminalExposesGroupedCryptoUniverse();
     }
 
     public static void RunAll()
@@ -1675,6 +1676,56 @@ public static class SyntheticBasketBuilderTests
         AssertEqual("CLOSED", ethereum.Status, "ETH/USD status");
         AssertNear(3200.25m, ethereum.Bid ?? 0m, "ETH/USD bid");
         AssertNear(3201.25m, ethereum.Offer ?? 0m, "ETH/USD offer");
+    }
+
+    private static void CapComTerminalExposesGroupedCryptoUniverse()
+    {
+        var xaml = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml"));
+        if (!xaml.Contains("<ComboBoxItem Content=\"Crypto\"/>", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal universe selector must expose Crypto");
+        }
+
+        var runner = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop.Tests", "Program.cs"));
+        if (!runner.Contains("\"crypto-universe\" or \"crypto-ui\"", StringComparison.Ordinal))
+        {
+            throw new Exception("terminal crypto UI must have a focused test runner alias");
+        }
+
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "TerminalUniverseKind.Crypto => \"Crypto\"",
+            "universe == TerminalUniverseKind.Crypto",
+            "universe != TerminalUniverseKind.Crypto",
+            "TerminalCryptoUniverseGrouping.Normalize",
+            "await LoadUniverseFromApiAsync(universe, cancellationToken);",
+            "await ClearTerminalChartAsync();",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"terminal crypto universe must preserve its API/cache/chart contract: {required}");
+            }
+        }
+
+        var normalize = typeof(SyntheticTerminalWorkspace).Assembly
+            .GetType("CAPETF.Desktop.TerminalCryptoUniverseGrouping")?
+            .GetMethod("Normalize");
+        if (normalize is null) throw new Exception("terminal crypto universe must normalize quote-currency groups");
+        var crypto = (IReadOnlyList<MarketInstrument>)normalize.Invoke(null,
+        [
+            new[]
+            {
+                new MarketInstrument { Epic = "CRYPTO.BTCUSD.CFD.IP", Type = "CRYPTOCURRENCIES", Currency = "USD" },
+                new MarketInstrument { Epic = "CRYPTO.BTCEUR.CFD.IP", Type = "CRYPTOCURRENCIES", Currency = "EUR" },
+                new MarketInstrument { Epic = "CRYPTO.BTCUNKNOWN.CFD.IP", Type = "CRYPTOCURRENCIES" },
+            },
+        ])!;
+
+        AssertEqual("Crypto / USD / All", crypto[0].Group, "crypto USD quote group");
+        AssertEqual("Crypto / EUR / All", crypto[1].Group, "crypto EUR quote group");
+        AssertEqual("Crypto / Currency / All", crypto[2].Group, "crypto missing quote fallback group");
     }
 
     private static void EncryptedEtfCacheKeepsOnlyEtfInstruments()

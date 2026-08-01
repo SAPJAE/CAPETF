@@ -41,7 +41,7 @@ internal static class TestSuiteRunner
             runBuilder();
             completed.Add("SyntheticBasketBuilder");
         }
-        if (selection == "crypto-universe")
+        if (selection is "crypto-universe" or "crypto-ui")
         {
             runCryptoUniverse();
             completed.Add("CryptoUniverse");

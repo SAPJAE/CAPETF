@@ -63,3 +63,45 @@ public static class SyntheticTerminalWorkspace
             .Take(40)
             .ToList();
 }
+
+public static class TerminalCryptoUniverseGrouping
+{
+    public static IReadOnlyList<MarketInstrument> Normalize(IReadOnlyList<MarketInstrument> instruments) =>
+        instruments.Select(Normalize).ToList();
+
+    private static MarketInstrument Normalize(MarketInstrument instrument)
+    {
+        var currency = string.IsNullOrWhiteSpace(instrument.Currency)
+            ? "Currency"
+            : instrument.Currency.Trim().ToUpperInvariant();
+        return new MarketInstrument
+        {
+            Epic = instrument.Epic,
+            Name = instrument.Name,
+            Symbol = instrument.Symbol,
+            Type = instrument.Type,
+            Currency = currency,
+            Country = instrument.Country,
+            Region = "Crypto",
+            Sector = "All",
+            LotSize = instrument.LotSize,
+            MinDealSize = instrument.MinDealSize,
+            MinSizeIncrement = instrument.MinSizeIncrement,
+            MarginFactor = instrument.MarginFactor,
+            MarginFactorUnit = instrument.MarginFactorUnit,
+            Price = instrument.Price,
+            Bid = instrument.Bid,
+            Offer = instrument.Offer,
+            IntradayReturn = instrument.IntradayReturn,
+            ChangePercent = instrument.ChangePercent,
+            Low = instrument.Low,
+            High = instrument.High,
+            Sma20 = instrument.Sma20,
+            Sma50 = instrument.Sma50,
+            AlertPrice = instrument.AlertPrice,
+            IsWatchlisted = instrument.IsWatchlisted,
+            LastTickAt = instrument.LastTickAt,
+            Status = instrument.Status,
+        };
+    }
+}
