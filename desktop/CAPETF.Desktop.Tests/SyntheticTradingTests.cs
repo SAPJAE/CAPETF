@@ -3416,6 +3416,14 @@ public static class SyntheticTradingTests
         AssertEqual(SyntheticExecutionLegState.Unknown, preexisting.Legs[0].State,
             "a position created before submission must not be attached");
         AssertEqual("", preexisting.Legs[0].DealId, "preexisting position identity must remain unclaimed");
+
+        var muchLater = new SyntheticPositionReconciler().Reconcile(
+            record,
+            [Match("later-unrelated", submittedUtc.AddMinutes(10))],
+            submittedUtc.AddMinutes(15));
+        AssertEqual(SyntheticExecutionLegState.Unknown, muchLater.Legs[0].State,
+            "a matching position created materially after submission must not be attached after a delayed restart");
+        AssertEqual("", muchLater.Legs[0].DealId, "later position identity must remain unclaimed");
     }
 
     private static void ReconciliationReopensClosedLegWithoutClosureMetadataAndPersistsIt()

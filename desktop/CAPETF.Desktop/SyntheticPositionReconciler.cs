@@ -2,6 +2,8 @@ namespace CAPETF.Desktop;
 
 public sealed class SyntheticPositionReconciler
 {
+    private static readonly TimeSpan SubmissionRecoveryWindow = TimeSpan.FromMinutes(2);
+
     public SyntheticExecutionRecord Reconcile(
         SyntheticExecutionRecord record,
         IReadOnlyList<CapitalOpenPosition> positions,
@@ -102,7 +104,8 @@ public sealed class SyntheticPositionReconciler
         }
 
         var earliestCreation = submittedUtc.AddSeconds(-5);
-        var latestCreation = now.AddSeconds(5);
+        var latestCreation = submittedUtc + SubmissionRecoveryWindow;
+        if (latestCreation > now.AddSeconds(5)) latestCreation = now.AddSeconds(5);
         var matches = positions
             .Where(position =>
                 !string.IsNullOrWhiteSpace(position.DealId)
