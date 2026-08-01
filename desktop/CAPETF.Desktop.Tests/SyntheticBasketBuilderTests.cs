@@ -1614,6 +1614,7 @@ public static class SyntheticBasketBuilderTests
         var closeOnlyCrypto = new MarketInstrument { Epic = "CRYPTO.CLOSE", Type = "CRYPTOCURRENCIES", Status = "CLOSE_ONLY" };
         var viewOnlyCrypto = new MarketInstrument { Epic = "CRYPTO.VIEW", Type = "CRYPTOCURRENCIES", Status = "VIEW_ONLY" };
         var reduceOnlyCrypto = new MarketInstrument { Epic = "CRYPTO.REDUCE", Type = "CRYPTOCURRENCIES", Status = "REDUCE_ONLY" };
+        var disabledCrypto = new MarketInstrument { Epic = "CRYPTO.DISABLED", Type = "CRYPTOCURRENCIES", Status = "DISABLED" };
         var suspendedCrypto = new MarketInstrument { Epic = "CRYPTO.SUSPENDED", Type = "CRYPTOCURRENCIES", Status = "SUSPENDED" };
         var obsoleteCrypto = new MarketInstrument { Epic = "CRYPTO.OBSOLETE", Type = "CRYPTOCURRENCIES", Status = "OBSOLETE" };
         var nonOpenableCrypto = new MarketInstrument { Epic = "CRYPTO.NONOPEN", Type = "CRYPTOCURRENCIES", Status = "CANNOT_OPEN" };
@@ -1625,6 +1626,7 @@ public static class SyntheticBasketBuilderTests
         AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, closeOnlyCrypto), "close-only crypto must be excluded");
         AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, viewOnlyCrypto), "view-only crypto must be excluded");
         AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, reduceOnlyCrypto), "reduce-only crypto must be excluded");
+        AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, disabledCrypto), "disabled crypto must be excluded");
         AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, suspendedCrypto), "suspended crypto must be excluded");
         AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, obsoleteCrypto), "obsolete crypto must be excluded");
         AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, nonOpenableCrypto), "non-openable crypto must be excluded");
@@ -1656,6 +1658,7 @@ public static class SyntheticBasketBuilderTests
         var markets = client.SearchMarketsAsync("").GetAwaiter().GetResult();
 
         AssertEqual("/api/v1/markets", handler.MarketRequestUri?.AbsolutePath, "an empty market search must use the all-markets endpoint");
+        AssertEqual(HttpMethod.Get, handler.MarketRequestMethod, "an empty market search must use GET");
         AssertEqual("", handler.MarketRequestUri?.Query, "an empty market search must omit searchTerm");
         AssertEqual(2, markets.Count, "the all-markets fixture must parse both crypto rows");
 
@@ -7200,6 +7203,7 @@ public static class SyntheticBasketBuilderTests
     private sealed class CryptoMarketsHandler : HttpMessageHandler
     {
         public Uri? MarketRequestUri { get; private set; }
+        public HttpMethod? MarketRequestMethod { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -7212,6 +7216,7 @@ public static class SyntheticBasketBuilderTests
             }
 
             MarketRequestUri = request.RequestUri;
+            MarketRequestMethod = request.Method;
             return Task.FromResult(JsonResponse(
                 """
                 {
