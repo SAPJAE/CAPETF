@@ -23,6 +23,7 @@ public static class SyntheticTradingTests
         TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels();
         ExecutionBasketSnapshotPreservesTrustedFormula();
         ManualRatioSizerFindsSmallestSharedBasketQuantity();
+        ManualRatioSizerRejectsMaximumDealViolation();
         ManualRatioSizerHandlesExtremeDecimalScaleWithoutOverflow();
         ManualRatioSizerAndPreflightBlockUnrepresentableGrid();
         ManualOrderPreviewPreservesExactRatioAndUsesExecutionSidePrices();
@@ -1323,6 +1324,20 @@ public static class SyntheticTradingTests
         RatioPreservingBasketSizer.ValidateExecutableQuantity(components, quantity);
     }
 
+    private static void ManualRatioSizerRejectsMaximumDealViolation()
+    {
+        var basket = CreateManualRatioBasket();
+        basket.Components[0].Instrument.MaxDealSize = 4m;
+
+        var error = AssertThrows<RatioPreservingBasketSizingException>(
+            () => RatioPreservingBasketSizer.ValidateExecutableQuantity(basket.Components, 0.5m),
+            "manual sizing must enforce Capital's maximum deal size");
+
+        AssertEqual("CS.D.ETHUSD.CFD.IP", error.Epic, "maximum violation epic");
+        AssertTrue(error.Message.Contains("maximum deal size", StringComparison.OrdinalIgnoreCase),
+            "maximum violation reason");
+    }
+
     private static void ManualRatioSizerAndPreflightBlockUnrepresentableGrid()
     {
         const decimal smallestPositiveDecimal = 0.0000000000000000000000000001m;
@@ -1331,6 +1346,7 @@ public static class SyntheticTradingTests
         basket.Components[0].FormulaMultiplier = smallestPositiveDecimal;
         basket.Components[0].Instrument.MinDealSize = decimal.MaxValue;
         basket.Components[0].Instrument.MinSizeIncrement = decimal.MaxValue;
+        basket.Components[0].Instrument.MaxDealSize = decimal.MaxValue;
 
         var error = AssertThrows<RatioPreservingBasketSizingException>(
             () => RatioPreservingBasketSizer.SmallestExecutableQuantity(basket.Components),
@@ -4209,6 +4225,7 @@ public static class SyntheticTradingTests
                 LotSize = 1m,
                 MinDealSize = 0.5m,
                 MinSizeIncrement = 0.1m,
+                MaxDealSize = 1000m,
                 MarginFactor = 20m,
                 MarginFactorUnit = "PERCENTAGE",
             },
@@ -4233,6 +4250,7 @@ public static class SyntheticTradingTests
                 LotSize = 1m,
                 MinDealSize = 0.1m,
                 MinSizeIncrement = 0.01m,
+                MaxDealSize = 1000m,
                 MarginFactor = 50m,
                 MarginFactorUnit = "PERCENTAGE",
             },
@@ -4289,6 +4307,7 @@ public static class SyntheticTradingTests
                 LotSize = 1m,
                 MinDealSize = 1m,
                 MinSizeIncrement = 1m,
+                MaxDealSize = 1000000m,
             },
             weight,
             10m,
@@ -4308,6 +4327,7 @@ public static class SyntheticTradingTests
                 Epic = epic,
                 MinDealSize = minimum,
                 MinSizeIncrement = increment,
+                MaxDealSize = decimal.MaxValue,
             },
             50m,
             0m,
@@ -4332,6 +4352,7 @@ public static class SyntheticTradingTests
             LotSize = 1m,
             MinDealSize = 1m,
             MinSizeIncrement = 1m,
+            MaxDealSize = 1000000m,
             MarginFactor = 20m,
             MarginFactorUnit = "PERCENTAGE",
         };

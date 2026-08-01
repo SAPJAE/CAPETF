@@ -100,6 +100,8 @@ public static class TerminalUniverseLoadPolicy
             LotSize = source.LotSize,
             MinDealSize = source.MinDealSize,
             MinSizeIncrement = source.MinSizeIncrement,
+            MaxDealSize = source.MaxDealSize,
+            MarketModes = source.MarketModes,
         };
         foreach (var point in source.Points) normalized.Points.Add(point);
         return normalized;

@@ -130,6 +130,8 @@ public sealed class CryptoMarketMetadataEnricher
             LotSize = details.LotSize ?? summary.LotSize,
             MinDealSize = details.MinDealSize ?? summary.MinDealSize,
             MinSizeIncrement = details.MinSizeIncrement ?? summary.MinSizeIncrement,
+            MaxDealSize = details.MaxDealSize ?? summary.MaxDealSize,
+            MarketModes = details.MarketModes.Count > 0 ? details.MarketModes : summary.MarketModes,
             MarginFactor = details.MarginFactor ?? summary.MarginFactor,
             MarginFactorUnit = First(details.MarginFactorUnit, summary.MarginFactorUnit),
             Price = summary.Price ?? details.Price,

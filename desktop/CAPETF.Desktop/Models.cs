@@ -61,6 +61,8 @@ public sealed class MarketInstrument : INotifyPropertyChanged
     public decimal? LotSize { get; set; }
     public decimal? MinDealSize { get; set; }
     public decimal? MinSizeIncrement { get; set; }
+    public decimal? MaxDealSize { get; set; }
+    public IReadOnlyList<string> MarketModes { get; set; } = Array.Empty<string>();
     public decimal? MarginFactor { get; set; }
     public string MarginFactorUnit { get; set; } = "";
     public ObservableCollection<ChartPoint> Points { get; } = [];

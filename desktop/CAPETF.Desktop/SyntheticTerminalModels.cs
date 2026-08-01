@@ -96,6 +96,8 @@ public static class TerminalCryptoUniverseGrouping
             LotSize = instrument.LotSize,
             MinDealSize = instrument.MinDealSize,
             MinSizeIncrement = instrument.MinSizeIncrement,
+            MaxDealSize = instrument.MaxDealSize,
+            MarketModes = instrument.MarketModes,
             MarginFactor = instrument.MarginFactor,
             MarginFactorUnit = instrument.MarginFactorUnit,
             Price = instrument.Price,

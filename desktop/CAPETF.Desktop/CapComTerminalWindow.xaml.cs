@@ -819,6 +819,8 @@ public partial class CapComTerminalWindow : Window
         if (details.LotSize is > 0) target.LotSize = details.LotSize;
         if (details.MinDealSize is > 0) target.MinDealSize = details.MinDealSize;
         if (details.MinSizeIncrement is > 0) target.MinSizeIncrement = details.MinSizeIncrement;
+        if (details.MaxDealSize is > 0) target.MaxDealSize = details.MaxDealSize;
+        target.MarketModes = details.MarketModes;
         if (details.MarginFactor is not null) target.MarginFactor = details.MarginFactor;
         if (!string.IsNullOrWhiteSpace(details.MarginFactorUnit)) target.MarginFactorUnit = details.MarginFactorUnit;
         if (!string.IsNullOrWhiteSpace(details.Status)) target.Status = details.Status;

@@ -23,6 +23,8 @@ public static class EtfMetadataMerger
             LotSize = cached.LotSize ?? details.LotSize,
             MinDealSize = cached.MinDealSize ?? details.MinDealSize,
             MinSizeIncrement = cached.MinSizeIncrement ?? details.MinSizeIncrement,
+            MaxDealSize = cached.MaxDealSize ?? details.MaxDealSize,
+            MarketModes = details.MarketModes.Count > 0 ? details.MarketModes : cached.MarketModes,
         };
 
         foreach (var point in cached.Points.Count > 0 ? cached.Points : details.Points) merged.Points.Add(point);

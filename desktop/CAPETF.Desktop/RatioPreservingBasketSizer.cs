@@ -68,6 +68,11 @@ public static class RatioPreservingBasketSizer
                 throw Failure(epic,
                     $"Basket quantity {Format(basketQuantity)} produces {Format(quantity)}, below the {Format(minimum)} minimum deal size.");
             }
+            if (component.Instrument.MaxDealSize is { } maximum && maximum > 0m && quantity > maximum)
+            {
+                throw Failure(epic,
+                    $"Basket quantity {Format(basketQuantity)} produces {Format(quantity)}, above the {Format(maximum)} maximum deal size.");
+            }
 
             var gridUnits = Divide(quantityFraction, DecimalFraction(increment));
             if (gridUnits.Denominator != BigInteger.One)
@@ -216,6 +221,14 @@ public static class RatioPreservingBasketSizer
         if (component.Instrument.MinDealSize is not > 0m || component.Instrument.MinSizeIncrement is not > 0m)
         {
             throw Failure(epic, "Minimum deal size and size increment must be positive.");
+        }
+        if (component.Instrument.MaxDealSize is not > 0m)
+        {
+            throw Failure(epic, "Maximum deal size must be positive.");
+        }
+        if (component.Instrument.MaxDealSize < component.Instrument.MinDealSize)
+        {
+            throw Failure(epic, "Maximum deal size must not be below the minimum deal size.");
         }
     }
 

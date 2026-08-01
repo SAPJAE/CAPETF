@@ -124,6 +124,8 @@ internal sealed class SyntheticPreflightMarketSnapshotLoader
         if (details.LotSize is not > 0m) missing.Add("lot size");
         if (details.MinDealSize is not > 0m) missing.Add("minimum deal size");
         if (details.MinSizeIncrement is not > 0m) missing.Add("minimum size increment");
+        if (details.MaxDealSize is not > 0m) missing.Add("maximum deal size");
+        if (details.MarketModes.Any(TerminalUniverse.IsBlockedMode)) missing.Add("openable market mode");
         if (details.MarginFactor is not > 0m) missing.Add("margin factor");
         if (!string.Equals(details.MarginFactorUnit?.Trim(), "PERCENTAGE", StringComparison.OrdinalIgnoreCase))
         {

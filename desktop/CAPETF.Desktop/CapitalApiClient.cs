@@ -315,6 +315,8 @@ public sealed partial class CapitalApiClient : IDisposable
             MarginFactorUnit = ReadString(instrument, "marginFactorUnit") ?? "",
             MinDealSize = ReadRuleValue(root, "minDealSize"),
             MinSizeIncrement = ReadRuleValue(root, "minSizeIncrement"),
+            MaxDealSize = ReadRuleValue(root, "maxDealSize"),
+            MarketModes = ReadStrings(instrument, "marketModes"),
             Bid = bid,
             Offer = offer,
             Price = price,
@@ -469,6 +471,7 @@ public sealed partial class CapitalApiClient : IDisposable
                 Sector = ReadString(market, "sector") ?? ReadString(market, "industry") ?? "",
                 Region = ReadString(market, "region") ?? "",
                 LotSize = ReadDecimal(market, "lotSize"),
+                MarketModes = ReadStrings(market, "marketModes"),
                 Bid = bid,
                 Offer = offer,
                 Price = bid is > 0m && offer is > 0m ? (bid.Value + offer.Value) / 2m : bid ?? offer,
@@ -505,6 +508,19 @@ public sealed partial class CapitalApiClient : IDisposable
             value.TryGetDecimal(out var result)
                 ? result
                 : null;
+    }
+
+    private static IReadOnlyList<string> ReadStrings(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var values) || values.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<string>();
+        }
+
+        return values.EnumerateArray()
+            .Where(value => value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString()))
+            .Select(value => value.GetString()!.Trim())
+            .ToArray();
     }
 
     private static decimal? ReadRuleValue(JsonElement root, string ruleName)

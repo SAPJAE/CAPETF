@@ -1676,6 +1676,13 @@ public static class SyntheticBasketBuilderTests
     {
         var openCrypto = new MarketInstrument { Epic = "CRYPTO.BTCUSD.CFD.IP", Type = "CRYPTOCURRENCIES", Status = "OPEN" };
         var closedCrypto = new MarketInstrument { Epic = "CRYPTO.ETHUSD.CFD.IP", Type = "CRYPTOCURRENCIES", Status = "CLOSED" };
+        var closedViewOnlyCrypto = new MarketInstrument
+        {
+            Epic = "CRYPTO.CLOSED.VIEW",
+            Type = "CRYPTOCURRENCIES",
+            Status = "CLOSED",
+            MarketModes = ["VIEW_ONLY"],
+        };
         var closeOnlyCrypto = new MarketInstrument { Epic = "CRYPTO.CLOSE", Type = "CRYPTOCURRENCIES", Status = "CLOSE_ONLY" };
         var viewOnlyCrypto = new MarketInstrument { Epic = "CRYPTO.VIEW", Type = "CRYPTOCURRENCIES", Status = "VIEW_ONLY" };
         var reduceOnlyCrypto = new MarketInstrument { Epic = "CRYPTO.REDUCE", Type = "CRYPTOCURRENCIES", Status = "REDUCE_ONLY" };
@@ -1688,6 +1695,8 @@ public static class SyntheticBasketBuilderTests
         AssertTrue(CapitalInstrumentTypes.IsCrypto(openCrypto), "CRYPTOCURRENCIES must be recognized as crypto");
         AssertTrue(TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, openCrypto), "the crypto universe must accept open crypto");
         AssertTrue(TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, closedCrypto), "temporarily closed crypto must remain visible");
+        AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, closedViewOnlyCrypto),
+            "a CLOSED crypto market with VIEW_ONLY mode must be excluded");
         AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, closeOnlyCrypto), "close-only crypto must be excluded");
         AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, viewOnlyCrypto), "view-only crypto must be excluded");
         AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, reduceOnlyCrypto), "reduce-only crypto must be excluded");
@@ -5243,11 +5252,13 @@ public static class SyntheticBasketBuilderTests
                 "country": "United States",
                 "region": "US",
                 "sector": "Technology",
-                "lotSize": 1
+                "lotSize": 1,
+                "marketModes": ["REGULAR"]
               },
               "dealingRules": {
                 "minDealSize": { "unit": "POINTS", "value": 1 },
-                "minSizeIncrement": { "unit": "POINTS", "value": 0.1 }
+                "minSizeIncrement": { "unit": "POINTS", "value": 0.1 },
+                "maxDealSize": { "unit": "POINTS", "value": 1000 }
               },
               "snapshot": {
                 "marketStatus": "TRADEABLE",
@@ -5268,6 +5279,8 @@ public static class SyntheticBasketBuilderTests
         AssertNear(1m, details.LotSize ?? 0m, "market details should parse lot size");
         AssertNear(1m, details.MinDealSize ?? 0m, "market details should parse min deal size");
         AssertNear(0.1m, details.MinSizeIncrement ?? 0m, "market details should parse min size increment");
+        AssertNear(1000m, details.MaxDealSize ?? 0m, "market details should parse max deal size");
+        AssertEqual("REGULAR", details.MarketModes.Single(), "market details should parse market modes");
         if (details.Status != "TRADEABLE") throw new Exception("market details should parse market status");
         AssertEqual("United States", details.Country, "market details should parse country");
         AssertEqual("US", details.Region, "market details should parse region");

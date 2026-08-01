@@ -69,10 +69,18 @@ public static class SyntheticTradePreflight
             {
                 legFailures.Add(Failure(epic, "Bid and offer prices must be positive."));
             }
+            if (component.Instrument.MarketModes.Any(TerminalUniverse.IsBlockedMode))
+            {
+                legFailures.Add(Failure(epic, "Market mode does not allow opening a position."));
+            }
             if (isManual &&
                 (component.Instrument.MinDealSize is not > 0m || component.Instrument.MinSizeIncrement is not > 0m))
             {
                 legFailures.Add(Failure(epic, "Minimum deal size and size increment must be positive."));
+            }
+            if (isManual && component.Instrument.MaxDealSize is not > 0m)
+            {
+                legFailures.Add(Failure(epic, "Maximum deal size must be positive."));
             }
             if (component.Instrument.LastTickAt is not null && component.Instrument.LastTickAt.Value > input.NowUtc)
             {
@@ -87,7 +95,8 @@ public static class SyntheticTradePreflight
 
         ExecutableOrderPreview? executable = null;
         var hasUsableManualRules = !isManual || input.Basket.Components.All(component =>
-            component.Instrument.MinDealSize is > 0m && component.Instrument.MinSizeIncrement is > 0m);
+            component.Instrument.MinDealSize is > 0m && component.Instrument.MinSizeIncrement is > 0m &&
+            component.Instrument.MaxDealSize is > 0m);
         if (input.RequestedNotional > 0m && input.Basket.Components.Count > 0 && hasUsableManualRules &&
             input.Basket.Components.All(component => component.Instrument.Bid is > 0m && component.Instrument.Offer is > 0m))
         {
@@ -325,6 +334,7 @@ public static class SyntheticTradePreflight
     {
         if (quantity <= 0m) return false;
         if (instrument.MinDealSize is > 0m && quantity < instrument.MinDealSize.Value) return false;
+        if (instrument.MaxDealSize is > 0m && quantity > instrument.MaxDealSize.Value) return false;
         return instrument.MinSizeIncrement is not > 0m || quantity % instrument.MinSizeIncrement.Value == 0m;
     }
 

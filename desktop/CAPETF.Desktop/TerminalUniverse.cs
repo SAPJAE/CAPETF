@@ -29,6 +29,7 @@ public static class TerminalUniverse
 
     private static bool IsOpenEligible(MarketInstrument instrument)
     {
+        if (instrument.MarketModes.Any(IsBlockedMode)) return false;
         var status = instrument.Status.Trim();
         if (string.IsNullOrWhiteSpace(status)) return true;
 
@@ -50,5 +51,15 @@ public static class TerminalUniverse
                normalized.Equals("NORMAL", StringComparison.OrdinalIgnoreCase) ||
                normalized.Equals("ONLINE", StringComparison.OrdinalIgnoreCase) ||
                normalized.Equals("ACTIVE", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool IsBlockedMode(string mode)
+    {
+        var normalized = (mode ?? "").Replace('_', ' ').Replace('-', ' ').Trim();
+        return normalized.Contains("CLOSE ONLY", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Contains("VIEW ONLY", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Contains("REDUCE ONLY", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Contains("OPEN DISABLED", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Contains("CANNOT OPEN", StringComparison.OrdinalIgnoreCase);
     }
 }
