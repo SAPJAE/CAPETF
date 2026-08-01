@@ -1,4 +1,7 @@
+using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -36,9 +39,12 @@ public sealed record SavedSyntheticBasket(
         TerminalUniverseKind? universeKind = null)
     {
         var now = DateTimeOffset.UtcNow;
-        var idSource = $"{basket.Symbol}-{string.Join("-", basket.Components.Select(component => component.Instrument.Epic))}";
+        var componentIdentity = string.Join("|", basket.Components.Select(component => component.Instrument.Epic));
+        var id = strategy == SyntheticStrategyKind.ManualFormula
+            ? ManualFormulaId(basket.Symbol, basket.Components)
+            : StableId($"{basket.Symbol}-{componentIdentity}");
         return new SavedSyntheticBasket(
-            StableId(idSource),
+            id,
             string.IsNullOrWhiteSpace(name) ? basket.Symbol : name.Trim(),
             basket.Symbol,
             basket.Block,
@@ -53,6 +59,16 @@ public sealed record SavedSyntheticBasket(
                 component.FormulaMultiplier,
                 component.FormulaReferencePrice)).ToList(),
             UniverseKind: universeKind ?? basket.UniverseKind);
+    }
+
+    private static string ManualFormulaId(string symbol, IEnumerable<SyntheticComponent> components)
+    {
+        var source = symbol.Trim().ToUpperInvariant() + "|" + string.Join("|",
+            components.Select(component => string.Join(":",
+                component.Instrument.Epic.Trim().ToUpperInvariant(),
+                component.FormulaMultiplier.ToString("G29", CultureInfo.InvariantCulture))));
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source)));
+        return $"MANUAL-{hash[..24]}";
     }
 
     private static string StableId(string source)

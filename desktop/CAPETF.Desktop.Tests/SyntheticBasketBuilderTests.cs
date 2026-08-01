@@ -24,6 +24,7 @@ public static class SyntheticBasketBuilderTests
         ManualFormulaResolutionIsBlockLocalAndTiered();
         ManualFormulaResolvesCapitalEpicPairSegmentsWithinSelectedBlock();
         ManualFormulaSaveRestorePreservesTwoLegStrategyAndExactMultipliers();
+        SavedManualFormulaIdentityIncludesExactRatios();
         ManualBasketStrategyIdentitySurvivesDropdownChanges();
         SignedSyntheticQuotesUseExecutableBidAskSides();
         ManualFormulaEditorIsCompactConditionalAndBypassesAutomaticSelection();
@@ -7493,6 +7494,59 @@ public static class SyntheticBasketBuilderTests
                 return new OhlcPoint(start.AddTicks(step.Ticks * index), close * 0.99m, close * 1.01m, close * 0.98m, close);
             })
             .ToList();
+    }
+
+    private static void SavedManualFormulaIdentityIncludesExactRatios()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"capetf-saved-ratios-{Guid.NewGuid():N}");
+        try
+        {
+            SyntheticBasket Basket(decimal ethMultiplier, decimal btcMultiplier)
+            {
+                var basket = new SyntheticBasket
+                {
+                    Symbol = "SYN-CRYPTO-ETHBTC-01",
+                    Block = "Crypto / USD / All",
+                    UniverseKind = TerminalUniverseKind.Crypto,
+                    BasketPrice = 100m,
+                    LastUpdated = DateTimeOffset.Parse("2026-08-01T10:00:00Z"),
+                };
+                basket.Components.Add(new SyntheticComponent(
+                    CreateCrypto("CS.D.ETHUSD.CFD.IP", "ETHUSD", "Ethereum", "USD", 1999m, 2001m),
+                    50m, 10m, 0m)
+                {
+                    FormulaMultiplier = ethMultiplier,
+                    FormulaReferencePrice = 2000m,
+                });
+                basket.Components.Add(new SyntheticComponent(
+                    CreateCrypto("CS.D.BTCUSD.CFD.IP", "BTCUSD", "Bitcoin", "USD", 29990m, 30010m),
+                    50m, 10m, 0m)
+                {
+                    FormulaMultiplier = btcMultiplier,
+                    FormulaReferencePrice = 30000m,
+                });
+                return basket;
+            }
+
+            var store = new SavedSyntheticBasketStore(folder);
+            store.Save(SavedSyntheticBasket.FromBasket(
+                "ETH BTC manual", SyntheticStrategyKind.ManualFormula, Basket(9m, 0.2m)));
+            store.Save(SavedSyntheticBasket.FromBasket(
+                "ETH BTC manual", SyntheticStrategyKind.ManualFormula, Basket(1m, 0.1m)));
+
+            var saved = store.LoadAll();
+            AssertEqual(2, saved.Count, "manual formulas with the same epics but different ratios must not overwrite each other");
+            AssertEqual(2, saved.Select(item => item.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                "manual formula IDs must include canonical ratio identity");
+            AssertTrue(saved.Any(item => item.Components[0].FormulaMultiplier == 9m && item.Components[1].FormulaMultiplier == 0.2m),
+                "the exact 9 ETH plus 0.2 BTC formula must remain staged");
+            AssertTrue(saved.Any(item => item.Components[0].FormulaMultiplier == 1m && item.Components[1].FormulaMultiplier == 0.1m),
+                "the second ETH BTC ratio must remain independently staged");
+        }
+        finally
+        {
+            if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+        }
     }
 
     private static void ManualFormulaBuildsExactCryptoPresetWithoutEqualNotionalRewriting()
