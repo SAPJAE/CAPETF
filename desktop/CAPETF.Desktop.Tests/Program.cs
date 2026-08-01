@@ -3,7 +3,8 @@ using CAPETF.Desktop.Tests;
 var completedSuites = TestSuiteRunner.Run(
     args,
     SyntheticTradingTests.RunAll,
-    SyntheticBasketBuilderTests.RunAll);
+    SyntheticBasketBuilderTests.RunAll,
+    SyntheticBasketBuilderTests.RunCryptoUniverse);
 foreach (var suite in completedSuites)
 {
     Console.WriteLine($"{suite} tests passed");
@@ -14,14 +15,22 @@ internal static class TestSuiteRunner
     public static IReadOnlyList<string> Run(
         IReadOnlyList<string> arguments,
         Action runTrading,
-        Action runBuilder)
+        Action runBuilder) =>
+        Run(arguments, runTrading, runBuilder, () => { });
+
+    public static IReadOnlyList<string> Run(
+        IReadOnlyList<string> arguments,
+        Action runTrading,
+        Action runBuilder,
+        Action runCryptoUniverse)
     {
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentNullException.ThrowIfNull(runTrading);
         ArgumentNullException.ThrowIfNull(runBuilder);
+        ArgumentNullException.ThrowIfNull(runCryptoUniverse);
 
         var selection = arguments.Count == 0 ? "full" : arguments.Count == 1 ? arguments[0].Trim().ToLowerInvariant() : "invalid";
-        var completed = new List<string>(2);
+        var completed = new List<string>(3);
         if (selection is "full" or "trading")
         {
             runTrading();
@@ -32,9 +41,14 @@ internal static class TestSuiteRunner
             runBuilder();
             completed.Add("SyntheticBasketBuilder");
         }
+        if (selection == "crypto-universe")
+        {
+            runCryptoUniverse();
+            completed.Add("CryptoUniverse");
+        }
         if (completed.Count == 0)
         {
-            throw new ArgumentException("Use no filter for the full suite, or specify 'trading' or 'builder'.", nameof(arguments));
+            throw new ArgumentException("Use no filter for the full suite, or specify 'trading', 'builder', or 'crypto-universe'.", nameof(arguments));
         }
         return completed;
     }

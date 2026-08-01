@@ -35,7 +35,12 @@ public static class TerminalUniverseLoadPolicy
         universe == TerminalUniverseKind.ETFs && instruments.Any(EtfMetadataMerger.NeedsEnrichment);
 
     public static string ApiSearchTerm(TerminalUniverseKind universe, string searchText) =>
-        universe == TerminalUniverseKind.ETFs ? "ETF" : searchText;
+        universe switch
+        {
+            TerminalUniverseKind.ETFs => "ETF",
+            TerminalUniverseKind.Crypto => "",
+            _ => searchText,
+        };
 
     public static IReadOnlyList<MarketInstrument> NormalizeApiFallback(
         TerminalUniverseKind universe,
@@ -45,6 +50,15 @@ public static class TerminalUniverseLoadPolicy
         if (universe == TerminalUniverseKind.Stocks)
         {
             return markets.Where(item => TerminalUniverse.Accepts(universe, item, knownEtfEpics)).ToList();
+        }
+
+        if (universe == TerminalUniverseKind.Crypto)
+        {
+            return markets
+                .Where(item => TerminalUniverse.Accepts(universe, item, knownEtfEpics))
+                .GroupBy(item => item.Epic, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToList();
         }
 
         return markets

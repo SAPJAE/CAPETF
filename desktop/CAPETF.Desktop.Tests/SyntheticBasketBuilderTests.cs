@@ -11,6 +11,12 @@ namespace CAPETF.Desktop.Tests;
 
 public static class SyntheticBasketBuilderTests
 {
+    public static void RunCryptoUniverse()
+    {
+        CryptoUniverseRecognizesOpenEligibleInstrumentsAndDeduplicatesEpics();
+        CapitalApiClientUsesAllMarketsForEmptySearchAndParsesCryptoRows();
+    }
+
     public static void RunAll()
     {
         TerminalOperationStateRejectsDuplicatesAndTracksProgress();
@@ -72,6 +78,7 @@ public static class SyntheticBasketBuilderTests
         FirstLiveQuoteUsesFinalSharedCloseWithAsymmetricHistoryTails();
         SyntheticBasketsUseCallerSuppliedCandidates();
         StockTypeMatchingIsCaseInsensitive();
+        RunCryptoUniverse();
         EtfUniverseRecognitionAndIsolation();
         KnownEtfEpicsOverrideCapitalShareType();
         EtfMetadataMergeUsesCapitalDetailsForGrouping();
@@ -1598,6 +1605,73 @@ public static class SyntheticBasketBuilderTests
         {
             throw new Exception("ETF basket requests must exclude stock components");
         }
+    }
+
+    private static void CryptoUniverseRecognizesOpenEligibleInstrumentsAndDeduplicatesEpics()
+    {
+        var openCrypto = new MarketInstrument { Epic = "CRYPTO.BTCUSD.CFD.IP", Type = "CRYPTOCURRENCIES", Status = "OPEN" };
+        var closedCrypto = new MarketInstrument { Epic = "CRYPTO.ETHUSD.CFD.IP", Type = "CRYPTOCURRENCIES", Status = "CLOSED" };
+        var closeOnlyCrypto = new MarketInstrument { Epic = "CRYPTO.CLOSE", Type = "CRYPTOCURRENCIES", Status = "CLOSE_ONLY" };
+        var viewOnlyCrypto = new MarketInstrument { Epic = "CRYPTO.VIEW", Type = "CRYPTOCURRENCIES", Status = "VIEW_ONLY" };
+        var reduceOnlyCrypto = new MarketInstrument { Epic = "CRYPTO.REDUCE", Type = "CRYPTOCURRENCIES", Status = "REDUCE_ONLY" };
+        var suspendedCrypto = new MarketInstrument { Epic = "CRYPTO.SUSPENDED", Type = "CRYPTOCURRENCIES", Status = "SUSPENDED" };
+        var obsoleteCrypto = new MarketInstrument { Epic = "CRYPTO.OBSOLETE", Type = "CRYPTOCURRENCIES", Status = "OBSOLETE" };
+        var nonOpenableCrypto = new MarketInstrument { Epic = "CRYPTO.NONOPEN", Type = "CRYPTOCURRENCIES", Status = "CANNOT_OPEN" };
+        var stock = new MarketInstrument { Epic = "SHARE", Type = "SHARES", Status = "OPEN" };
+
+        AssertTrue(CapitalInstrumentTypes.IsCrypto(openCrypto), "CRYPTOCURRENCIES must be recognized as crypto");
+        AssertTrue(TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, openCrypto), "the crypto universe must accept open crypto");
+        AssertTrue(TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, closedCrypto), "temporarily closed crypto must remain visible");
+        AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, closeOnlyCrypto), "close-only crypto must be excluded");
+        AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, viewOnlyCrypto), "view-only crypto must be excluded");
+        AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, reduceOnlyCrypto), "reduce-only crypto must be excluded");
+        AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, suspendedCrypto), "suspended crypto must be excluded");
+        AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, obsoleteCrypto), "obsolete crypto must be excluded");
+        AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, nonOpenableCrypto), "non-openable crypto must be excluded");
+        AssertTrue(!TerminalUniverse.Accepts(TerminalUniverseKind.Crypto, stock), "the crypto universe must exclude non-crypto instruments");
+        AssertEqual("", TerminalUniverseLoadPolicy.ApiSearchTerm(TerminalUniverseKind.Crypto, "BTC"), "crypto fallback search term");
+
+        var normalized = TerminalUniverseLoadPolicy.NormalizeApiFallback(
+            TerminalUniverseKind.Crypto,
+            [
+                openCrypto,
+                new MarketInstrument { Epic = "crypto.btcusd.cfd.ip", Type = "CRYPTOCURRENCIES", Status = "OPEN" },
+                closedCrypto,
+                closeOnlyCrypto,
+                stock,
+            ],
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+
+        AssertEqual(2, normalized.Count, "crypto API fallback must filter ineligible instruments and collapse duplicate epics");
+        AssertTrue(normalized.Select(item => item.Epic).Distinct(StringComparer.OrdinalIgnoreCase).Count() == normalized.Count,
+            "crypto API fallback must return one instrument per epic");
+    }
+
+    private static void CapitalApiClientUsesAllMarketsForEmptySearchAndParsesCryptoRows()
+    {
+        var handler = new CryptoMarketsHandler();
+        using var client = new CapitalApiClient(handler);
+        client.LoginAsync(TestCredentials()).GetAwaiter().GetResult();
+
+        var markets = client.SearchMarketsAsync("").GetAwaiter().GetResult();
+
+        AssertEqual("/api/v1/markets", handler.MarketRequestUri?.AbsolutePath, "an empty market search must use the all-markets endpoint");
+        AssertEqual("", handler.MarketRequestUri?.Query, "an empty market search must omit searchTerm");
+        AssertEqual(2, markets.Count, "the all-markets fixture must parse both crypto rows");
+
+        var bitcoin = markets.Single(item => item.Epic == "CRYPTO.BTCUSD.CFD.IP");
+        AssertEqual("CRYPTOCURRENCIES", bitcoin.Type, "BTC/USD type");
+        AssertEqual("USD", bitcoin.Currency, "BTC/USD currency");
+        AssertEqual("TRADEABLE", bitcoin.Status, "BTC/USD status");
+        AssertNear(104000.5m, bitcoin.Bid ?? 0m, "BTC/USD bid");
+        AssertNear(104001.5m, bitcoin.Offer ?? 0m, "BTC/USD offer");
+
+        var ethereum = markets.Single(item => item.Epic == "CRYPTO.ETHUSD.CFD.IP");
+        AssertEqual("CRYPTOCURRENCIES", ethereum.Type, "ETH/USD type");
+        AssertEqual("USD", ethereum.Currency, "ETH/USD currency");
+        AssertEqual("CLOSED", ethereum.Status, "ETH/USD status");
+        AssertNear(3200.25m, ethereum.Bid ?? 0m, "ETH/USD bid");
+        AssertNear(3201.25m, ethereum.Offer ?? 0m, "ETH/USD offer");
     }
 
     private static void EncryptedEtfCacheKeepsOnlyEtfInstruments()
@@ -7121,6 +7195,56 @@ public static class SyntheticBasketBuilderTests
             response.Headers.Add("X-SECURITY-TOKEN", "security-token");
             return Task.FromResult(response);
         }
+    }
+
+    private sealed class CryptoMarketsHandler : HttpMessageHandler
+    {
+        public Uri? MarketRequestUri { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/api/v1/session", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var login = JsonResponse("{}");
+                login.Headers.Add("CST", "cst-token");
+                login.Headers.Add("X-SECURITY-TOKEN", "security-token");
+                return Task.FromResult(login);
+            }
+
+            MarketRequestUri = request.RequestUri;
+            return Task.FromResult(JsonResponse(
+                """
+                {
+                  "markets": [
+                    {
+                      "epic": "CRYPTO.BTCUSD.CFD.IP",
+                      "instrumentName": "Bitcoin / USD",
+                      "symbol": "BTC/USD",
+                      "instrumentType": "CRYPTOCURRENCIES",
+                      "currency": "USD",
+                      "marketStatus": "TRADEABLE",
+                      "bid": 104000.5,
+                      "offer": 104001.5
+                    },
+                    {
+                      "epic": "CRYPTO.ETHUSD.CFD.IP",
+                      "instrumentName": "Ethereum / USD",
+                      "symbol": "ETH/USD",
+                      "instrumentType": "CRYPTOCURRENCIES",
+                      "currency": "USD",
+                      "marketStatus": "CLOSED",
+                      "bid": 3200.25,
+                      "offer": 3201.25
+                    }
+                  ]
+                }
+                """));
+        }
+
+        private static HttpResponseMessage JsonResponse(string body) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
     }
 
     private sealed class FakeSyntheticMarginDataSource : ISyntheticMarginDataSource

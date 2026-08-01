@@ -4,6 +4,7 @@ public enum TerminalUniverseKind
 {
     Stocks,
     ETFs,
+    Crypto,
 }
 
 public static class TerminalUniverse
@@ -19,6 +20,7 @@ public static class TerminalUniverse
         {
             TerminalUniverseKind.Stocks => CapitalInstrumentTypes.IsStock(instrument) && !IsKnownEtf(instrument, knownEtfEpics),
             TerminalUniverseKind.ETFs => CapitalInstrumentTypes.IsEtf(instrument) || IsKnownEtf(instrument, knownEtfEpics),
+            TerminalUniverseKind.Crypto => CapitalInstrumentTypes.IsCrypto(instrument),
             _ => false,
         };
 
