@@ -1733,7 +1733,7 @@
 
     function hasTradableBasket() {
       const components = getField(payload, 'Components', 'components', []);
-      return components.length >= 3 && components.length <= 4;
+      return components.length >= 2 && components.length <= 4;
     }
 
     function tradingIsBusy() {
@@ -1760,7 +1760,7 @@
       } else if (busy) {
         setTradeReadiness('Working', terminalTradingOperation || terminalBusyLabel, 'busy');
       } else if (!hasTradableBasket()) {
-        setTradeReadiness('Build required', 'Build a three or four leg synthetic basket.', 'warning');
+        setTradeReadiness('Build required', 'Build a two to four leg synthetic basket.', 'warning');
       } else if (!notionalValid) {
         setTradeReadiness('Invalid size', INVALID_MARGIN_NOTIONAL, 'danger');
       } else if (!pendingExecutionTicket) {

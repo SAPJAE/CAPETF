@@ -1106,6 +1106,8 @@ public static class SyntheticTradingTests
                 { Epic: 'CS.D.BTCUSD.CFD.IP', FormulaMultiplier: 0.2, DisplayMultiplier: 0.2 }
               ]
             });
+            assert.equal(hasTradableBasket(), true,
+              'a two-leg manual crypto basket must satisfy browser preflight eligibility');
             setTerminalExecutions([{
               ExecutionId: 'manual-crypto-1', BasketId: 'SYN-CRYPTO-ETHBTC-01|CS.D.BTCUSD.CFD.IP|CS.D.ETHUSD.CFD.IP',
               BasketQuantity: 0.5, Side: 'BUY', EstimatedMargin: 3300, MarginCurrency: 'USD',
