@@ -132,6 +132,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticQuoteUsesComponentPriceWhenDashboardInstrumentIsAbsent();
         SyntheticComponentDisplayPriceFallsBackToBaseline();
         SyntheticTerminalPayloadIncludesCandlesComponentsCurrencyAndMas();
+        ManualTerminalPayloadSuggestsSmallestExecutableQuantity();
         SyntheticTerminalPayloadIncludesSelectionBasis();
         TerminalPayloadUsesComponentIdentityAndExplicitQuoteFreshness();
         LegacySyntheticDetailsExposeBidAskAndStalenessOnly();
@@ -2852,6 +2853,43 @@ public static class SyntheticBasketBuilderTests
         if (payload.Components[1].Role != "Peer") throw new Exception("later components should be labelled as peer legs");
         AssertNear(21.4m, payload.Components[0].AnnualizedVolatilityPct, "component row should expose annualized volatility");
         AssertNear(54.2m, payload.Components[0].FourYearReturnPct, "component row should expose four-year return");
+    }
+
+    private static void ManualTerminalPayloadSuggestsSmallestExecutableQuantity()
+    {
+        var basket = new SyntheticBasket
+        {
+            Symbol = "SYN-CRYPTO-ETHBTC-01",
+            Block = "Crypto / USD / All",
+            Strategy = SyntheticStrategyKind.ManualFormula,
+            UniverseKind = TerminalUniverseKind.Crypto,
+        };
+        basket.Components.Add(new SyntheticComponent(new MarketInstrument
+        {
+            Epic = "CS.D.ETHUSD.CFD.IP",
+            Currency = "USD",
+            MinDealSize = 0.001m,
+            MinSizeIncrement = 0.001m,
+            MaxDealSize = 1000m,
+        }, 50m, 0m, 0m) { FormulaMultiplier = 9m });
+        basket.Components.Add(new SyntheticComponent(new MarketInstrument
+        {
+            Epic = "CS.D.BTCUSD.CFD.IP",
+            Currency = "USD",
+            MinDealSize = 0.0001m,
+            MinSizeIncrement = 0.0001m,
+            MaxDealSize = 100m,
+        }, 50m, 0m, 0m) { FormulaMultiplier = 0.2m });
+
+        var payload = SyntheticTerminalChartPayload.Build(basket);
+
+        AssertEqual(0.001m, payload.SuggestedBasketQuantity,
+            "manual terminal payload must suggest the smallest exact ratio-preserving executable quantity");
+        var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
+        AssertTrue(html.Contains("SuggestedBasketQuantity", StringComparison.Ordinal),
+            "the terminal must apply the host-owned suggested manual basket quantity");
+        AssertTrue(html.Contains("identityChanged", StringComparison.Ordinal),
+            "a timeframe refresh must not overwrite a user's quantity for the same synthetic identity");
     }
 
     private static void TerminalPayloadUsesComponentIdentityAndExplicitQuoteFreshness()

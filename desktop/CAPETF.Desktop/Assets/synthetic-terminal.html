@@ -3303,8 +3303,15 @@
       invalidatePendingExecutionTicket();
       invalidatePendingCloseExecution();
       terminalPayloadGeneration += 1;
-      activeTerminalIdentity = getField(nextPayload, 'DrawingIdentity', 'drawingIdentity',
+      const nextTerminalIdentity = getField(nextPayload, 'DrawingIdentity', 'drawingIdentity',
         getField(nextPayload, 'Symbol', 'symbol', ''));
+      const identityChanged = nextTerminalIdentity !== activeTerminalIdentity;
+      activeTerminalIdentity = nextTerminalIdentity;
+      const suggestedBasketQuantity = Number(getField(
+        nextPayload, 'SuggestedBasketQuantity', 'suggestedBasketQuantity', NaN));
+      if (identityChanged && Number.isFinite(suggestedBasketQuantity) && suggestedBasketQuantity > 0) {
+        quantity.value = String(suggestedBasketQuantity);
+      }
       pendingTerminalTick = null;
       if (terminalTickFrame !== null) cancelAnimationFrame(terminalTickFrame);
       terminalTickFrame = null;

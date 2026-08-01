@@ -49,7 +49,8 @@ public sealed record SyntheticTerminalPayload(
     IReadOnlyList<TerminalLinePoint> Ma50,
     IReadOnlyList<TerminalLinePoint> Ma200,
     string SelectionBasis,
-    IReadOnlyList<TerminalComponentRow> Components);
+    IReadOnlyList<TerminalComponentRow> Components,
+    decimal? SuggestedBasketQuantity = null);
 
 public static class SyntheticTerminalWorkspace
 {

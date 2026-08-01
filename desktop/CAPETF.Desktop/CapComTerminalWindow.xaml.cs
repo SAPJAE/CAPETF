@@ -1429,11 +1429,18 @@ public partial class CapComTerminalWindow : Window
 
     private async Task RenderSyntheticChartAsync(SyntheticBasket basket, string? drawingIdentity = null)
     {
+        var previousDrawingIdentity = _terminalDrawingIdentity;
         _terminalDrawingIdentity = string.IsNullOrWhiteSpace(drawingIdentity)
             ? SyntheticTerminalChartPayload.DrawingIdentity(basket)
             : drawingIdentity.Trim();
         _realtimeBars.Reset(basket, SelectedResolution());
         var payload = SyntheticTerminalChartPayload.Build(basket, drawingIdentity: _terminalDrawingIdentity);
+        if (!string.Equals(previousDrawingIdentity, _terminalDrawingIdentity, StringComparison.Ordinal)
+            && payload.SuggestedBasketQuantity is decimal suggestedQuantity
+            && suggestedQuantity > 0m)
+        {
+            _marginPreviewNotional = suggestedQuantity;
+        }
         SymbolText.Text = $"{payload.Symbol}  {payload.Block}";
         ChartMetaText.Text = $"{payload.CurrencyLabel} | bid {FormatQuote(payload.BidPrice)} | ask {FormatQuote(payload.AskPrice)}";
         SyntheticFormulaText.Text = string.Join(Environment.NewLine + "+ ", basket.Components.Select(component =>
