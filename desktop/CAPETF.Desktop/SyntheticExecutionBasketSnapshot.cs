@@ -7,9 +7,27 @@ public static class SyntheticExecutionBasketSnapshot
         IReadOnlyList<MarketInstrument> instruments)
     {
         ArgumentNullException.ThrowIfNull(execution);
-        if (execution.Legs.Count is < 3 or > 4)
+        var isManual = execution.BasketQuantity is > 0m;
+        var validLegCount = isManual
+            ? execution.Legs.Count is >= 2 and <= 4
+            : execution.Legs.Count is >= 3 and <= 4;
+        if (!validLegCount)
         {
-            throw new InvalidOperationException("The execution must contain three or four legs.");
+            throw new InvalidOperationException(isManual
+                ? "The manual execution must contain two to four legs."
+                : "The execution must contain three or four legs.");
+        }
+        if (isManual)
+        {
+            foreach (var leg in execution.Legs)
+            {
+                var exactQuantity = Math.Abs(leg.Multiplier * execution.BasketQuantity!.Value);
+                if (leg.Quantity != exactQuantity)
+                {
+                    throw new InvalidOperationException(
+                        $"Execution leg {leg.Epic} does not preserve basket quantity {execution.BasketQuantity.Value} and multiplier {leg.Multiplier}.");
+                }
+            }
         }
 
         var instrumentsByEpic = instruments
@@ -30,22 +48,26 @@ public static class SyntheticExecutionBasketSnapshot
         var currency = CommonValue(ordered.Select(instrument => instrument.Currency), execution.MarginCurrency);
         var symbol = execution.BasketId.Split('|', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()
             ?? $"SYN-{execution.ExecutionId[..Math.Min(8, execution.ExecutionId.Length)].ToUpperInvariant()}";
-        var weight = 100m / execution.Legs.Count;
+        var strategy = isManual
+            ? SyntheticStrategyKind.ManualFormula
+            : SyntheticStrategyKind.SimilarToSelectedSymbol;
+        var totalNotional = execution.Legs.Sum(leg => leg.Notional);
         return new SavedSyntheticBasket(
             $"execution-{execution.ExecutionId}",
             $"Open {symbol}",
             symbol,
             $"{region} / {currency} / All",
-            SyntheticStrategyKind.SimilarToSelectedSymbol,
+            strategy,
             execution.CreatedUtc,
             execution.UpdatedUtc,
             execution.Legs.Select((leg, index) => new SavedSyntheticComponent(
                 leg.Epic,
                 ordered[index].Name,
                 ordered[index].Currency,
-                weight,
+                isManual && totalNotional > 0m ? leg.Notional / totalNotional * 100m : 100m / execution.Legs.Count,
                 leg.Multiplier,
-                leg.ReferencePrice)).ToArray());
+                leg.ReferencePrice)).ToArray(),
+            execution.BasketQuantity);
     }
 
     private static string CommonValue(IEnumerable<string> values, string fallback)

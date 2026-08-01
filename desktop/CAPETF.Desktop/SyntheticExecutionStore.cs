@@ -191,6 +191,7 @@ public sealed class SyntheticExecutionStore
                 || string.IsNullOrWhiteSpace(execution.BasketId)
                 || !IsTradingDirection(execution.Side)
                 || execution.RequestedNotional <= 0m
+                || execution.BasketQuantity is <= 0m
                 || execution.EstimatedMargin < 0m
                 || string.IsNullOrWhiteSpace(execution.MarginCurrency)
                 || execution.CreatedUtc == default

@@ -43,6 +43,13 @@ public static class SyntheticMarginCalculator
         {
             return Unavailable(executable.Side, accountCurrency, $"Margin conversion to {accountCurrency} is unavailable.");
         }
+        if (basket.Strategy == SyntheticStrategyKind.ManualFormula && basket.Components
+                .Select(component => component.Instrument.Currency?.Trim() ?? "")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count() != 1)
+        {
+            return Unavailable(executable.Side, accountCurrency, "Manual basket components must use one currency.");
+        }
 
         for (var index = 0; index < basket.Components.Count; index++)
         {
@@ -59,8 +66,7 @@ public static class SyntheticMarginCalculator
         {
             var leg = executable.Legs[index];
             var instrument = basket.Components[index].Instrument;
-            var lotSize = instrument.LotSize is > 0 ? instrument.LotSize.Value : 1m;
-            var nativeNotional = leg.Quantity * leg.ReferencePrice * lotSize;
+            var nativeNotional = leg.Notional;
             var nativeMargin = nativeNotional * instrument.MarginFactor!.Value / 100m;
             var accountMargin = nativeMargin * conversionRate;
             legs.Add(new SyntheticMarginLegPreview(

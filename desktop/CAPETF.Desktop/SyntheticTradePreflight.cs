@@ -13,6 +13,7 @@ public static class SyntheticTradePreflight
         var globalFailures = new List<SyntheticPreflightFailure>();
         var legFailures = new List<SyntheticPreflightFailure>();
         var side = NormalizeSide(input.Side);
+        var isManual = input.Basket.Strategy == SyntheticStrategyKind.ManualFormula;
 
         if (!input.IsDemoSession) globalFailures.Add(Failure("Demo trading session is required."));
         if (string.IsNullOrWhiteSpace(input.AccountId)) globalFailures.Add(Failure("Active Capital.com account is required."));
@@ -20,9 +21,14 @@ public static class SyntheticTradePreflight
         if (string.IsNullOrWhiteSpace(input.BasketId)) globalFailures.Add(Failure("Basket ID is required."));
         if (input.RequestedNotional <= 0m) globalFailures.Add(Failure("Requested notional must be positive."));
         if (side is null) globalFailures.Add(Failure("Side must be BUY or SELL."));
-        if (input.Basket.Components.Count is < 3 or > 4)
+        var validComponentCount = isManual
+            ? input.Basket.Components.Count is >= 2 and <= 4
+            : input.Basket.Components.Count is >= 3 and <= 4;
+        if (!validComponentCount)
         {
-            globalFailures.Add(Failure("Synthetic baskets must contain 3 or 4 components."));
+            globalFailures.Add(Failure(isManual
+                ? "Manual synthetic baskets must contain 2 to 4 components."
+                : "Synthetic baskets must contain 3 or 4 components."));
         }
 
         var components = input.Basket.Components
@@ -34,6 +40,18 @@ public static class SyntheticTradePreflight
                      .Where(group => group.Count() > 1))
         {
             legFailures.Add(Failure(NormalizeEpic(duplicate.Key), "Duplicate epic."));
+        }
+        if (isManual)
+        {
+            var currencies = components
+                .Select(component => component.Instrument.Currency?.Trim() ?? "")
+                .Where(currency => !string.IsNullOrWhiteSpace(currency))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (currencies.Length != 1 || components.Any(component => string.IsNullOrWhiteSpace(component.Instrument.Currency)))
+            {
+                globalFailures.Add(Failure("Manual basket components must use one currency."));
+            }
         }
 
         foreach (var component in components)
@@ -51,6 +69,11 @@ public static class SyntheticTradePreflight
             {
                 legFailures.Add(Failure(epic, "Bid and offer prices must be positive."));
             }
+            if (isManual &&
+                (component.Instrument.MinDealSize is not > 0m || component.Instrument.MinSizeIncrement is not > 0m))
+            {
+                legFailures.Add(Failure(epic, "Minimum deal size and size increment must be positive."));
+            }
             if (component.Instrument.LastTickAt is not null && component.Instrument.LastTickAt.Value > input.NowUtc)
             {
                 legFailures.Add(Failure(epic, "Quote timestamp is in the future."));
@@ -63,7 +86,9 @@ public static class SyntheticTradePreflight
         }
 
         ExecutableOrderPreview? executable = null;
-        if (input.RequestedNotional > 0m && input.Basket.Components.Count > 0 &&
+        var hasUsableManualRules = !isManual || input.Basket.Components.All(component =>
+            component.Instrument.MinDealSize is > 0m && component.Instrument.MinSizeIncrement is > 0m);
+        if (input.RequestedNotional > 0m && input.Basket.Components.Count > 0 && hasUsableManualRules &&
             input.Basket.Components.All(component => component.Instrument.Bid is > 0m && component.Instrument.Offer is > 0m))
         {
             try
@@ -80,6 +105,11 @@ public static class SyntheticTradePreflight
             catch (ArgumentOutOfRangeException)
             {
                 globalFailures.Add(Failure("Executable order sizing is unavailable."));
+            }
+            catch (RatioPreservingBasketSizingException exception)
+            {
+                if (string.IsNullOrWhiteSpace(exception.Epic)) globalFailures.Add(Failure(exception.Message));
+                else legFailures.Add(Failure(exception.Epic, exception.Message));
             }
             catch (InvalidOperationException)
             {
@@ -102,7 +132,7 @@ public static class SyntheticTradePreflight
             {
                 foreach (var leg in executable.Legs)
                 {
-                    if (FindMarginLeg(margin, leg) is null)
+                    if (FindMarginLeg(margin, leg, isManual) is null)
                     {
                         legFailures.Add(Failure(NormalizeEpic(leg.Epic), "Margin is unavailable."));
                     }
@@ -123,7 +153,7 @@ public static class SyntheticTradePreflight
         var legs = executable.Legs
             .Select(leg =>
             {
-                var marginLeg = FindMarginLeg(margin, leg)!;
+                var marginLeg = FindMarginLeg(margin, leg, isManual)!;
                 var component = input.Basket.Components.Single(component =>
                     string.Equals(component.Instrument.Epic, leg.Epic, StringComparison.OrdinalIgnoreCase));
                 return new SyntheticExecutionLeg(
@@ -147,7 +177,8 @@ public static class SyntheticTradePreflight
             margin.TotalMargin.Value,
             margin.AccountCurrency,
             Array.AsReadOnly(legs),
-            input.AccountId);
+            input.AccountId,
+            executable.BasketQuantity);
 
         return new SyntheticPreflightResult(true, ticket, Array.Empty<SyntheticPreflightFailure>());
     }
@@ -182,8 +213,13 @@ public static class SyntheticTradePreflight
 
     private static SyntheticMarginLegPreview? FindMarginLeg(
         SyntheticMarginSidePreview margin,
-        ExecutableOrderLegPreview leg) =>
+        ExecutableOrderLegPreview leg,
+        bool requireExactSizing) =>
         margin.Legs.SingleOrDefault(candidate =>
             string.Equals(candidate.Epic, leg.Epic, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(candidate.Side, leg.Side, StringComparison.OrdinalIgnoreCase));
+            string.Equals(candidate.Side, leg.Side, StringComparison.OrdinalIgnoreCase) &&
+            (!requireExactSizing ||
+             (candidate.ReferencePrice == leg.ReferencePrice &&
+              candidate.Quantity == leg.Quantity &&
+              candidate.NativeNotional == leg.Notional)));
 }

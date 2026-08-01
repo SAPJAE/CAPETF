@@ -12,14 +12,16 @@ public sealed record ExecutableOrderLegPreview(
     decimal Notional,
     decimal TargetWeightPct,
     decimal ActualWeightPct,
-    decimal WeightImbalancePct);
+    decimal WeightImbalancePct,
+    decimal FormulaMultiplier = 0m);
 
 public sealed record ExecutableOrderPreview(
     string Side,
     decimal RequestedBasketNotional,
     decimal TotalExecutableNotional,
     decimal MaxAbsoluteWeightImbalancePct,
-    IReadOnlyList<ExecutableOrderLegPreview> Legs);
+    IReadOnlyList<ExecutableOrderLegPreview> Legs,
+    decimal? BasketQuantity = null);
 
 public static class SyntheticOrderSizing
 {
@@ -55,6 +57,10 @@ public static class SyntheticOrderSizing
         var normalizedSide = side.Equals("SELL", StringComparison.OrdinalIgnoreCase) ? "SELL" : "BUY";
         if (basketNotional <= 0) throw new ArgumentOutOfRangeException(nameof(basketNotional));
         if (basket.Components.Count == 0) throw new InvalidOperationException("Build a synthetic basket first.");
+        if (basket.Strategy == SyntheticStrategyKind.ManualFormula)
+        {
+            return BuildManualExecutableOrderPreview(basket, normalizedSide, basketNotional);
+        }
 
         var sized = basket.Components.Select(component =>
         {
@@ -80,7 +86,8 @@ public static class SyntheticOrderSizing
                 item.preview.Notional,
                 item.component.Weight,
                 actualWeight,
-                actualWeight - item.component.Weight);
+                actualWeight - item.component.Weight,
+                item.component.FormulaMultiplier);
         }).ToList();
 
         return new ExecutableOrderPreview(
@@ -89,6 +96,50 @@ public static class SyntheticOrderSizing
             totalNotional,
             legs.Max(leg => Math.Abs(leg.WeightImbalancePct)),
             legs);
+    }
+
+    private static ExecutableOrderPreview BuildManualExecutableOrderPreview(
+        SyntheticBasket basket,
+        string normalizedSide,
+        decimal basketQuantity)
+    {
+        RatioPreservingBasketSizer.ValidateExecutableQuantity(basket.Components, basketQuantity);
+        var sized = basket.Components.Select(component =>
+        {
+            var legSide = component.FormulaMultiplier >= 0m ? normalizedSide : Opposite(normalizedSide);
+            var referencePrice = legSide == "BUY" ? component.Instrument.Offer : component.Instrument.Bid;
+            if (referencePrice is not > 0m)
+            {
+                throw new InvalidOperationException($"{component.Instrument.Epic} {legSide.ToLowerInvariant()} price is unavailable.");
+            }
+
+            var quantity = Math.Abs(component.FormulaMultiplier * basketQuantity);
+            var notional = quantity * referencePrice.Value * EffectiveLotSize(component.Instrument);
+            return (component, legSide, referencePrice: referencePrice.Value, quantity, notional);
+        }).ToList();
+        var totalNotional = sized.Sum(item => item.notional);
+        var legs = sized.Select(item =>
+        {
+            var actualWeight = totalNotional <= 0m ? 0m : item.notional / totalNotional * 100m;
+            return new ExecutableOrderLegPreview(
+                item.legSide,
+                item.component.Instrument.Epic,
+                item.referencePrice,
+                item.quantity,
+                item.notional,
+                item.component.Weight,
+                actualWeight,
+                actualWeight - item.component.Weight,
+                item.component.FormulaMultiplier);
+        }).ToList();
+
+        return new ExecutableOrderPreview(
+            normalizedSide,
+            basketQuantity,
+            totalNotional,
+            legs.Max(leg => Math.Abs(leg.WeightImbalancePct)),
+            legs,
+            basketQuantity);
     }
 
     public static string FormatDisplayMultiplier(SyntheticComponent component) =>

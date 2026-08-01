@@ -22,6 +22,15 @@ public static class SyntheticTradingTests
         TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs();
         TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels();
         ExecutionBasketSnapshotPreservesTrustedFormula();
+        ManualRatioSizerFindsSmallestSharedBasketQuantity();
+        ManualOrderPreviewPreservesExactRatioAndUsesExecutionSidePrices();
+        ManualMarginUsesExactRatioPreservingQuantities();
+        ManualPreflightFreezesMultipliersAndBasketQuantity();
+        ManualPreflightRejectsMarginForDifferentBasketQuantity();
+        ManualPreflightRejectsOffGridQuantityWithoutRebalancing();
+        ManualPreflightRejectsUnsafeMarketRulesAndCurrencies();
+        ManualPreflightRejectsInsufficientMargin();
+        ManualExecutionBasketSnapshotPreservesFormulaAndQuantity();
         TradingBrowserParserRejectsMalformedShapesWithoutThrowing();
         TradingBrowserHandlerTurnsMalformedAndSemanticFailuresIntoRejections();
         HostConsumesFrozenTicketsBeforeExecutionAndRejectsReuse();
@@ -1221,6 +1230,207 @@ public static class SyntheticTradingTests
         SyntheticExecutionLegRecord ExecutionLeg(string epic, string direction, decimal multiplier, decimal reference) =>
             new(epic, direction, multiplier, reference, 1m, 100m, 20m, "USD",
                 SyntheticExecutionLegState.Open, "ref", $"deal-{epic}", "", reference, "", now, now, null, now);
+    }
+
+    private static void ManualRatioSizerFindsSmallestSharedBasketQuantity()
+    {
+        var basket = CreateManualRatioBasket();
+
+        var quantity = RatioPreservingBasketSizer.SmallestExecutableQuantity(basket.Components);
+
+        AssertEqual(0.5m, quantity, "smallest shared basket quantity");
+        AssertEqual(4.5m, basket.Components[0].FormulaMultiplier * quantity, "ETH exact quantity");
+        AssertEqual(0.1m, basket.Components[1].FormulaMultiplier * quantity, "BTC exact quantity");
+    }
+
+    private static void ManualOrderPreviewPreservesExactRatioAndUsesExecutionSidePrices()
+    {
+        var basket = CreateManualRatioBasket();
+
+        var buy = SyntheticOrderSizing.BuildExecutableOrderPreview(basket, "BUY", 0.5m);
+        var sell = SyntheticOrderSizing.BuildExecutableOrderPreview(basket, "SELL", 0.5m);
+
+        AssertEqual(0.5m, buy.BasketQuantity, "manual preview basket quantity");
+        AssertEqual(4.5m, buy.Legs[0].Quantity, "BUY ETH quantity");
+        AssertEqual(0.1m, buy.Legs[1].Quantity, "BUY BTC quantity");
+        AssertEqual(2000m, buy.Legs[0].ReferencePrice, "BUY ETH uses offer");
+        AssertEqual(30000m, buy.Legs[1].ReferencePrice, "BUY BTC uses offer");
+        AssertEqual(9000m, buy.Legs[0].Notional, "BUY ETH notional");
+        AssertEqual(3000m, buy.Legs[1].Notional, "BUY BTC notional");
+        AssertEqual(12000m, buy.TotalExecutableNotional, "BUY basket notional");
+        AssertEqual(9m, buy.Legs[0].FormulaMultiplier, "BUY ETH formula multiplier");
+        AssertEqual(0.2m, buy.Legs[1].FormulaMultiplier, "BUY BTC formula multiplier");
+
+        AssertEqual(4.5m, sell.Legs[0].Quantity, "SELL ETH quantity");
+        AssertEqual(0.1m, sell.Legs[1].Quantity, "SELL BTC quantity");
+        AssertEqual(1990m, sell.Legs[0].ReferencePrice, "SELL ETH uses bid");
+        AssertEqual(29900m, sell.Legs[1].ReferencePrice, "SELL BTC uses bid");
+        AssertEqual(8955m, sell.Legs[0].Notional, "SELL ETH notional");
+        AssertEqual(2990m, sell.Legs[1].Notional, "SELL BTC notional");
+        AssertEqual(11945m, sell.TotalExecutableNotional, "SELL basket notional");
+    }
+
+    private static void ManualMarginUsesExactRatioPreservingQuantities()
+    {
+        var basket = CreateManualRatioBasket();
+
+        var buy = SyntheticMarginCalculator.CalculateSide(basket, "BUY", 0.5m, "USD", 1m);
+        var sell = SyntheticMarginCalculator.CalculateSide(basket, "SELL", 0.5m, "USD", 1m);
+
+        AssertEqual(3300m, buy.TotalMargin, "BUY exact margin");
+        AssertEqual(1800m, buy.Legs[0].MarginAccountCurrency, "BUY ETH margin");
+        AssertEqual(1500m, buy.Legs[1].MarginAccountCurrency, "BUY BTC margin");
+        AssertEqual(3286m, sell.TotalMargin, "SELL exact margin");
+        AssertEqual(1791m, sell.Legs[0].MarginAccountCurrency, "SELL ETH margin");
+        AssertEqual(1495m, sell.Legs[1].MarginAccountCurrency, "SELL BTC margin");
+    }
+
+    private static void ManualPreflightFreezesMultipliersAndBasketQuantity()
+    {
+        var now = DateTimeOffset.Parse("2026-08-01T12:00:00Z");
+        var basket = CreateManualRatioBasket(now);
+        var margin = CreateManualMarginSummary(basket, available: 5000m);
+
+        var result = SyntheticTradePreflight.Build(new SyntheticPreflightInput(
+            true, "SYN-CRYPTO-ETHBTC-01", basket, "BUY", 0.5m, now, margin, "account-123", true));
+
+        AssertTrue(result.IsReady, "ratio-valid manual basket must pass preflight");
+        var ticket = result.Ticket ?? throw new Exception("manual preflight ticket");
+        AssertEqual(0.5m, ticket.BasketQuantity, "ticket basket quantity");
+        AssertEqual(9m, ticket.Legs[0].Multiplier, "ticket ETH multiplier");
+        AssertEqual(0.2m, ticket.Legs[1].Multiplier, "ticket BTC multiplier");
+        AssertEqual(4.5m, ticket.Legs[0].Quantity, "ticket ETH quantity");
+        AssertEqual(0.1m, ticket.Legs[1].Quantity, "ticket BTC quantity");
+        AssertEqual(3300m, ticket.EstimatedMargin, "ticket exact margin");
+    }
+
+    private static void ManualPreflightRejectsMarginForDifferentBasketQuantity()
+    {
+        var now = DateTimeOffset.Parse("2026-08-01T12:00:00Z");
+        var basket = CreateManualRatioBasket(now);
+        var margin = CreateManualMarginSummary(basket, available: 5000m);
+        var mismatchedLegs = margin.Buy.Legs
+            .Select((leg, index) => index == 0 ? leg with { Quantity = 5m, NativeNotional = 10000m } : leg)
+            .ToArray();
+        var mismatchedBuy = margin.Buy with { Legs = mismatchedLegs };
+
+        var result = SyntheticTradePreflight.Build(new SyntheticPreflightInput(
+            true,
+            "SYN-CRYPTO-ETHBTC-01",
+            basket,
+            "BUY",
+            0.5m,
+            now,
+            margin with { Buy = mismatchedBuy },
+            "account-123",
+            true));
+
+        AssertFalse(result.IsReady, "margin for a different quantity must fail preflight");
+        AssertContainsFailure(result, "CS.D.ETHUSD.CFD.IP", "Margin is unavailable.");
+    }
+
+    private static void ManualPreflightRejectsOffGridQuantityWithoutRebalancing()
+    {
+        var now = DateTimeOffset.Parse("2026-08-01T12:00:00Z");
+        var basket = CreateManualRatioBasket(now);
+
+        var result = SyntheticTradePreflight.Build(new SyntheticPreflightInput(
+            true, "SYN-CRYPTO-ETHBTC-01", basket, "BUY", 0.06m, now,
+            CreateManualMarginSummary(basket, 5000m), "account-123", true));
+
+        AssertFalse(result.IsReady, "off-grid manual quantity must fail preflight");
+        AssertTrue(result.Ticket is null, "off-grid manual quantity must never create a ticket");
+        AssertContainsFailure(result, "CS.D.ETHUSD.CFD.IP", "Basket quantity 0.06 produces 0.54, which is not on the 0.1 size increment grid.");
+        AssertFalse(result.Failures.Any(failure => failure.Reason.Contains("0.6", StringComparison.Ordinal)),
+            "preflight must not expose an independently rounded ETH quantity");
+    }
+
+    private static void ManualPreflightRejectsUnsafeMarketRulesAndCurrencies()
+    {
+        var now = DateTimeOffset.Parse("2026-08-01T12:00:00Z");
+
+        var mixedCurrency = CreateManualRatioBasket(now);
+        mixedCurrency.Components[1].Instrument.Currency = "EUR";
+        var mixedCurrencyResult = BuildManualPreflight(mixedCurrency, now);
+        AssertContainsFailure(mixedCurrencyResult, "", "Manual basket components must use one currency.");
+
+        var invalidRules = CreateManualRatioBasket(now);
+        invalidRules.Components[0].Instrument.MinSizeIncrement = null;
+        var invalidRulesResult = BuildManualPreflight(invalidRules, now);
+        AssertContainsFailure(invalidRulesResult, "CS.D.ETHUSD.CFD.IP", "Minimum deal size and size increment must be positive.");
+
+        var missingPrice = CreateManualRatioBasket(now);
+        missingPrice.Components[1].Instrument.Offer = null;
+        var missingPriceResult = BuildManualPreflight(missingPrice, now);
+        AssertContainsFailure(missingPriceResult, "CS.D.BTCUSD.CFD.IP", "Bid and offer prices must be positive.");
+
+        var stale = CreateManualRatioBasket(now);
+        stale.Components[0].Instrument.LastTickAt = now.AddMinutes(-6);
+        var staleResult = BuildManualPreflight(stale, now);
+        AssertContainsFailure(staleResult, "CS.D.ETHUSD.CFD.IP", "Quote is older than five minutes.");
+
+        var closed = CreateManualRatioBasket(now);
+        closed.Components[1].Instrument.Status = "CLOSED";
+        var closedResult = BuildManualPreflight(closed, now);
+        AssertContainsFailure(closedResult, "CS.D.BTCUSD.CFD.IP", "Market is not TRADEABLE.");
+    }
+
+    private static void ManualPreflightRejectsInsufficientMargin()
+    {
+        var now = DateTimeOffset.Parse("2026-08-01T12:00:00Z");
+        var basket = CreateManualRatioBasket(now);
+
+        var result = SyntheticTradePreflight.Build(new SyntheticPreflightInput(
+            true, "SYN-CRYPTO-ETHBTC-01", basket, "BUY", 0.5m, now,
+            CreateManualMarginSummary(basket, available: 3299m), "account-123", true));
+
+        AssertFalse(result.IsReady, "manual basket exceeding available margin must fail preflight");
+        AssertContainsFailure(result, "", "Estimated margin exceeds available funds.");
+    }
+
+    private static void ManualExecutionBasketSnapshotPreservesFormulaAndQuantity()
+    {
+        var now = DateTimeOffset.Parse("2026-08-01T12:00:00Z");
+        var basket = CreateManualRatioBasket(now);
+        var execution = new SyntheticExecutionRecord(
+            "execution-manual", "ticket-manual", "SYN-CRYPTO-ETHBTC-01", "BUY", 0.5m, 3300m, "USD",
+            now, now, SyntheticExecutionState.Open,
+            [
+                new SyntheticExecutionLegRecord(
+                    basket.Components[0].Instrument.Epic, "BUY", 9m, 2000m, 4.5m, 9000m, 1800m, "USD",
+                    SyntheticExecutionLegState.Open, "ref-eth", "deal-eth", "", 2000m, "", now, now, null, now),
+                new SyntheticExecutionLegRecord(
+                    basket.Components[1].Instrument.Epic, "BUY", 0.2m, 30000m, 0.1m, 3000m, 1500m, "USD",
+                    SyntheticExecutionLegState.Open, "ref-btc", "deal-btc", "", 30000m, "", now, now, null, now),
+            ],
+            "account-123",
+            BasketQuantity: 0.5m);
+
+        var saved = SyntheticExecutionBasketSnapshot.Create(
+            execution,
+            basket.Components.Select(component => component.Instrument).ToArray());
+
+        AssertEqual(SyntheticStrategyKind.ManualFormula, saved.Strategy, "manual execution snapshot strategy");
+        AssertEqual(0.5m, saved.BasketQuantity, "manual execution snapshot basket quantity");
+        AssertEqual(9m, saved.Components[0].FormulaMultiplier, "manual execution snapshot ETH multiplier");
+        AssertEqual(0.2m, saved.Components[1].FormulaMultiplier, "manual execution snapshot BTC multiplier");
+
+        using var directory = new TemporaryDirectory();
+        var executionStore = new SyntheticExecutionStore(Path.Combine(directory.Path, "manual-executions.json"));
+        executionStore.SaveAsync([execution], default).GetAwaiter().GetResult();
+        var restoredExecution = AssertSingle(
+            executionStore.LoadAsync(default).GetAwaiter().GetResult(),
+            "manual execution ledger round trip");
+        AssertEqual(0.5m, restoredExecution.BasketQuantity, "persisted execution basket quantity");
+        AssertEqual(9m, restoredExecution.Legs[0].Multiplier, "persisted execution ETH multiplier");
+        AssertEqual(0.2m, restoredExecution.Legs[1].Multiplier, "persisted execution BTC multiplier");
+
+        var basketStore = new SavedSyntheticBasketStore(directory.Path);
+        basketStore.Save(saved);
+        var restoredBasket = AssertSingle(basketStore.LoadAll(), "manual execution basket snapshot round trip");
+        AssertEqual(0.5m, restoredBasket.BasketQuantity, "persisted saved basket quantity");
+        AssertEqual(9m, restoredBasket.Components[0].FormulaMultiplier, "persisted saved ETH multiplier");
+        AssertEqual(0.2m, restoredBasket.Components[1].FormulaMultiplier, "persisted saved BTC multiplier");
     }
 
     private static void TradingBrowserParserRejectsMalformedShapesWithoutThrowing()
@@ -3644,6 +3854,88 @@ public static class SyntheticTradingTests
         }
         return basket;
     }
+
+    private static SyntheticBasket CreateManualRatioBasket(DateTimeOffset? now = null)
+    {
+        var quotedAt = now ?? DateTimeOffset.Parse("2026-08-01T12:00:00Z");
+        var basket = new SyntheticBasket
+        {
+            Symbol = "SYN-CRYPTO-ETHBTC-01",
+            Block = "Crypto / USD / All",
+            Strategy = SyntheticStrategyKind.ManualFormula,
+        };
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument
+            {
+                Epic = "CS.D.ETHUSD.CFD.IP",
+                Name = "Ethereum / US Dollar",
+                Symbol = "ETHUSD",
+                Type = "CRYPTOCURRENCIES",
+                Currency = "USD",
+                Bid = 1990m,
+                Offer = 2000m,
+                LastTickAt = quotedAt,
+                Status = "TRADEABLE",
+                LotSize = 1m,
+                MinDealSize = 0.5m,
+                MinSizeIncrement = 0.1m,
+                MarginFactor = 20m,
+                MarginFactorUnit = "PERCENTAGE",
+            },
+            75m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 9m,
+        });
+        basket.Components.Add(new SyntheticComponent(
+            new MarketInstrument
+            {
+                Epic = "CS.D.BTCUSD.CFD.IP",
+                Name = "Bitcoin / US Dollar",
+                Symbol = "BTCUSD",
+                Type = "CRYPTOCURRENCIES",
+                Currency = "USD",
+                Bid = 29900m,
+                Offer = 30000m,
+                LastTickAt = quotedAt,
+                Status = "TRADEABLE",
+                LotSize = 1m,
+                MinDealSize = 0.1m,
+                MinSizeIncrement = 0.01m,
+                MarginFactor = 50m,
+                MarginFactorUnit = "PERCENTAGE",
+            },
+            25m,
+            0m,
+            0m)
+        {
+            FormulaMultiplier = 0.2m,
+        });
+        return basket;
+    }
+
+    private static SyntheticMarginSummary CreateManualMarginSummary(SyntheticBasket basket, decimal available)
+    {
+        var buy = SyntheticMarginCalculator.CalculateSide(basket, "BUY", 0.5m, "USD", 1m);
+        var sell = SyntheticMarginCalculator.CalculateSide(basket, "SELL", 0.5m, "USD", 1m);
+        return SyntheticMarginCalculator.Combine(
+            new CapitalAccountSnapshot("account-123", "USD", available, DateTimeOffset.Parse("2026-08-01T12:00:00Z")),
+            buy,
+            sell);
+    }
+
+    private static SyntheticPreflightResult BuildManualPreflight(SyntheticBasket basket, DateTimeOffset now) =>
+        SyntheticTradePreflight.Build(new SyntheticPreflightInput(
+            true,
+            "SYN-CRYPTO-ETHBTC-01",
+            basket,
+            "BUY",
+            0.5m,
+            now,
+            CreateManualMarginSummary(CreateManualRatioBasket(now), available: 5000m),
+            "account-123",
+            true));
 
     private static SyntheticComponent CreateComponent(string epic, decimal multiplier, decimal weight = 25m) =>
         new(

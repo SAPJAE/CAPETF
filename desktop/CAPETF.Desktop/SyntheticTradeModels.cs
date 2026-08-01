@@ -102,7 +102,8 @@ public sealed record SyntheticExecutionTicket(
     decimal EstimatedMargin,
     string MarginCurrency,
     IReadOnlyList<SyntheticExecutionLeg> Legs,
-    string AccountId = "");
+    string AccountId = "",
+    decimal? BasketQuantity = null);
 
 public enum SyntheticExecutionState
 {
@@ -163,7 +164,8 @@ public sealed record SyntheticExecutionRecord(
     DateTimeOffset UpdatedUtc,
     SyntheticExecutionState State,
     IReadOnlyList<SyntheticExecutionLegRecord> Legs,
-    string AccountId = "");
+    string AccountId = "",
+    decimal? BasketQuantity = null);
 
 public sealed record SyntheticPreflightResult(
     bool IsReady,

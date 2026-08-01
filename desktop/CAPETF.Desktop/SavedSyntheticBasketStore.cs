@@ -20,7 +20,8 @@ public sealed record SavedSyntheticBasket(
     SyntheticStrategyKind Strategy,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    IReadOnlyList<SavedSyntheticComponent> Components)
+    IReadOnlyList<SavedSyntheticComponent> Components,
+    decimal? BasketQuantity = null)
 {
     [JsonIgnore]
     public string DisplayLabel => Strategy == SyntheticStrategyKind.ManualFormula
