@@ -29,6 +29,7 @@ public sealed class SyntheticHistoryService
             .Select(group => group.First())
             .ToList();
         var candlesByEpic = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
+        var pagingAnchor = DateTimeOffset.UtcNow.AddDays(1);
 
         for (var index = 0; index < components.Count; index++)
         {
@@ -39,7 +40,8 @@ public sealed class SyntheticHistoryService
                 var source = await _api.GetAllAvailableOhlcPricesAsync(
                     component.Epic,
                     RequestResolution(timeframe),
-                    cancellationToken);
+                    cancellationToken,
+                    pagingAnchor);
                 var candles = Transform(source, timeframe);
                 if (candles.Count > 0)
                 {

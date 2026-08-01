@@ -74,6 +74,7 @@ public static class SyntheticBasketBuilderTests
         CapitalHistoryPagingWindowsMatchCapitalResolutions();
         CapitalHistoryPagingRetainsSuccessfulRowsAtTerminalBoundary();
         CapitalHistoryPagingDoesNotSwallowAuthFailure();
+        SelectedHistoryUsesOneCapitalPagingAnchorAcrossAllLegs();
         SyntheticHistoryServiceMapsTerminalTimeframesToCapitalResolutions();
         SyntheticHistoryServiceClassifiesCancellationAuthServerAndUnavailableFailures();
         SyntheticHistoryServiceAggregatesHourlyCandlesLocally();
@@ -633,6 +634,22 @@ public static class SyntheticBasketBuilderTests
         catch (InvalidOperationException ex) when (ex.Message.Contains("401", StringComparison.Ordinal))
         {
         }
+    }
+
+    private static void SelectedHistoryUsesOneCapitalPagingAnchorAcrossAllLegs()
+    {
+        var handler = new SharedHistoryAnchorHandler();
+        using var client = new CapitalApiClient(handler);
+        client.LoginAsync(TestCredentials()).GetAwaiter().GetResult();
+
+        new SyntheticHistoryService(client).LoadSelectedAsync(
+                [new MarketInstrument { Epic = "ETH" }, new MarketInstrument { Epic = "BTC" }],
+                "Weekly")
+            .GetAwaiter()
+            .GetResult();
+
+        AssertEqual(2, handler.InitialToValues.Count, "both manual legs must issue an initial history request");
+        AssertEqual(handler.InitialToValues[0], handler.InitialToValues[1], "all selected legs must share one Capital history paging anchor");
     }
 
     private static ApiCredentials TestCredentials() => new()
@@ -8736,6 +8753,61 @@ public static class SyntheticBasketBuilderTests
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
             });
+        }
+    }
+
+    private sealed class SharedHistoryAnchorHandler : HttpMessageHandler
+    {
+        private readonly Dictionary<string, int> _requestsByEpic = new(StringComparer.OrdinalIgnoreCase);
+        public List<string> InitialToValues { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/api/v1/session", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var login = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+                };
+                login.Headers.Add("CST", "cst-token");
+                login.Headers.Add("X-SECURITY-TOKEN", "security-token");
+                return login;
+            }
+
+            var epic = request.RequestUri!.AbsolutePath.Split('/').Last();
+            var requestNumber = _requestsByEpic.TryGetValue(epic, out var count) ? count + 1 : 1;
+            _requestsByEpic[epic] = requestNumber;
+            if (requestNumber > 1)
+            {
+                return new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent("{\"errorCode\":\"error.invalid.from\"}", Encoding.UTF8, "application/json"),
+                };
+            }
+
+            var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);
+            InitialToValues.Add(query["to"] ?? "");
+            if (string.Equals(epic, "ETH", StringComparison.OrdinalIgnoreCase))
+            {
+                await Task.Delay(1200, cancellationToken);
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    prices = new[]
+                    {
+                        new
+                        {
+                            snapshotTimeUTC = "2026-07-20T00:00:00Z",
+                            openPrice = new { bid = 100m },
+                            highPrice = new { bid = 101m },
+                            lowPrice = new { bid = 99m },
+                            closePrice = new { bid = 100m },
+                        },
+                    },
+                }), Encoding.UTF8, "application/json"),
+            };
         }
     }
 

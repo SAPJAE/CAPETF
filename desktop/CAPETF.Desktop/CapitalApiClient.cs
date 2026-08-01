@@ -184,13 +184,17 @@ public sealed partial class CapitalApiClient : IDisposable
         return ParseOhlcPrices(doc.RootElement);
     }
 
-    public async Task<IReadOnlyList<OhlcPoint>> GetAllAvailableOhlcPricesAsync(string epic, string resolution, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<OhlcPoint>> GetAllAvailableOhlcPricesAsync(
+        string epic,
+        string resolution,
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? pagingAnchor = null)
     {
         EnsureSession();
         const int apiMax = 1000;
         var step = HistoricalWindow(resolution);
         var earliest = DateTimeOffset.Parse("1970-01-01T00:00:00Z", CultureInfo.InvariantCulture);
-        var to = DateTimeOffset.UtcNow.AddDays(1);
+        var to = pagingAnchor ?? DateTimeOffset.UtcNow.AddDays(1);
         var rowsByTime = new Dictionary<DateTimeOffset, OhlcPoint>();
         var requestCount = 0;
 
