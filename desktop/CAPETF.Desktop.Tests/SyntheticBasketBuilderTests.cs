@@ -651,6 +651,9 @@ public static class SyntheticBasketBuilderTests
 
         AssertEqual(2, handler.InitialToValues.Count, "both manual legs must issue an initial history request");
         AssertEqual(handler.InitialToValues[0], handler.InitialToValues[1], "all selected legs must share one Capital history paging anchor");
+        AssertTrue(
+            DateTimeOffset.Parse(handler.InitialToValues[0]) <= DateTimeOffset.UtcNow,
+            "Capital history paging anchor must not be in the future");
     }
 
     private static ApiCredentials TestCredentials() => new()

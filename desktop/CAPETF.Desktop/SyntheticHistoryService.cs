@@ -29,7 +29,7 @@ public sealed class SyntheticHistoryService
             .Select(group => group.First())
             .ToList();
         var candlesByEpic = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
-        var pagingAnchor = DateTimeOffset.UtcNow.AddDays(1);
+        var pagingAnchor = DateTimeOffset.UtcNow;
 
         for (var index = 0; index < components.Count; index++)
         {
