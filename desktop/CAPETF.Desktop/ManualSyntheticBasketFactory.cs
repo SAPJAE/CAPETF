@@ -42,12 +42,22 @@ public sealed class ManualSyntheticFormula
             var separator = term.IndexOfAny([' ', '\t']);
             if (separator <= 0)
             {
-                throw new FormatException($"Manual formula term '{term}' must start with a decimal multiplier.");
+                throw new FormatException($"Manual formula term '{term}' has an invalid decimal multiplier.");
             }
 
             var multiplierText = term[..separator].Trim();
             var instrumentToken = term[(separator + 1)..].Trim();
-            if (!decimal.TryParse(multiplierText, NumberStyles.Number, CultureInfo.InvariantCulture, out var multiplier))
+            if (multiplierText.StartsWith("-", StringComparison.Ordinal) &&
+                IsStrictUnsignedDecimal(multiplierText[1..]))
+            {
+                throw new FormatException("Manual formula multipliers must be greater than zero.");
+            }
+            if (!IsStrictUnsignedDecimal(multiplierText) ||
+                !decimal.TryParse(
+                    multiplierText,
+                    NumberStyles.AllowDecimalPoint,
+                    CultureInfo.InvariantCulture,
+                    out var multiplier))
             {
                 throw new FormatException($"Manual formula multiplier '{multiplierText}' is invalid.");
             }
@@ -64,6 +74,25 @@ public sealed class ManualSyntheticFormula
         }
 
         return new ManualSyntheticFormula(terms);
+    }
+
+    private static bool IsStrictUnsignedDecimal(string value)
+    {
+        if (string.IsNullOrEmpty(value) || value[0] == '.' || value[^1] == '.') return false;
+        var decimalPoints = 0;
+        foreach (var character in value)
+        {
+            if (character == '.')
+            {
+                decimalPoints++;
+                if (decimalPoints > 1) return false;
+            }
+            else if (character is < '0' or > '9')
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     public static string Format(IEnumerable<SavedSyntheticComponent> components) =>
@@ -154,57 +183,67 @@ public static class ManualSyntheticBasketFactory
         ArgumentNullException.ThrowIfNull(formula);
         ArgumentNullException.ThrowIfNull(instruments);
         var blockCurrency = CryptoBlockCurrency(block);
+        var blockInstruments = instruments.Where(instrument =>
+                CapitalInstrumentTypes.IsCrypto(instrument) &&
+                string.Equals(instrument.Group, block, StringComparison.OrdinalIgnoreCase))
+            .ToList();
         var resolved = new List<ResolvedTerm>(formula.Terms.Count);
 
         foreach (var term in formula.Terms)
         {
-            var primaryMatches = instruments.Where(instrument =>
+            var exactIdentifierMatches = blockInstruments.Where(instrument =>
                     string.Equals(instrument.Epic?.Trim(), term.InstrumentToken, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(instrument.Symbol?.Trim(), term.InstrumentToken, StringComparison.OrdinalIgnoreCase))
                 .ToList();
-            var normalizedToken = NormalizeIdentifier(term.InstrumentToken);
-            var normalizedMatches = primaryMatches.Count == 0 && normalizedToken.Length >= 4
-                ? instruments.Where(instrument =>
-                        string.Equals(NormalizeIdentifier(instrument.Epic), normalizedToken, StringComparison.Ordinal) ||
-                        string.Equals(NormalizeIdentifier(instrument.Symbol), normalizedToken, StringComparison.Ordinal))
-                    .ToList()
-                : [];
-            var allMatches = primaryMatches.Count > 0
-                ? primaryMatches
-                : normalizedMatches.Count > 0
-                    ? normalizedMatches
-                    : instruments.Where(instrument =>
-                            string.Equals(instrument.Name?.Trim(), term.InstrumentToken, StringComparison.OrdinalIgnoreCase))
-                        .ToList();
+            var instrument = ResolveTier(exactIdentifierMatches, term.InstrumentToken, block);
 
-            if (allMatches.Count == 0)
+            if (instrument is null)
             {
-                throw new InvalidOperationException($"Manual formula instrument '{term.InstrumentToken}' was not found.");
+                var exactNameMatches = blockInstruments.Where(candidate =>
+                        string.Equals(candidate.Name?.Trim(), term.InstrumentToken, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                instrument = ResolveTier(exactNameMatches, term.InstrumentToken, block);
             }
 
-            var blockMatches = allMatches.Where(instrument =>
-                    CapitalInstrumentTypes.IsCrypto(instrument) &&
-                    string.Equals(instrument.Group, block, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            if (blockMatches.Count == 0)
+            var normalizedToken = NormalizeIdentifier(term.InstrumentToken);
+            if (instrument is null && normalizedToken.Length >= 4)
             {
-                if (allMatches.Any(instrument =>
-                        !string.Equals(instrument.Currency?.Trim(), blockCurrency, StringComparison.OrdinalIgnoreCase)))
+                var normalizedMatches = blockInstruments.Where(candidate =>
+                        string.Equals(NormalizeIdentifier(candidate.Epic), normalizedToken, StringComparison.Ordinal) ||
+                        string.Equals(NormalizeIdentifier(candidate.Symbol), normalizedToken, StringComparison.Ordinal))
+                    .ToList();
+                instrument = ResolveTier(normalizedMatches, term.InstrumentToken, block);
+            }
+
+            if (instrument is null)
+            {
+                var outsideMatches = instruments.Where(candidate =>
+                        string.Equals(candidate.Epic?.Trim(), term.InstrumentToken, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(candidate.Symbol?.Trim(), term.InstrumentToken, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(candidate.Name?.Trim(), term.InstrumentToken, StringComparison.OrdinalIgnoreCase) ||
+                        normalizedToken.Length >= 4 &&
+                        (string.Equals(NormalizeIdentifier(candidate.Epic), normalizedToken, StringComparison.Ordinal) ||
+                         string.Equals(NormalizeIdentifier(candidate.Symbol), normalizedToken, StringComparison.Ordinal)))
+                    .ToList();
+                if (outsideMatches.Count == 0)
+                {
+                    throw new InvalidOperationException($"Manual formula instrument '{term.InstrumentToken}' was not found.");
+                }
+                if (outsideMatches.Any(candidate => !CapitalInstrumentTypes.IsCrypto(candidate)))
+                {
+                    throw new InvalidOperationException(
+                        $"Manual formula instrument '{term.InstrumentToken}' is not a Crypto instrument in selected block '{block}'.");
+                }
+                if (outsideMatches.Any(candidate =>
+                        !string.Equals(candidate.Currency?.Trim(), blockCurrency, StringComparison.OrdinalIgnoreCase)))
                 {
                     throw new InvalidOperationException(
                         $"Manual formula instrument '{term.InstrumentToken}' has a currency outside the selected {blockCurrency} block.");
                 }
-
                 throw new InvalidOperationException(
                     $"Manual formula instrument '{term.InstrumentToken}' is not available in selected block '{block}'.");
             }
-            if (blockMatches.Count != 1)
-            {
-                throw new InvalidOperationException(
-                    $"Manual formula instrument '{term.InstrumentToken}' is ambiguous in selected block '{block}'.");
-            }
 
-            var instrument = blockMatches[0];
             if (resolved.Any(item => string.Equals(item.Instrument.Epic, instrument.Epic, StringComparison.OrdinalIgnoreCase)))
             {
                 throw new InvalidOperationException(
@@ -215,6 +254,19 @@ public static class ManualSyntheticBasketFactory
 
         ValidateResolvedBlock(block, resolved);
         return resolved;
+    }
+
+    private static MarketInstrument? ResolveTier(
+        IReadOnlyList<MarketInstrument> matches,
+        string instrumentToken,
+        string block)
+    {
+        if (matches.Count > 1)
+        {
+            throw new InvalidOperationException(
+                $"Manual formula instrument '{instrumentToken}' is ambiguous in selected block '{block}'.");
+        }
+        return matches.Count == 1 ? matches[0] : null;
     }
 
     private static SyntheticBasket Build(
@@ -270,6 +322,7 @@ public static class ManualSyntheticBasketFactory
         {
             Symbol = symbol.Trim(),
             Block = block.Trim(),
+            Strategy = SyntheticStrategyKind.ManualFormula,
             BasketPrice = syntheticCandles[^1].Close,
             LastUpdated = syntheticCandles[^1].Time,
         };

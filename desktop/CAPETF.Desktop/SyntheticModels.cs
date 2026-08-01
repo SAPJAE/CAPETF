@@ -54,6 +54,7 @@ public sealed class SyntheticBasket : INotifyPropertyChanged
 
     public string Symbol { get; init; } = "";
     public string Block { get; init; } = "";
+    public SyntheticStrategyKind Strategy { get; set; } = SyntheticStrategyKind.SimilarToSelectedSymbol;
     public decimal AverageVolatilityPct { get; init; }
     public decimal SimilarityScore { get; init; }
     public ObservableCollection<SyntheticComponent> Components { get; } = [];

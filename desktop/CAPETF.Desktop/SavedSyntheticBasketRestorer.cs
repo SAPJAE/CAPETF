@@ -44,6 +44,8 @@ public static class SavedSyntheticBasketRestorer
                 timeframe,
                 periodsPerYear,
                 minimumCandles);
-        return basket is null ? null : new SavedSyntheticBasketRestoreResult(basket, saved.Strategy);
+        if (basket is null) return null;
+        basket.Strategy = saved.Strategy;
+        return new SavedSyntheticBasketRestoreResult(basket, saved.Strategy);
     }
 }

@@ -15,7 +15,9 @@ public static class SyntheticBasketBuilderTests
     {
         ManualFormulaBuildsExactCryptoPresetWithoutEqualNotionalRewriting();
         ManualFormulaResolvesExactIdentifiersAndRejectsInvalidTerms();
+        ManualFormulaResolutionIsBlockLocalAndTiered();
         ManualFormulaSaveRestorePreservesTwoLegStrategyAndExactMultipliers();
+        ManualBasketStrategyIdentitySurvivesDropdownChanges();
         SignedSyntheticQuotesUseExecutableBidAskSides();
         ManualFormulaEditorIsCompactConditionalAndBypassesAutomaticSelection();
     }
@@ -6980,6 +6982,26 @@ public static class SyntheticBasketBuilderTests
             () => ManualSyntheticFormula.Parse("ETHUSD + 0.2 BTCUSD"),
             "multiplier",
             "missing manual multiplier");
+        AssertThrows<FormatException>(
+            () => ManualSyntheticFormula.Parse("9 ETHUSD + 0,2 BTCUSD"),
+            "invalid",
+            "comma decimal separator");
+        AssertThrows<FormatException>(
+            () => ManualSyntheticFormula.Parse("1,000 ETHUSD + 0.2 BTCUSD"),
+            "invalid",
+            "thousands group separator");
+        AssertThrows<FormatException>(
+            () => ManualSyntheticFormula.Parse("9e0 ETHUSD + 0.2 BTCUSD"),
+            "invalid",
+            "exponent multiplier syntax");
+        AssertThrows<FormatException>(
+            () => ManualSyntheticFormula.Parse("+9 ETHUSD + 0.2 BTCUSD"),
+            "invalid",
+            "explicit positive sign syntax");
+        AssertThrows<FormatException>(
+            () => ManualSyntheticFormula.Parse("1 A + 1 B + 1 C + 1 D + 1 E"),
+            "two to four",
+            "five-term manual formula");
 
         AssertThrows<InvalidOperationException>(
             () => ManualSyntheticBasketFactory.Create(
@@ -7022,6 +7044,24 @@ public static class SyntheticBasketBuilderTests
                 candles),
             "currency",
             "mixed-currency manual formula");
+
+        var nonCryptoEth = new MarketInstrument
+        {
+            Epic = "ETHUSD",
+            Symbol = "ETHUSD",
+            Name = "Ethereum tracker",
+            Type = "SHARES",
+            Region = "US",
+            Sector = "Technology",
+            Currency = "USD",
+        };
+        AssertThrows<InvalidOperationException>(
+            () => ManualSyntheticBasketFactory.Resolve(
+                "Crypto / USD / All",
+                ManualSyntheticFormula.Parse("9 ETHUSD + 0.2 BTCUSD"),
+                [nonCryptoEth, btc]),
+            "not a Crypto instrument",
+            "non-crypto manual component");
     }
 
     private static void ManualFormulaSaveRestorePreservesTwoLegStrategyAndExactMultipliers()
@@ -7074,6 +7114,45 @@ public static class SyntheticBasketBuilderTests
         }
     }
 
+    private static void ManualFormulaResolutionIsBlockLocalAndTiered()
+    {
+        const string usdBlock = "Crypto / USD / All";
+        var btc = CreateCrypto("BTC-USD-EPIC", "BTCUSD", "Bitcoin", "USD", 1m, 2m);
+        var inBlockExactName = CreateCrypto("ETH-NAME-EPIC", "ETH-CAP", "ETHUSD", "USD", 1m, 2m);
+        var outOfBlockExactSymbol = CreateCrypto("ETH-EUR-EPIC", "ETHUSD", "Ethereum Euro", "EUR", 1m, 2m);
+
+        var blockFirst = ManualSyntheticBasketFactory.Resolve(
+            usdBlock,
+            ManualSyntheticFormula.Parse("9 ETHUSD + 0.2 BTCUSD"),
+            [outOfBlockExactSymbol, inBlockExactName, btc]);
+        AssertEqual(inBlockExactName.Epic, blockFirst[0].Epic, "out-of-block exact IDs must not suppress an in-block exact name");
+
+        var normalizedSymbol = CreateCrypto("ETH-NORMALIZED-EPIC", "ETH/USD", "Ethereum normalized", "USD", 1m, 2m);
+        var nameBeforeNormalized = ManualSyntheticBasketFactory.Resolve(
+            usdBlock,
+            ManualSyntheticFormula.Parse("9 ETHUSD + 0.2 BTCUSD"),
+            [normalizedSymbol, inBlockExactName, btc]);
+        AssertEqual(inBlockExactName.Epic, nameBeforeNormalized[0].Epic, "exact in-block name must precede normalized epic or symbol fallback");
+
+        var duplicateName = CreateCrypto("ETH-NAME-EPIC-2", "ETH-SECOND", "ETHUSD", "USD", 1m, 2m);
+        AssertThrows<InvalidOperationException>(
+            () => ManualSyntheticBasketFactory.Resolve(
+                usdBlock,
+                ManualSyntheticFormula.Parse("9 ETHUSD + 0.2 BTCUSD"),
+                [normalizedSymbol, inBlockExactName, duplicateName, btc]),
+            "ambiguous",
+            "exact-name tier ambiguity");
+
+        var normalizedSymbolTwo = CreateCrypto("ETH-NORMALIZED-EPIC-2", "ETH-USD", "Ethereum normalized two", "USD", 1m, 2m);
+        AssertThrows<InvalidOperationException>(
+            () => ManualSyntheticBasketFactory.Resolve(
+                usdBlock,
+                ManualSyntheticFormula.Parse("9 ETHUSD + 0.2 BTCUSD"),
+                [normalizedSymbol, normalizedSymbolTwo, btc]),
+            "ambiguous",
+            "normalized-ID tier ambiguity");
+    }
+
     private static void SignedSyntheticQuotesUseExecutableBidAskSides()
     {
         var basket = new SyntheticBasket();
@@ -7092,6 +7171,42 @@ public static class SyntheticBasketBuilderTests
 
         AssertNear(45m, basket.BidPrice ?? 0m, "signed bid must value short legs at their offer");
         AssertNear(55m, basket.AskPrice ?? 0m, "signed ask must value short legs at their bid");
+    }
+
+    private static void ManualBasketStrategyIdentitySurvivesDropdownChanges()
+    {
+        var day = DateTimeOffset.Parse("2026-07-01T00:00:00Z");
+        var eth = CreateCrypto("CS.D.ETHUSD.CFD.IP", "ETHUSD", "Ethereum", "USD", 1999m, 2001m);
+        var btc = CreateCrypto("CS.D.BTCUSD.CFD.IP", "BTCUSD", "Bitcoin", "USD", 29990m, 30010m);
+        var candles = new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase)
+        {
+            [eth.Epic] = [FlatCandle(day, 2000m), FlatCandle(day.AddDays(1), 2100m)],
+            [btc.Epic] = [FlatCandle(day, 30000m), FlatCandle(day.AddDays(1), 31000m)],
+        };
+        var basket = ManualSyntheticBasketFactory.Create(
+            "SYN-CRYPTO-ETHBTC-01",
+            "Crypto / USD / All",
+            ManualSyntheticFormula.Parse("9 ETHUSD + 0.2 BTCUSD"),
+            [eth, btc],
+            candles);
+        var state = new ActiveSyntheticBasketState();
+        state.Activate(basket, SyntheticStrategyKind.ManualFormula);
+
+        var dropdownStrategyAfterBuild = SyntheticStrategyKind.MeanReversion;
+        AssertEqual(SyntheticStrategyKind.MeanReversion, dropdownStrategyAfterBuild, "test must simulate a changed strategy dropdown");
+        AssertEqual(SyntheticStrategyKind.ManualFormula, state.Strategy, "active basket strategy must not follow the dropdown");
+
+        var suggestedName = state.SuggestedSavedBasketName();
+        var saved = state.CreateSavedBasket(suggestedName);
+        AssertEqual(SyntheticStrategyKind.ManualFormula, saved.Strategy, "save must use active basket strategy identity");
+        AssertTrue(suggestedName.EndsWith("-MANUALFORMULA", StringComparison.Ordinal), "save name must use active basket strategy identity");
+
+        var history = new HistoryLoadResult(candles, day, day.AddDays(1), 2);
+        var rebuilt = state.RebuildHistory(history, "Daily", periodsPerYear: 252, minimumCandles: 2)
+            ?? throw new Exception("active manual basket must rebuild from shared history");
+        AssertEqual(SyntheticStrategyKind.ManualFormula, rebuilt.Strategy, "history reload must preserve active basket strategy");
+        AssertEqual(9m, rebuilt.Components[0].FormulaMultiplier, "history reload must preserve ETH multiplier");
+        AssertEqual(0.2m, rebuilt.Components[1].FormulaMultiplier, "history reload must preserve BTC multiplier");
     }
 
     private static void ManualFormulaEditorIsCompactConditionalAndBypassesAutomaticSelection()
@@ -7123,7 +7238,6 @@ public static class SyntheticBasketBuilderTests
             "ManualSyntheticFormula.CryptoPreset",
             "ManualSyntheticBasketFactory.Create",
             "ManualFormulaBox.Visibility",
-            "ManualSyntheticFormula.Format(saved.Components)",
         })
         {
             if (!source.Contains(required, StringComparison.Ordinal))
@@ -7132,25 +7246,6 @@ public static class SyntheticBasketBuilderTests
             }
         }
 
-        var reloadStart = source.IndexOf("private async Task ReloadSelectedBasketHistoryAsync", StringComparison.Ordinal);
-        var reloadEnd = source.IndexOf("private async void Streaming_QuoteReceived", reloadStart, StringComparison.Ordinal);
-        if (reloadStart < 0 || reloadEnd <= reloadStart)
-        {
-            throw new Exception("selected basket history reload method must remain available");
-        }
-        var reloadBlock = source[reloadStart..reloadEnd];
-        foreach (var required in new[]
-        {
-            "SyntheticStrategyKind.ManualFormula",
-            "ManualSyntheticBasketFactory.Restore",
-            "SavedSyntheticBasket.FromBasket",
-        })
-        {
-            if (!reloadBlock.Contains(required, StringComparison.Ordinal))
-            {
-                throw new Exception($"manual timeframe reload must preserve exact formula identity: missing {required}");
-            }
-        }
     }
 
     private static MarketInstrument CreateCrypto(

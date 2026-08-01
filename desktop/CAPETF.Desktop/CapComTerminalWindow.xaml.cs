@@ -24,6 +24,7 @@ public partial class CapComTerminalWindow : Window
         "synthetic-risk-plans.json"));
     private readonly SyntheticTradingWindowLifecycleCoordinator _tradingLifecycle = new();
     private readonly TerminalOperationState _operationState = new();
+    private readonly ActiveSyntheticBasketState _activeBasket = new();
     private readonly WindowLifetime _windowLifetime = new();
     private readonly SemaphoreSlim _brokerRefreshGate = new(1, 1);
     private readonly List<MarketInstrument> _instruments = [];
@@ -39,7 +40,15 @@ public partial class CapComTerminalWindow : Window
         new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<SyntheticExecutionRecord> _terminalExecutions = [];
     private CapitalStreamingClient? _streaming;
-    private SyntheticBasket? _basket;
+    private SyntheticBasket? _basket
+    {
+        get => _activeBasket.Basket;
+        set
+        {
+            if (value is null) _activeBasket.Clear();
+            else _activeBasket.Activate(value, value.Strategy);
+        }
+    }
     private bool _loadingSavedBaskets;
     private SyntheticTerminalPayload? _pendingPayload;
     private bool _chartReady;
@@ -288,6 +297,7 @@ public partial class CapComTerminalWindow : Window
             StatusText.Text = $"The selected legs have no usable shared {resolution} history.";
             return;
         }
+        _activeBasket.Activate(_basket, strategy);
 
         await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
         _operationState.BeginStage("Rendering synthetic chart");
@@ -329,6 +339,7 @@ public partial class CapComTerminalWindow : Window
             selectedHistory.CandlesByEpic,
             resolution,
             minimumCandles), cancellationToken);
+        _activeBasket.Activate(_basket, SyntheticStrategyKind.ManualFormula);
         cancellationToken.ThrowIfCancellationRequested();
 
         await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
@@ -347,8 +358,8 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
-        var name = SuggestedSavedBasketName(_basket, SelectedStrategy());
-        _savedBasketStore.Save(SavedSyntheticBasket.FromBasket(name, SelectedStrategy(), _basket));
+        var name = _activeBasket.SuggestedSavedBasketName();
+        _savedBasketStore.Save(_activeBasket.CreateSavedBasket(name));
         RefreshSavedBaskets(name);
         StatusText.Text = $"Saved basket {name}.";
     }
@@ -423,6 +434,7 @@ public partial class CapComTerminalWindow : Window
         }
 
         _basket = restored.Basket;
+        _activeBasket.Activate(_basket, restored.Strategy);
         StrategyBox.SelectedValue = restored.Strategy;
         if (restored.Strategy == SyntheticStrategyKind.ManualFormula)
         {
@@ -472,6 +484,7 @@ public partial class CapComTerminalWindow : Window
         }
 
         _basket = restored.Basket;
+        _activeBasket.Activate(_basket, restored.Strategy);
         StrategyBox.SelectedValue = restored.Strategy;
         await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
         _operationState.BeginStage("Rendering executed basket");
@@ -777,21 +790,11 @@ public partial class CapComTerminalWindow : Window
         var history = await LoadSelectedHistoryAsync(selectedComponents, resolution, cancellationToken);
         _operationState.BeginStage("Building selected basket");
         await Task.Yield();
-        var strategy = SelectedStrategy();
-        var rebuilt = strategy == SyntheticStrategyKind.ManualFormula
-            ? ManualSyntheticBasketFactory.Restore(
-                SavedSyntheticBasket.FromBasket(existingBasket.Symbol, strategy, existingBasket),
-                selectedComponents,
-                history,
-                resolution,
-                MinimumCandles(resolution))
-            : SyntheticHistoryService.BuildSelected(
-                existingBasket.Block,
-                selectedComponents,
-                history,
-                resolution,
-                PeriodsPerYear(resolution),
-                MinimumCandles(resolution));
+        var rebuilt = _activeBasket.RebuildHistory(
+            history,
+            resolution,
+            PeriodsPerYear(resolution),
+            MinimumCandles(resolution));
         if (rebuilt is null)
         {
             StatusText.Text = $"The selected legs have no usable shared {resolution} history.";
@@ -1124,18 +1127,13 @@ public partial class CapComTerminalWindow : Window
     private static string StrategyLabel(SyntheticStrategyKind kind) =>
         SyntheticStrategyCatalog.All.FirstOrDefault(strategy => strategy.Kind == kind)?.Label ?? kind.ToString();
 
-    private static string SuggestedSavedBasketName(SyntheticBasket basket, SyntheticStrategyKind strategy)
-    {
-        var suffix = strategy == SyntheticStrategyKind.SimilarToSelectedSymbol ? "SIMILAR" : strategy.ToString().ToUpperInvariant();
-        return $"{basket.Symbol}-{suffix}";
-    }
-
     private static SyntheticBasket RenameBasket(SyntheticBasket source, string symbol, string block)
     {
         var renamed = new SyntheticBasket
         {
             Symbol = symbol,
             Block = block,
+            Strategy = source.Strategy,
             AverageVolatilityPct = source.AverageVolatilityPct,
             SimilarityScore = source.SimilarityScore,
             BasketPrice = source.BasketPrice,
