@@ -52,6 +52,27 @@ public sealed class TerminalUniverseRefreshGate
     }
 }
 
+public sealed class TerminalStatusArbiter
+{
+    private readonly Func<bool> _foregroundOwnsStatus;
+    private readonly Action<string> _publish;
+
+    public TerminalStatusArbiter(Func<bool> foregroundOwnsStatus, Action<string> publish)
+    {
+        ArgumentNullException.ThrowIfNull(foregroundOwnsStatus);
+        ArgumentNullException.ThrowIfNull(publish);
+        _foregroundOwnsStatus = foregroundOwnsStatus;
+        _publish = publish;
+    }
+
+    public bool TryPublishBackground(string status)
+    {
+        if (_foregroundOwnsStatus()) return false;
+        _publish(status);
+        return true;
+    }
+}
+
 public static class TerminalUniverseDiscoveryRetryPolicy
 {
     public const int MaximumAttempts = 3;

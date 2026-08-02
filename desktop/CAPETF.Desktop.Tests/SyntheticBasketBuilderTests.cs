@@ -51,6 +51,7 @@ public static class SyntheticBasketBuilderTests
         TerminalUniverseAccumulatorMergesApiBatchesDeterministically();
         TerminalUniverseAccumulatorPreservesCurrentSelection();
         TerminalUniverseAccumulatorReportsStagedProgress();
+        DetachedUniverseDiscoveryDoesNotOverwriteForegroundStatus();
         TerminalUniverseCacheRoundTripsMergedSnapshots();
         CapComTerminalProgressivelyDiscoversUniversesWithoutBlockingControls();
         TerminalUniverseRefreshGateRejectsLateDiscoveryOwnership();
@@ -2645,6 +2646,33 @@ public static class SyntheticBasketBuilderTests
         AssertEqual(3, partial.Progress.TotalDiscovered, "partial progress must retain the discovery total");
         AssertEqual(TerminalUniverseStage.Complete, complete.Progress.Stage, "final API batch must report completion");
         AssertTrue(complete.Progress.IsComplete, "final API batch must be marked complete");
+    }
+
+    private static void DetachedUniverseDiscoveryDoesNotOverwriteForegroundStatus()
+    {
+        var operation = new TerminalOperationState();
+        var status = "Idle";
+        var statusArbiter = new TerminalStatusArbiter(
+            () => operation.IsBusy,
+            text => status = text);
+
+        AssertTrue(statusArbiter.TryPublishBackground("Discovering stocks: 1/3."),
+            "detached discovery must publish progress while no foreground operation owns status");
+        AssertEqual("Discovering stocks: 1/3.", status, "idle discovery progress status");
+
+        AssertTrue(operation.TryBegin("Building synthetic basket"), "foreground basket build should start");
+        status = "Loading Capital.com history for basket...";
+        AssertTrue(!statusArbiter.TryPublishBackground("Discovering stocks: 2/3."),
+            "detached discovery progress must yield to a foreground operation");
+        AssertTrue(!statusArbiter.TryPublishBackground("Stocks refresh failed: rate limited"),
+            "detached discovery failure must yield to a foreground operation");
+        AssertEqual("Loading Capital.com history for basket...", status,
+            "detached discovery must preserve foreground status feedback");
+
+        operation.Complete();
+        AssertTrue(statusArbiter.TryPublishBackground("Discovering stocks: 3/3."),
+            "detached discovery must resume status publication after foreground ownership ends");
+        AssertEqual("Discovering stocks: 3/3.", status, "resumed discovery progress status");
     }
 
     private static void TerminalUniverseCacheRoundTripsMergedSnapshots()

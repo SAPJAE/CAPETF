@@ -36,6 +36,7 @@ public partial class CapComTerminalWindow : Window
         "universe-cache"));
     private readonly SyntheticTradingWindowLifecycleCoordinator _tradingLifecycle = new();
     private readonly TerminalOperationState _operationState = new();
+    private readonly TerminalStatusArbiter _statusArbiter;
     private readonly ActiveSyntheticBasketState _activeBasket = new();
     private readonly SyntheticRealtimeBarBuilder _realtimeBars = new();
     private readonly WindowLifetime _windowLifetime = new();
@@ -85,6 +86,9 @@ public partial class CapComTerminalWindow : Window
     public CapComTerminalWindow()
     {
         InitializeComponent();
+        _statusArbiter = new TerminalStatusArbiter(
+            () => _operationState.IsBusy,
+            status => StatusText.Text = status);
         _savedBasketDeletion = new SavedBasketDeletionCoordinator(_savedBasketStore);
         OperationProgressPanel.DataContext = _operationState;
         _history = new SyntheticHistoryService(_api);
@@ -399,7 +403,7 @@ public partial class CapComTerminalWindow : Window
             AppendActivity(TerminalActivitySeverity.Warning, "Universe discovery", $"{UniverseLabel(universe)} refresh failed.", ex.Message);
             if (!_windowLifetime.IsClosing && _universeRefreshGate.IsCurrent(refresh) && SelectedUniverse() == universe)
             {
-                StatusText.Text = $"{UniverseLabel(universe)} refresh failed: {ex.Message}";
+                _statusArbiter.TryPublishBackground($"{UniverseLabel(universe)} refresh failed: {ex.Message}");
             }
         }
         finally
@@ -478,7 +482,8 @@ public partial class CapComTerminalWindow : Window
             ApplyUniverse(universe, snapshot.Instruments, candles, candlesByResolution, selection);
             if (snapshot.Progress.Stage == TerminalUniverseStage.Discovering)
             {
-                StatusText.Text = $"Discovering {UniverseLabel(universe).ToLowerInvariant()}: {snapshot.Progress.Discovered}/{snapshot.Progress.TotalDiscovered}.";
+                _statusArbiter.TryPublishBackground(
+                    $"Discovering {UniverseLabel(universe).ToLowerInvariant()}: {snapshot.Progress.Discovered}/{snapshot.Progress.TotalDiscovered}.");
             }
         }
 
