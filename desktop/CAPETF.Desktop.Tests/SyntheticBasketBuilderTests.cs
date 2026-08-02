@@ -47,6 +47,12 @@ public static class SyntheticBasketBuilderTests
         TerminalUniverseUiCoordinatorCachesUniversesSeparately();
         TerminalUniverseUiCoordinatorClearsBeforeAFailedSwitchLoad();
         TerminalUniverseUiCoordinatorBuildsBlocksAndSeedsForTheActiveUniverse();
+        TerminalUniverseAccumulatorPublishesCachedSnapshotBeforeDiscovery();
+        TerminalUniverseAccumulatorMergesApiBatchesDeterministically();
+        TerminalUniverseAccumulatorPreservesCurrentSelection();
+        TerminalUniverseAccumulatorReportsStagedProgress();
+        TerminalUniverseCacheRoundTripsMergedSnapshots();
+        CapComTerminalProgressivelyDiscoversUniversesWithoutBlockingControls();
     }
 
     public static void RunAll()
@@ -2406,6 +2412,119 @@ public static class SyntheticBasketBuilderTests
             "new universe seed options must include instruments from the selected active block");
         AssertTrue(seeds.All(seed => !seed.Contains("STOCK", StringComparison.Ordinal)),
             "new universe seed options must not retain instruments from the prior universe");
+    }
+
+    private static void TerminalUniverseAccumulatorPublishesCachedSnapshotBeforeDiscovery()
+    {
+        var accumulator = new TerminalUniverseAccumulator(TerminalUniverseKind.Stocks);
+        var snapshot = accumulator.PublishCached(
+        [
+            new MarketInstrument { Epic = "CACHE-A", Name = "Cached Alpha", Symbol = "CA", Type = "SHARES", Region = "US", Currency = "USD", Sector = "Technology" },
+        ]);
+
+        AssertEqual(1, snapshot.Instruments.Count, "cached instruments must publish immediately before API discovery");
+        AssertEqual("CACHE-A", snapshot.Instruments[0].Epic, "cached snapshot keeps the cached epic");
+        AssertEqual(TerminalUniverseStage.Cached, snapshot.Progress.Stage, "first snapshot must identify the cache stage");
+        AssertTrue(!snapshot.Progress.IsComplete, "cached publication must not claim discovery is complete");
+    }
+
+    private static void TerminalUniverseAccumulatorMergesApiBatchesDeterministically()
+    {
+        var accumulator = new TerminalUniverseAccumulator(TerminalUniverseKind.Stocks);
+        accumulator.PublishCached(
+        [
+            new MarketInstrument { Epic = "A", Name = "Zulu", Symbol = "A", Type = "SHARES", Region = "US", Currency = "USD", Sector = "Technology", Status = "CLOSED" },
+            new MarketInstrument { Epic = "C", Name = "Charlie", Symbol = "C", Type = "SHARES", Region = "US", Currency = "USD", Sector = "Technology" },
+        ]);
+
+        var snapshot = accumulator.MergeDiscoveryBatch(
+        [
+            new MarketInstrument { Epic = "A", Name = "Alpha", Symbol = "A", Type = "SHARES", Region = "US", Currency = "USD", Sector = "Technology", Status = "TRADEABLE" },
+            new MarketInstrument { Epic = "B", Name = "Bravo", Symbol = "B", Type = "SHARES", Region = "US", Currency = "USD", Sector = "Technology" },
+        ], totalDiscovered: 4, isComplete: false);
+
+        AssertEqual(3, snapshot.Instruments.Count, "API discoveries must deduplicate matching epics");
+        AssertEqual("A", snapshot.Instruments[0].Epic, "merged snapshots must use a deterministic name and epic ordering");
+        AssertEqual("B", snapshot.Instruments[1].Epic, "merged snapshots must use a deterministic name and epic ordering");
+        AssertEqual("C", snapshot.Instruments[2].Epic, "merged snapshots must use a deterministic name and epic ordering");
+        AssertEqual("TRADEABLE", snapshot.Instruments[0].Status, "new API data must replace stale cache metadata for duplicate epics");
+    }
+
+    private static void TerminalUniverseAccumulatorPreservesCurrentSelection()
+    {
+        var accumulator = new TerminalUniverseAccumulator(TerminalUniverseKind.Stocks);
+        var snapshot = accumulator.PublishCached(
+        [
+            new MarketInstrument { Epic = "SAPd", Name = "SAP", Symbol = "SAP", Type = "SHARES", Region = "Europe", Currency = "EUR", Sector = "Technology" },
+            new MarketInstrument { Epic = "AMD", Name = "Advanced Micro Devices", Symbol = "AMD", Type = "SHARES", Region = "US", Currency = "USD", Sector = "Technology" },
+        ]);
+
+        var preserved = accumulator.PreserveSelection(
+            new TerminalUniverseSelection("Europe / EUR / Technology", "SAPd | SAP | Europe / EUR / Technology"),
+            snapshot);
+
+        AssertEqual("Europe / EUR / Technology", preserved.Block, "a still-valid block must remain selected after a staged publish");
+        AssertEqual("SAPd | SAP | Europe / EUR / Technology", preserved.SeedText, "a still-valid seed must remain selected after a staged publish");
+    }
+
+    private static void TerminalUniverseAccumulatorReportsStagedProgress()
+    {
+        var accumulator = new TerminalUniverseAccumulator(TerminalUniverseKind.Stocks);
+        accumulator.PublishCached([]);
+        var partial = accumulator.MergeDiscoveryBatch(
+        [new MarketInstrument { Epic = "A", Name = "Alpha", Type = "SHARES" }], totalDiscovered: 3, isComplete: false);
+        var complete = accumulator.MergeDiscoveryBatch(
+        [new MarketInstrument { Epic = "B", Name = "Bravo", Type = "SHARES" }], totalDiscovered: 3, isComplete: true);
+
+        AssertEqual(TerminalUniverseStage.Discovering, partial.Progress.Stage, "partial API batches must report discovery progress");
+        AssertEqual(1, partial.Progress.Discovered, "partial progress must report received API instruments");
+        AssertEqual(3, partial.Progress.TotalDiscovered, "partial progress must retain the discovery total");
+        AssertEqual(TerminalUniverseStage.Complete, complete.Progress.Stage, "final API batch must report completion");
+        AssertTrue(complete.Progress.IsComplete, "final API batch must be marked complete");
+    }
+
+    private static void TerminalUniverseCacheRoundTripsMergedSnapshots()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"capetf-universe-cache-{Guid.NewGuid():N}");
+        try
+        {
+            var cache = new TerminalUniverseCache(directory);
+            cache.Save(TerminalUniverseKind.Stocks,
+            [
+                new MarketInstrument { Epic = "A", Name = "Alpha", Symbol = "A", Type = "SHARES", Region = "US", Currency = "USD", Sector = "Technology", Status = "TRADEABLE" },
+            ]);
+            var loaded = cache.Load(TerminalUniverseKind.Stocks);
+
+            AssertEqual(1, loaded.Count, "the merged universe cache must persist staged API discoveries");
+            AssertEqual("A", loaded[0].Epic, "the merged universe cache must retain the epic key");
+            AssertEqual("TRADEABLE", loaded[0].Status, "the merged universe cache must retain current API metadata");
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static void CapComTerminalProgressivelyDiscoversUniversesWithoutBlockingControls()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "TerminalUniverseCache",
+            "StartUniverseDiscoveryAsync",
+            "RefreshUniverseInBackgroundAsync",
+            "MergeDiscoveryBatch",
+            "batchSize = 100",
+            "Task.Delay(TimeSpan.FromMilliseconds(40)",
+            "PreserveSelection(CaptureUniverseSelection(), snapshot)",
+            "waitForDiscovery: false",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"progressive universe loading missing {required}");
+            }
+        }
     }
 
     private static void EncryptedEtfCacheKeepsOnlyEtfInstruments()

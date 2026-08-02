@@ -27,6 +27,10 @@ public partial class CapComTerminalWindow : Window
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "CAPETF",
         "terminal-activity.json"));
+    private readonly TerminalUniverseCache _universeCache = new(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "CAPETF",
+        "universe-cache"));
     private readonly SyntheticTradingWindowLifecycleCoordinator _tradingLifecycle = new();
     private readonly TerminalOperationState _operationState = new();
     private readonly ActiveSyntheticBasketState _activeBasket = new();
@@ -36,6 +40,7 @@ public partial class CapComTerminalWindow : Window
     private readonly List<MarketInstrument> _instruments = [];
     private readonly ObservableCollection<TerminalComponentRow> _components = [];
     private readonly TerminalUniverseUiCoordinator _universeUi = new();
+    private readonly Dictionary<TerminalUniverseKind, TerminalUniverseAccumulator> _universeAccumulators = [];
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> _candlesByUniverse = [];
     private readonly Dictionary<TerminalUniverseKind, IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>>> _candlesByUniverseByResolution = [];
     private readonly EtfCatalogCache _etfCatalog = new();
@@ -63,6 +68,9 @@ public partial class CapComTerminalWindow : Window
     private bool _streamReconnectScheduled;
     private string _terminalDrawingIdentity = "";
     private CancellationTokenSource? _marginPreviewRefresh;
+    private CancellationTokenSource? _universeDiscoveryRefresh;
+    private Task? _universeDiscoveryTask;
+    private TerminalUniverseKind? _universeDiscoveryUniverse;
     private decimal _marginPreviewNotional = 1m;
     private readonly Task _brokerRefreshLoop;
 
@@ -128,7 +136,13 @@ public partial class CapComTerminalWindow : Window
 
     private Task LoadStocksAsync(CancellationToken cancellationToken) => LoadUniverseAsync(SelectedUniverse(), cancellationToken);
 
-    private async Task LoadUniverseAsync(TerminalUniverseKind universe, CancellationToken cancellationToken)
+    private Task LoadUniverseAsync(TerminalUniverseKind universe, CancellationToken cancellationToken) =>
+        LoadUniverseAsync(universe, cancellationToken, waitForDiscovery: false);
+
+    private async Task LoadUniverseAsync(
+        TerminalUniverseKind universe,
+        CancellationToken cancellationToken,
+        bool waitForDiscovery)
     {
         try
         {
@@ -138,15 +152,28 @@ public partial class CapComTerminalWindow : Window
                 _candlesByUniverse.TryGetValue(universe, out var candles) &&
                 _candlesByUniverseByResolution.TryGetValue(universe, out var candlesByResolution))
             {
-                ApplyUniverse(universe, instruments, candles, candlesByResolution);
+                PublishUniverseSnapshot(
+                    universe,
+                    GetUniverseAccumulator(universe).PublishCached(instruments),
+                    candles,
+                    candlesByResolution,
+                    persist: false);
                 StatusText.Text = $"{_instruments.Count} {UniverseLabel(universe).ToLowerInvariant()} loaded from the selected universe cache.";
+                await StartUniverseDiscoveryAsync(universe, cancellationToken, waitForDiscovery);
                 return;
             }
 
-            if (universe == TerminalUniverseKind.Crypto)
+            var persisted = _universeCache.Load(universe);
+            var accumulator = GetUniverseAccumulator(universe);
+            if (persisted.Count > 0)
             {
-                await LoadUniverseFromApiAsync(universe, cancellationToken);
-                return;
+                PublishUniverseSnapshot(
+                    universe,
+                    accumulator.PublishCached(persisted),
+                    EmptyCandles(),
+                    EmptyCandlesByResolution(),
+                    persist: false);
+                StatusText.Text = $"{_instruments.Count} {UniverseLabel(universe).ToLowerInvariant()} loaded from the local merged cache.";
             }
 
             if (universe == TerminalUniverseKind.Stocks)
@@ -155,14 +182,16 @@ public partial class CapComTerminalWindow : Window
                 var cached = DashboardStockChunkLoader.LoadStocks();
                 if (cached.Instruments.Count > 0)
                 {
-                    ApplyUniverse(
+                    var snapshot = persisted.Count > 0
+                        ? accumulator.MergeCached(cached.Instruments.Where(item => TerminalUniverse.Accepts(universe, item, _knownEtfEpics)).ToList())
+                        : accumulator.PublishCached(cached.Instruments.Where(item => TerminalUniverse.Accepts(universe, item, _knownEtfEpics)).ToList());
+                    PublishUniverseSnapshot(
                         universe,
-                        cached.Instruments.Where(item => TerminalUniverse.Accepts(universe, item, _knownEtfEpics)).ToList(),
+                        snapshot,
                         cached.OhlcByEpic,
                         cached.OhlcByEpicAndResolution ?? EmptyCandlesByResolution());
                     var source = cached.SourceAsOf is null ? "" : $" Source date {cached.SourceAsOf:yyyy-MM-dd}.";
                     StatusText.Text = $"{_instruments.Count} stocks loaded from {cached.ChunkCount} cached stock chunks.{source}";
-                    return;
                 }
             }
             else
@@ -174,14 +203,16 @@ public partial class CapComTerminalWindow : Window
                     var enriched = TerminalUniverseLoadPolicy.RequiresEtfMetadataEnrichment(universe, etfCache.Instruments)
                         ? await EnrichEtfMetadataAsync(etfCache.Instruments, cancellationToken)
                         : etfCache.Instruments;
-                    ApplyUniverse(universe, enriched, etfCache.OhlcByEpic, etfCache.OhlcByEpicAndResolution);
+                    var snapshot = persisted.Count > 0
+                        ? accumulator.MergeCached(enriched)
+                        : accumulator.PublishCached(enriched);
+                    PublishUniverseSnapshot(universe, snapshot, etfCache.OhlcByEpic, etfCache.OhlcByEpicAndResolution);
                     var source = etfCache.SourceAsOf is null ? "" : $" Source date {etfCache.SourceAsOf:yyyy-MM-dd}.";
                     StatusText.Text = $"{_instruments.Count} ETFs loaded from the cached ETF file.{source}";
-                    return;
                 }
             }
 
-            await LoadStocksFromApiAsync(cancellationToken);
+            await StartUniverseDiscoveryAsync(universe, cancellationToken, waitForDiscovery);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -189,10 +220,137 @@ public partial class CapComTerminalWindow : Window
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"Cached {UniverseLabel(universe).ToLowerInvariant()} load failed; trying Capital.com API. {ex.Message}";
-            await LoadUniverseFromApiAsync(universe, cancellationToken);
+            StatusText.Text = $"Cached {UniverseLabel(universe).ToLowerInvariant()} load failed; refreshing from Capital.com. {ex.Message}";
+            await StartUniverseDiscoveryAsync(universe, cancellationToken, waitForDiscovery);
         }
     }
+
+    private TerminalUniverseAccumulator GetUniverseAccumulator(TerminalUniverseKind universe)
+    {
+        if (_universeAccumulators.TryGetValue(universe, out var accumulator)) return accumulator;
+        accumulator = new TerminalUniverseAccumulator(universe);
+        _universeAccumulators[universe] = accumulator;
+        return accumulator;
+    }
+
+    private async Task StartUniverseDiscoveryAsync(
+        TerminalUniverseKind universe,
+        CancellationToken cancellationToken,
+        bool waitForDiscovery)
+    {
+        if (_universeDiscoveryUniverse != universe || _universeDiscoveryTask is null || _universeDiscoveryTask.IsCompleted)
+        {
+            _universeDiscoveryRefresh?.Cancel();
+            _universeDiscoveryRefresh = CancellationTokenSource.CreateLinkedTokenSource(_windowLifetime.Token, cancellationToken);
+            _universeDiscoveryUniverse = universe;
+            _universeDiscoveryTask = RefreshUniverseInBackgroundAsync(universe, _universeDiscoveryRefresh.Token);
+        }
+
+        if (waitForDiscovery && _universeDiscoveryTask is not null)
+        {
+            await _universeDiscoveryTask;
+        }
+    }
+
+    private async Task RefreshUniverseInBackgroundAsync(TerminalUniverseKind universe, CancellationToken cancellationToken)
+    {
+        const int batchSize = 100;
+        try
+        {
+            AppendActivity(TerminalActivitySeverity.Info, "Universe discovery", $"Refreshing {UniverseLabel(universe).ToLowerInvariant()} in the background.");
+            await PublishTerminalActivityAsync();
+            var markets = await _api.SearchMarketsAsync(TerminalUniverseLoadPolicy.ApiSearchTerm(universe, ""), cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            var normalized = TerminalUniverseLoadPolicy.NormalizeApiFallback(universe, markets, _knownEtfEpics);
+            if (universe == TerminalUniverseKind.Crypto && normalized.Any(CryptoMarketMetadataEnricher.NeedsEnrichment))
+            {
+                normalized = (await _cryptoMetadataEnricher.EnrichAsync(normalized, null, cancellationToken)).ToList();
+                normalized = TerminalUniverseLoadPolicy.NormalizeApiFallback(universe, normalized, _knownEtfEpics);
+            }
+
+            var accumulator = GetUniverseAccumulator(universe);
+            var batches = normalized.Chunk(batchSize).ToArray();
+            if (batches.Length == 0)
+            {
+                PublishUniverseSnapshot(
+                    universe,
+                    accumulator.MergeDiscoveryBatch([], 0, isComplete: true),
+                    CachedCandles(universe),
+                    CachedCandlesByResolution(universe));
+            }
+            else
+            {
+                for (var index = 0; index < batches.Length; index++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var snapshot = accumulator.MergeDiscoveryBatch(
+                        batches[index],
+                        normalized.Count,
+                        isComplete: index == batches.Length - 1);
+                    await Dispatcher.InvokeAsync(() => PublishUniverseSnapshot(
+                        universe,
+                        snapshot,
+                        CachedCandles(universe),
+                        CachedCandlesByResolution(universe)));
+                    await Task.Delay(TimeSpan.FromMilliseconds(40), cancellationToken);
+                }
+            }
+
+            AppendActivity(TerminalActivitySeverity.Success, "Universe discovery", $"{normalized.Count} {UniverseLabel(universe).ToLowerInvariant()} discovered.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            AppendActivity(TerminalActivitySeverity.Info, "Universe discovery", $"{UniverseLabel(universe)} refresh cancelled.");
+        }
+        catch (Exception ex)
+        {
+            AppendActivity(TerminalActivitySeverity.Warning, "Universe discovery", $"{UniverseLabel(universe)} refresh failed.", ex.Message);
+            if (!_windowLifetime.IsClosing && SelectedUniverse() == universe)
+            {
+                StatusText.Text = $"{UniverseLabel(universe)} refresh failed: {ex.Message}";
+            }
+        }
+        finally
+        {
+            if (!_windowLifetime.IsClosing) await PublishTerminalActivityAsync();
+        }
+    }
+
+    private void PublishUniverseSnapshot(
+        TerminalUniverseKind universe,
+        TerminalUniverseSnapshot snapshot,
+        IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> candlesByResolution,
+        bool persist = true)
+    {
+        if (SelectedUniverse() == universe)
+        {
+            var selection = GetUniverseAccumulator(universe).PreserveSelection(CaptureUniverseSelection(), snapshot);
+            ApplyUniverse(universe, snapshot.Instruments, candles, candlesByResolution, selection);
+            if (snapshot.Progress.Stage == TerminalUniverseStage.Discovering)
+            {
+                StatusText.Text = $"Discovering {UniverseLabel(universe).ToLowerInvariant()}: {snapshot.Progress.Discovered}/{snapshot.Progress.TotalDiscovered}.";
+            }
+        }
+
+        if (!persist) return;
+        try
+        {
+            _universeCache.Save(universe, snapshot.Instruments);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> CachedCandles(TerminalUniverseKind universe) =>
+        _candlesByUniverse.TryGetValue(universe, out var candles) ? candles : EmptyCandles();
+
+    private IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> CachedCandlesByResolution(TerminalUniverseKind universe) =>
+        _candlesByUniverseByResolution.TryGetValue(universe, out var candles) ? candles : EmptyCandlesByResolution();
 
     private async void BuildSynthetic_Click(object sender, RoutedEventArgs e)
     {
@@ -1031,12 +1189,17 @@ public partial class CapComTerminalWindow : Window
         ResolutionBox.IsEnabled = enabled;
     }
 
-    private void RebuildBlocks()
+    private void RebuildBlocks(TerminalUniverseSelection? selection = null)
     {
         var controls = _universeUi.BuildControls(_instruments);
+        var selectedBlock = !string.IsNullOrWhiteSpace(selection?.Block) &&
+                            controls.Blocks.Contains(selection.Block, StringComparer.OrdinalIgnoreCase)
+            ? selection.Block
+            : controls.SelectedBlock;
         BlockBox.ItemsSource = controls.Blocks;
-        BlockBox.SelectedItem = controls.SelectedBlock;
-        ApplySeedOptions(controls.SeedOptions);
+        BlockBox.SelectedItem = selectedBlock;
+        ApplySeedOptions(_universeUi.BuildSeedOptions(_instruments, selectedBlock));
+        if (selection is not null) SearchBox.Text = selection.SeedText;
     }
 
     private void RefreshSavedBaskets(string? selectedName = null) =>
@@ -1338,8 +1501,10 @@ public partial class CapComTerminalWindow : Window
         TerminalUniverseKind universe,
         IReadOnlyList<MarketInstrument> instruments,
         IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> candles,
-        IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> candlesByResolution)
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>>> candlesByResolution,
+        TerminalUniverseSelection? selection = null)
     {
+        selection ??= CaptureUniverseSelection();
         var accepted = instruments.Where(item => TerminalUniverse.Accepts(universe, item, _knownEtfEpics)).ToList();
         if (universe == TerminalUniverseKind.Crypto)
         {
@@ -1352,8 +1517,11 @@ public partial class CapComTerminalWindow : Window
         _instruments.AddRange(accepted);
         _cachedCandlesByEpic = candles;
         _cachedCandlesByEpicByResolution = candlesByResolution;
-        RebuildBlocks();
+        RebuildBlocks(selection);
     }
+
+    private TerminalUniverseSelection CaptureUniverseSelection() =>
+        new(SelectedBlock(), SearchBox?.Text ?? "");
 
     private static IReadOnlyDictionary<string, IReadOnlyList<OhlcPoint>> EmptyCandles() =>
         new Dictionary<string, IReadOnlyList<OhlcPoint>>(StringComparer.OrdinalIgnoreCase);
