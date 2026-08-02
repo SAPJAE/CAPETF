@@ -1,4 +1,6 @@
 using System.IO;
+using System.Net;
+using System.Net.Http;
 using System.Text.Json;
 
 namespace CAPETF.Desktop;
@@ -22,6 +24,62 @@ public sealed record TerminalUniverseSnapshot(
     TerminalUniverseProgress Progress);
 
 public sealed record TerminalUniverseSelection(string Block, string SeedText);
+
+public readonly record struct TerminalUniverseRefresh(long Generation, TerminalUniverseKind Universe);
+
+public sealed class TerminalUniverseRefreshGate
+{
+    private readonly object _gate = new();
+    private long _generation;
+    private TerminalUniverseRefresh? _current;
+
+    public TerminalUniverseRefresh Begin(TerminalUniverseKind universe)
+    {
+        lock (_gate)
+        {
+            var refresh = new TerminalUniverseRefresh(++_generation, universe);
+            _current = refresh;
+            return refresh;
+        }
+    }
+
+    public bool IsCurrent(TerminalUniverseRefresh refresh)
+    {
+        lock (_gate)
+        {
+            return _current == refresh;
+        }
+    }
+}
+
+public static class TerminalUniverseDiscoveryRetryPolicy
+{
+    public const int MaximumAttempts = 3;
+
+    public static bool ShouldRetry(Exception exception, int failedAttempt) =>
+        failedAttempt < MaximumAttempts && IsTransient(exception);
+
+    public static bool IsTransient(Exception exception) => exception switch
+    {
+        CapitalApiException capital => IsTransient(capital.StatusCode),
+        HttpRequestException request when request.StatusCode is { } status => IsTransient(status),
+        HttpRequestException => true,
+        TimeoutException => true,
+        _ => false,
+    };
+
+    public static TimeSpan BackoffForFailedAttempt(int failedAttempt)
+    {
+        if (failedAttempt < 1) throw new ArgumentOutOfRangeException(nameof(failedAttempt));
+        var multiplier = 1 << Math.Min(failedAttempt - 1, 3);
+        return TimeSpan.FromMilliseconds(350 * multiplier);
+    }
+
+    private static bool IsTransient(HttpStatusCode status) =>
+        status == HttpStatusCode.TooManyRequests ||
+        status == HttpStatusCode.RequestTimeout ||
+        (int)status >= 500;
+}
 
 public sealed class TerminalUniverseAccumulator
 {
@@ -52,6 +110,14 @@ public sealed class TerminalUniverseAccumulator
     {
         ArgumentNullException.ThrowIfNull(instruments);
         Add(instruments, replaceExisting: false);
+        _cached = _instruments.Count;
+        return Snapshot(TerminalUniverseStage.Cached, isComplete: false);
+    }
+
+    public TerminalUniverseSnapshot ReplaceCachedMetadata(IReadOnlyList<MarketInstrument> instruments)
+    {
+        ArgumentNullException.ThrowIfNull(instruments);
+        Add(instruments, replaceExisting: true);
         _cached = _instruments.Count;
         return Snapshot(TerminalUniverseStage.Cached, isComplete: false);
     }

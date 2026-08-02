@@ -53,6 +53,11 @@ public static class SyntheticBasketBuilderTests
         TerminalUniverseAccumulatorReportsStagedProgress();
         TerminalUniverseCacheRoundTripsMergedSnapshots();
         CapComTerminalProgressivelyDiscoversUniversesWithoutBlockingControls();
+        TerminalUniverseRefreshGateRejectsLateDiscoveryOwnership();
+        TerminalUniverseDiscoveryRetryPolicyBoundsRateLimitAndTransientRetries();
+        CapComTerminalPublishesRawEtfsBeforeBackgroundEnrichment();
+        CapComTerminalFencesAndPacesBackgroundUniverseDiscovery();
+        CapComTerminalSerializesDiscoveryRequestsAcrossRapidSwitches();
     }
 
     public static void RunAll()
@@ -2525,6 +2530,84 @@ public static class SyntheticBasketBuilderTests
                 throw new Exception($"progressive universe loading missing {required}");
             }
         }
+    }
+
+    private static void TerminalUniverseRefreshGateRejectsLateDiscoveryOwnership()
+    {
+        var gate = new TerminalUniverseRefreshGate();
+        var stocksFirst = gate.Begin(TerminalUniverseKind.Stocks);
+        var etfs = gate.Begin(TerminalUniverseKind.ETFs);
+        var stocksSecond = gate.Begin(TerminalUniverseKind.Stocks);
+
+        AssertTrue(!gate.IsCurrent(stocksFirst), "a stale Stocks refresh must not merge or persist after an ETF switch");
+        AssertTrue(!gate.IsCurrent(etfs), "a stale ETF refresh must not merge or persist after switching back to Stocks");
+        AssertTrue(gate.IsCurrent(stocksSecond), "only the newest refresh generation may publish universe results");
+        AssertTrue(stocksSecond.Generation > stocksFirst.Generation, "refresh generations must advance across rapid universe switches");
+    }
+
+    private static void TerminalUniverseDiscoveryRetryPolicyBoundsRateLimitAndTransientRetries()
+    {
+        var rateLimited = new CapitalApiException(HttpStatusCode.TooManyRequests, "Too Many Requests", "{}");
+        var unavailable = new CapitalApiException(HttpStatusCode.ServiceUnavailable, "Unavailable", "{}");
+        var invalid = new CapitalApiException(HttpStatusCode.BadRequest, "Bad Request", "{}");
+
+        AssertTrue(TerminalUniverseDiscoveryRetryPolicy.IsTransient(rateLimited), "HTTP 429 discovery failures must be retryable");
+        AssertTrue(TerminalUniverseDiscoveryRetryPolicy.IsTransient(unavailable), "HTTP 503 discovery failures must be retryable");
+        AssertTrue(!TerminalUniverseDiscoveryRetryPolicy.IsTransient(invalid), "permanent discovery failures must not be retried");
+        AssertTrue(TerminalUniverseDiscoveryRetryPolicy.ShouldRetry(rateLimited, failedAttempt: 1), "first 429 must retry");
+        AssertTrue(TerminalUniverseDiscoveryRetryPolicy.ShouldRetry(rateLimited, failedAttempt: 2), "second 429 must retry within the bounded limit");
+        AssertTrue(!TerminalUniverseDiscoveryRetryPolicy.ShouldRetry(rateLimited, failedAttempt: 3), "discovery retries must be bounded");
+        AssertTrue(
+            TerminalUniverseDiscoveryRetryPolicy.BackoffForFailedAttempt(2) > TerminalUniverseDiscoveryRetryPolicy.BackoffForFailedAttempt(1),
+            "discovery retry backoff must increase between attempts");
+    }
+
+    private static void CapComTerminalPublishesRawEtfsBeforeBackgroundEnrichment()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        var etfBranch = source.IndexOf("var etfCache = EnsureEtfCatalogLoaded();", StringComparison.Ordinal);
+        var rawCache = source.IndexOf("rawCachedEtfs = etfCache.Instruments", etfBranch, StringComparison.Ordinal);
+        var rawPublish = source.IndexOf("PublishUniverseSnapshot(universe, snapshot", rawCache, StringComparison.Ordinal);
+        var enrichment = source.IndexOf("EnrichCachedEtfUniverseInBackgroundAsync", etfBranch, StringComparison.Ordinal);
+
+        AssertTrue(etfBranch >= 0 && rawCache > etfBranch && rawPublish > rawCache, "ETF cache loading must publish the raw cache immediately");
+        AssertTrue(enrichment > rawPublish, "ETF enrichment must be scheduled only after raw cached ETFs are visible");
+    }
+
+    private static void CapComTerminalFencesAndPacesBackgroundUniverseDiscovery()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        foreach (var required in new[]
+        {
+            "TerminalUniverseRefreshGate",
+            "SearchMarketsWithRetryAsync",
+            "WaitForUniverseDiscoveryRequestSlotAsync",
+            "minimumUniverseDiscoveryRequestSpacing",
+            "TerminalUniverseDiscoveryRetryPolicy.ShouldRetry",
+            "TerminalUniverseDiscoveryRetryPolicy.BackoffForFailedAttempt",
+            "IsCurrent(refresh)",
+            "refresh.Generation",
+            "LoadUniverseAsync(SelectedUniverse(), cancellationToken, waitForDiscovery: true)",
+        })
+        {
+            if (!source.Contains(required, StringComparison.Ordinal))
+            {
+                throw new Exception($"universe discovery fencing or pacing missing {required}");
+            }
+        }
+    }
+
+    private static void CapComTerminalSerializesDiscoveryRequestsAcrossRapidSwitches()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        var search = source.IndexOf("private async Task<IReadOnlyList<MarketInstrument>> SearchMarketsWithRetryAsync", StringComparison.Ordinal);
+        var requestGate = source.IndexOf("await _universeDiscoveryRequestGate.WaitAsync", search, StringComparison.Ordinal);
+        var request = source.IndexOf("await _api.SearchMarketsAsync", search, StringComparison.Ordinal);
+        var release = source.IndexOf("_universeDiscoveryRequestGate.Release()", request, StringComparison.Ordinal);
+
+        AssertTrue(
+            search >= 0 && requestGate > search && request > requestGate && release > request,
+            "the discovery request gate must remain held until the Capital.com search request settles");
     }
 
     private static void EncryptedEtfCacheKeepsOnlyEtfInstruments()
