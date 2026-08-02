@@ -2102,6 +2102,19 @@ public static class SyntheticTradingTests
             frozen,
             new SyntheticPreflightResult(true, refreshed, []));
 
+        var quoteDrift = refreshed with
+        {
+            RequestedNotional = refreshed.RequestedNotional + 25m,
+            Legs = refreshed.Legs.Select(leg => leg with
+            {
+                ReferencePrice = leg.ReferencePrice + 1m,
+                Notional = leg.Notional + leg.Quantity,
+            }).ToArray(),
+        };
+        SyntheticExecutionTicketRevalidation.Validate(
+            frozen,
+            new SyntheticPreflightResult(true, quoteDrift, []));
+
         var changedLeg = refreshed with
         {
             Legs = [refreshed.Legs[0] with { Quantity = refreshed.Legs[0].Quantity + 1m }],

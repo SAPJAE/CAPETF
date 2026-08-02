@@ -50,7 +50,22 @@ public static class SyntheticTerminalChartPayload
                 component.Instrument.Offer,
                 component.Instrument.LastTickAt,
                 QuoteStatus(component.Instrument.LastTickAt, observedAt))).ToList(),
+            GrossNotionalPerLot(basket),
             1m);
+    }
+
+    private static decimal? GrossNotionalPerLot(SyntheticBasket basket)
+    {
+        try
+        {
+            var buy = SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "BUY", 1m);
+            var sell = SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "SELL", 1m);
+            return Math.Max(buy.TotalExecutableNotional, sell.TotalExecutableNotional);
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     internal static string DrawingIdentity(SyntheticBasket basket) =>

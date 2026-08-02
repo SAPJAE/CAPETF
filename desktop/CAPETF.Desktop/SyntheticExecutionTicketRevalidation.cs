@@ -16,7 +16,6 @@ public static class SyntheticExecutionTicketRevalidation
         var refreshed = current.Ticket;
         if (!string.Equals(frozen.BasketId, refreshed.BasketId, StringComparison.Ordinal) ||
             !string.Equals(frozen.Side, refreshed.Side, StringComparison.OrdinalIgnoreCase) ||
-            frozen.RequestedNotional != refreshed.RequestedNotional ||
             frozen.BasketQuantity != refreshed.BasketQuantity ||
             !string.Equals(frozen.AccountId, refreshed.AccountId, StringComparison.Ordinal) ||
             frozen.UniverseKind != refreshed.UniverseKind ||

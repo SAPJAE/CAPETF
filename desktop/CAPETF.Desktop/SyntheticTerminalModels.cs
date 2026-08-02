@@ -50,6 +50,7 @@ public sealed record SyntheticTerminalPayload(
     IReadOnlyList<TerminalLinePoint> Ma200,
     string SelectionBasis,
     IReadOnlyList<TerminalComponentRow> Components,
+    decimal? GrossNotionalPerLot = null,
     decimal? SuggestedBasketQuantity = null);
 
 public static class SyntheticTerminalWorkspace

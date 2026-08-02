@@ -1852,12 +1852,13 @@
         : close;
       const syntheticLots = parseSyntheticLots(quantity.value);
       const currency = getField(payload, 'CurrencyLabel', 'currencyLabel', '');
+      const grossNotionalPerLot = Number(getField(payload, 'GrossNotionalPerLot', 'grossNotionalPerLot', NaN));
       document.getElementById('ticket-basket-price').textContent = Number.isFinite(basketPrice) && basketPrice > 0
         ? marginValue(basketPrice, currency)
         : 'n/a';
       document.getElementById('ticket-estimated-notional').textContent =
-        Number.isFinite(basketPrice) && basketPrice > 0 && syntheticLots !== null
-          ? marginValue(basketPrice * syntheticLots, currency)
+        Number.isFinite(grossNotionalPerLot) && grossNotionalPerLot > 0 && syntheticLots !== null
+          ? marginValue(grossNotionalPerLot * syntheticLots, currency)
           : 'n/a';
     }
 

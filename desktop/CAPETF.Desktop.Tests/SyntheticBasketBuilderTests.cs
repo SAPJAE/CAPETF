@@ -149,6 +149,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticQuoteUsesComponentPriceWhenDashboardInstrumentIsAbsent();
         SyntheticComponentDisplayPriceFallsBackToBaseline();
         SyntheticTerminalPayloadIncludesCandlesComponentsCurrencyAndMas();
+        TerminalPayloadUsesGrossExecutableNotionalForSignedFormula();
         TerminalPayloadDefinesOneFormulaAsOneSyntheticLot();
         SyntheticTerminalPayloadIncludesSelectionBasis();
         TerminalPayloadUsesComponentIdentityAndExplicitQuoteFreshness();
@@ -3261,6 +3262,49 @@ public static class SyntheticBasketBuilderTests
         if (payload.Components[1].Role != "Peer") throw new Exception("later components should be labelled as peer legs");
         AssertNear(21.4m, payload.Components[0].AnnualizedVolatilityPct, "component row should expose annualized volatility");
         AssertNear(54.2m, payload.Components[0].FourYearReturnPct, "component row should expose four-year return");
+    }
+
+    private static void TerminalPayloadUsesGrossExecutableNotionalForSignedFormula()
+    {
+        var basket = new SyntheticBasket
+        {
+            Symbol = "SYN-SIGNED",
+            Block = "US / USD / All",
+            Strategy = SyntheticStrategyKind.ManualFormula,
+        };
+        basket.Components.Add(new SyntheticComponent(new MarketInstrument
+        {
+            Epic = "LONG",
+            Currency = "USD",
+            Bid = 99m,
+            Offer = 101m,
+            LotSize = 2m,
+            MinDealSize = 0.1m,
+            MinSizeIncrement = 0.1m,
+        }, 50m, 0m, 0m) { FormulaMultiplier = 0.5m });
+        basket.Components.Add(new SyntheticComponent(new MarketInstrument
+        {
+            Epic = "SHORT",
+            Currency = "USD",
+            Bid = 49m,
+            Offer = 51m,
+            LotSize = 4m,
+            MinDealSize = 0.05m,
+            MinSizeIncrement = 0.05m,
+        }, 50m, 0m, 0m) { FormulaMultiplier = -0.25m });
+        basket.Candles.Add(new OhlcPoint(DateTimeOffset.Parse("2026-01-01T00:00:00Z"), 37.5m, 38m, 37m, 37.5m));
+
+        var buy = SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "BUY", 1m);
+        var sell = SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "SELL", 1m);
+        var payload = SyntheticTerminalChartPayload.Build(basket);
+
+        AssertNear(Math.Max(buy.TotalExecutableNotional, sell.TotalExecutableNotional), payload.GrossNotionalPerLot ?? 0m,
+            "ticket payload must expose gross executable exposure instead of the signed net chart price");
+        AssertTrue(payload.GrossNotionalPerLot > basket.Candles[^1].Close,
+            "opposing legs must not cancel out the displayed estimated notional");
+        var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
+        AssertTrue(html.Contains("grossNotionalPerLot * syntheticLots", StringComparison.Ordinal),
+            "the visible estimated notional must multiply host-computed gross exposure by synthetic lots");
     }
 
     private static void TerminalPayloadDefinesOneFormulaAsOneSyntheticLot()
