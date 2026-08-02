@@ -706,12 +706,12 @@ public static class SyntheticTradingTests
             setTerminalPreflight({ IsReady: false, Ticket: null, Failures: [{ Epic: 'AAPL', Reason: 'Market closed' }] });
             assert.equal(element('trade-readiness').textContent, 'Market closed');
             element('place-buy-basket').click();
-            assert.deepEqual(messages.pop(), { type: 'preflightBasket', side: 'BUY', basketNotional: 300 });
+            assert.deepEqual(messages.pop(), { type: 'preflightBasket', side: 'BUY', syntheticLots: 1 });
             setTerminalBusy(true, 'Preflighting synthetic basket');
             setTerminalBusy(false, '');
             assert.equal(element('place-buy-basket').disabled, false, 'host completion after failure must release the browser lock');
             element('place-buy-basket').click();
-            assert.deepEqual(messages.pop(), { type: 'preflightBasket', side: 'BUY', basketNotional: 300 });
+            assert.deepEqual(messages.pop(), { type: 'preflightBasket', side: 'BUY', syntheticLots: 1 });
 
             setTerminalPreflight({
               IsReady: true,
@@ -744,7 +744,7 @@ public static class SyntheticTradingTests
             assert.equal(messages.length, messagesBeforeStaleConfirm, 'revoked basket A ticket must not be emitted');
 
             element('place-buy-basket').click();
-            assert.deepEqual(messages.pop(), { type: 'preflightBasket', side: 'BUY', basketNotional: 300 });
+            assert.deepEqual(messages.pop(), { type: 'preflightBasket', side: 'BUY', syntheticLots: 1 });
             setTerminalPreflight({
               IsReady: true,
               Ticket: {
@@ -1218,14 +1218,14 @@ public static class SyntheticTradingTests
     private static void TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs()
     {
         using var preflightDocument = JsonDocument.Parse(
-            "{\"type\":\"preflightBasket\",\"side\":\"SELL\",\"basketNotional\":450}");
+            "{\"type\":\"preflightBasket\",\"side\":\"SELL\",\"syntheticLots\":3}");
         AssertTrue(
             SyntheticTradingBrowserRequestParser.TryParse(preflightDocument.RootElement, out var preflight, out var preflightError),
             $"valid preflight request must parse: {preflightError}");
         var preflightRequest = preflight as SyntheticPreflightBasketRequest
             ?? throw new Exception("preflight request type");
         AssertEqual("SELL", preflightRequest.Side, "preflight side");
-        AssertEqual(450m, preflightRequest.BasketNotional, "preflight notional");
+        AssertEqual(3m, preflightRequest.SyntheticLots, "preflight synthetic lots");
 
         var ticketId = Guid.Parse("11111111-1111-1111-1111-111111111111");
         using var executeDocument = JsonDocument.Parse(
@@ -1244,7 +1244,10 @@ public static class SyntheticTradingTests
 
         foreach (var unsafePayload in new[]
         {
-            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"basketNotional\":300,\"epic\":\"AAPL\"}",
+            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"syntheticLots\":3,\"epic\":\"AAPL\"}",
+            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"basketNotional\":300}",
+            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"syntheticLots\":1.5}",
+            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"syntheticLots\":0}",
             "{\"type\":\"executeBasket\",\"ticketId\":\"11111111-1111-1111-1111-111111111111\",\"direction\":\"SELL\"}",
             "{\"type\":\"executeBasket\",\"ticketId\":\"11111111-1111-1111-1111-111111111111\",\"quantity\":999}",
             "{\"type\":\"closeBasket\",\"executionId\":\"execution-123\",\"dealId\":\"attacker-deal\"}",
@@ -1770,8 +1773,8 @@ public static class SyntheticTradingTests
             "{}",
             "{\"type\":42}",
             "{\"type\":\"executeBasket\",\"ticketId\":\"not-a-guid\"}",
-            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"basketNotional\":\"300\"}",
-            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"basketNotional\":1e999}",
+            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"syntheticLots\":\"3\"}",
+            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"syntheticLots\":1e999}",
             "{\"type\":\"unknownAction\"}",
             "{",
         })
@@ -1794,7 +1797,7 @@ public static class SyntheticTradingTests
             "{}",
             "{\"type\":42}",
             "{\"type\":\"executeBasket\",\"ticketId\":\"not-a-guid\"}",
-            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"basketNotional\":\"300\"}",
+            "{\"type\":\"preflightBasket\",\"side\":\"BUY\",\"syntheticLots\":\"3\"}",
             "{\"type\":\"unknownAction\"}",
         };
         foreach (var payload in rejectedPayloads)

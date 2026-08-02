@@ -79,7 +79,8 @@ public sealed record SyntheticPreflightInput(
     SyntheticMarginSummary? Margin,
     string AccountId = "",
     bool HedgingMode = false,
-    TerminalUniverseKind? UniverseKind = null);
+    TerminalUniverseKind? UniverseKind = null,
+    decimal? SyntheticLots = null);
 
 public sealed record SyntheticPreflightFailure(string Epic, string Reason);
 

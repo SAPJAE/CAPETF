@@ -1413,9 +1413,9 @@
             <span id="trade-readiness-detail">Demo connection required</span>
           </div>
           <div id="quantity-row">
-            <label for="quantity">Basket quantity</label>
-            <span id="quantity-lots">n/a</span>
-            <input id="quantity" type="number" value="300" min="1" step="100" inputmode="decimal">
+            <label for="quantity">Synthetic lots</label>
+            <span id="quantity-lots">1 formula lot</span>
+            <input id="quantity" type="number" value="1" min="1" step="1" inputmode="numeric">
           </div>
           <div id="trade-actions">
             <button type="button" id="place-buy-basket" disabled>Place Buy Basket</button>
@@ -1596,7 +1596,6 @@
     const terminal = document.getElementById('terminal');
     const quantity = document.getElementById('quantity');
     const quantityLots = document.getElementById('quantity-lots');
-    let activeBasketLotSize = null;
     const intervalButtons = Array.from(document.querySelectorAll('.interval'));
     const modeButtons = Array.from(document.querySelectorAll('.mode'));
     const maButtons = Array.from(document.querySelectorAll('.ma'));
@@ -1692,7 +1691,7 @@
     let tradeOverlayCollapsed = false;
     let tradeDockPointerId = null;
     let tradeDockState = { height: 210, minimized: false, activeTab: 'positions' };
-    const INVALID_MARGIN_NOTIONAL = 'Enter a basket notional greater than 0.';
+    const INVALID_MARGIN_NOTIONAL = 'Enter a positive whole number of synthetic lots.';
     const SYNTHETIC_PRICE_FLOOR = -10;
     const RAIL_WIDTH_KEY = 'capcom-terminal-rail-width';
     const RAIL_MIN_WIDTH = 260;
@@ -1744,10 +1743,10 @@
       summary.dataset.state = stale ? 'stale' : 'ready';
     }
 
-    function parseBasketNotional(value) {
+    function parseSyntheticLots(value) {
       const raw = String(value ?? '').trim();
       const numeric = Number(raw);
-      return raw && Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+      return raw && Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
     }
 
     function parseRiskPlanLevel(value) {
@@ -1802,15 +1801,11 @@
     }
 
     function refreshTradingControls() {
-      const basketQuantity = parseBasketNotional(quantity.value);
-      const notionalValid = basketQuantity !== null;
-      if (basketQuantity !== null && Number.isFinite(activeBasketLotSize) && activeBasketLotSize > 0) {
-        const lots = Math.round(basketQuantity / activeBasketLotSize);
-        const exactLots = Math.abs((lots * activeBasketLotSize) - basketQuantity) <= Math.max(1e-12, activeBasketLotSize * 1e-9);
-        quantityLots.textContent = exactLots ? `${lots} lot${lots === 1 ? '' : 's'}` : 'off lot grid';
-      } else {
-        quantityLots.textContent = 'n/a';
-      }
+      const syntheticLots = parseSyntheticLots(quantity.value);
+      const notionalValid = syntheticLots !== null;
+      quantityLots.textContent = syntheticLots === null
+        ? 'positive whole lots only'
+        : `${syntheticLots} formula lot${syntheticLots === 1 ? '' : 's'}`;
       const connected = terminalTradingMode.isDemo && terminalTradingMode.executionEnabled;
       const busy = tradingIsBusy();
       const canPreflight = connected && hasTradableBasket() && notionalValid && !busy;
@@ -1848,8 +1843,8 @@
     }
 
     function requestBasketPreflight(side) {
-      const basketNotional = parseBasketNotional(quantity.value);
-      if (basketNotional === null) {
+      const syntheticLots = parseSyntheticLots(quantity.value);
+      if (syntheticLots === null) {
         setTradeReadiness('Invalid size', INVALID_MARGIN_NOTIONAL, 'danger');
         refreshTradingControls();
         return;
@@ -1862,7 +1857,7 @@
       partialExecutionAck.checked = false;
       terminalTradingOperation = `Preflighting ${side} basket`;
       refreshTradingControls();
-      if (!postHostAction({ type: 'preflightBasket', side, basketNotional })) {
+      if (!postHostAction({ type: 'preflightBasket', side, syntheticLots })) {
         terminalTradingOperation = '';
         refreshTradingControls();
         setTradeReadiness('Connection required', 'Desktop trading host unavailable.', 'danger');
@@ -2802,8 +2797,8 @@
 
     function scheduleMarginPreview() {
       window.clearTimeout(marginPreviewTimer);
-      const basketNotional = parseBasketNotional(quantity.value);
-      if (basketNotional === null) {
+      const syntheticLots = parseSyntheticLots(quantity.value);
+      if (syntheticLots === null) {
         cancelMarginPreview(INVALID_MARGIN_NOTIONAL);
         return;
       }
@@ -2811,7 +2806,7 @@
       marginPreviewTimer = window.setTimeout(() => {
         marginPreviewTimer = null;
         if (window.chrome && window.chrome.webview) {
-          window.chrome.webview.postMessage({ type: 'previewMargins', basketNotional });
+          window.chrome.webview.postMessage({ type: 'previewMargins', syntheticLots });
         }
       }, 200);
     }
@@ -3430,20 +3425,10 @@
         getField(nextPayload, 'Symbol', 'symbol', ''));
       const identityChanged = nextTerminalIdentity !== activeTerminalIdentity;
       activeTerminalIdentity = nextTerminalIdentity;
-      const suggestedBasketQuantity = Number(getField(
-        nextPayload, 'SuggestedBasketQuantity', 'suggestedBasketQuantity', NaN));
-      activeBasketLotSize = Number.isFinite(suggestedBasketQuantity) && suggestedBasketQuantity > 0
-        ? suggestedBasketQuantity
-        : null;
-      if (activeBasketLotSize !== null) {
-        quantity.min = String(suggestedBasketQuantity);
-        quantity.step = String(suggestedBasketQuantity);
-      } else {
-        quantity.min = '0.00000001';
-        quantity.step = 'any';
-      }
-      if (identityChanged && Number.isFinite(suggestedBasketQuantity) && suggestedBasketQuantity > 0) {
-        quantity.value = String(suggestedBasketQuantity);
+      quantity.min = '1';
+      quantity.step = '1';
+      if (identityChanged) {
+        quantity.value = '1';
       }
       pendingTerminalTick = null;
       if (terminalTickFrame !== null) cancelAnimationFrame(terminalTickFrame);
@@ -3771,15 +3756,15 @@
       setRailCollapsed(!workspace.classList.contains('ticket-hidden'));
     };
 
-    window.placeSyntheticPreviewOrder = function(side, basketNotional) {
-      const validatedNotional = parseBasketNotional(basketNotional);
-      if (validatedNotional === null) {
+    window.placeSyntheticPreviewOrder = function(side, syntheticLots) {
+      const validatedLots = parseSyntheticLots(syntheticLots);
+      if (validatedLots === null) {
         cancelMarginPreview(INVALID_MARGIN_NOTIONAL);
         document.getElementById('order-preview').textContent = INVALID_MARGIN_NOTIONAL;
         return;
       }
       if (window.chrome && window.chrome.webview) {
-        window.chrome.webview.postMessage({ type: 'previewOrder', side: String(side).toUpperCase(), basketNotional: validatedNotional });
+        window.chrome.webview.postMessage({ type: 'previewOrder', side: String(side).toUpperCase(), syntheticLots: validatedLots });
       } else {
         document.getElementById('order-preview').textContent = 'Desktop order preview host unavailable.';
       }

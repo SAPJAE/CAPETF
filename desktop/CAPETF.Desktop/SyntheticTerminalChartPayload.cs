@@ -50,20 +50,7 @@ public static class SyntheticTerminalChartPayload
                 component.Instrument.Offer,
                 component.Instrument.LastTickAt,
                 QuoteStatus(component.Instrument.LastTickAt, observedAt))).ToList(),
-            SuggestedBasketQuantity(basket));
-    }
-
-    private static decimal? SuggestedBasketQuantity(SyntheticBasket basket)
-    {
-        if (basket.Strategy != SyntheticStrategyKind.ManualFormula) return null;
-        try
-        {
-            return RatioPreservingBasketSizer.SmallestExecutableQuantity(basket.Components);
-        }
-        catch (RatioPreservingBasketSizingException)
-        {
-            return null;
-        }
+            1m);
     }
 
     internal static string DrawingIdentity(SyntheticBasket basket) =>

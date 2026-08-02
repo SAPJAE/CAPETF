@@ -21,7 +21,8 @@ public sealed record ExecutableOrderPreview(
     decimal TotalExecutableNotional,
     decimal MaxAbsoluteWeightImbalancePct,
     IReadOnlyList<ExecutableOrderLegPreview> Legs,
-    decimal? BasketQuantity = null);
+    decimal? BasketQuantity = null,
+    decimal? SyntheticLots = null);
 
 public static class SyntheticOrderSizing
 {
@@ -98,6 +99,63 @@ public static class SyntheticOrderSizing
             legs);
     }
 
+    public static ExecutableOrderPreview BuildSyntheticLotOrderPreview(
+        SyntheticBasket basket,
+        string side,
+        decimal syntheticLots)
+    {
+        ValidateSyntheticLots(syntheticLots);
+        if (basket.Components.Count == 0) throw new InvalidOperationException("Build a synthetic basket first.");
+
+        var normalizedSide = side.Equals("SELL", StringComparison.OrdinalIgnoreCase) ? "SELL" : "BUY";
+        var sized = basket.Components.Select(component =>
+        {
+            var legSide = component.FormulaMultiplier >= 0m ? normalizedSide : Opposite(normalizedSide);
+            var referencePrice = legSide == "BUY" ? component.Instrument.Offer : component.Instrument.Bid;
+            if (referencePrice is not > 0m)
+            {
+                throw new InvalidOperationException($"{component.Instrument.Epic} {legSide.ToLowerInvariant()} price is unavailable.");
+            }
+
+            var quantity = Math.Abs(component.FormulaMultiplier * syntheticLots);
+            ValidateExactDealQuantity(component, quantity);
+            var notional = quantity * referencePrice.Value * EffectiveLotSize(component.Instrument);
+            return (component, legSide, referencePrice: referencePrice.Value, quantity, notional);
+        }).ToList();
+        var totalNotional = sized.Sum(item => item.notional);
+        var legs = sized.Select(item =>
+        {
+            var actualWeight = totalNotional <= 0m ? 0m : item.notional / totalNotional * 100m;
+            return new ExecutableOrderLegPreview(
+                item.legSide,
+                item.component.Instrument.Epic,
+                item.referencePrice,
+                item.quantity,
+                item.notional,
+                item.component.Weight,
+                actualWeight,
+                actualWeight - item.component.Weight,
+                item.component.FormulaMultiplier);
+        }).ToList();
+
+        return new ExecutableOrderPreview(
+            normalizedSide,
+            totalNotional,
+            totalNotional,
+            legs.Max(leg => Math.Abs(leg.WeightImbalancePct)),
+            legs,
+            syntheticLots,
+            syntheticLots);
+    }
+
+    public static void ValidateSyntheticLots(decimal syntheticLots)
+    {
+        if (syntheticLots <= 0m || syntheticLots != decimal.Truncate(syntheticLots))
+        {
+            throw new ArgumentOutOfRangeException(nameof(syntheticLots), "Synthetic lots must be a positive whole number.");
+        }
+    }
+
     private static ExecutableOrderPreview BuildManualExecutableOrderPreview(
         SyntheticBasket basket,
         string normalizedSide,
@@ -160,6 +218,30 @@ public static class SyntheticOrderSizing
     }
 
     private static decimal? PositiveOrNull(decimal? value) => value is > 0 ? value : null;
+
+    private static void ValidateExactDealQuantity(SyntheticComponent component, decimal quantity)
+    {
+        var instrument = component.Instrument;
+        if (quantity <= 0m)
+        {
+            throw new InvalidOperationException($"{instrument.Epic} formula quantity must be positive.");
+        }
+        if (instrument.MinDealSize is > 0m && quantity < instrument.MinDealSize.Value)
+        {
+            throw new InvalidOperationException(
+                $"{instrument.Epic} formula quantity {quantity:G29} is below minimum deal size {instrument.MinDealSize.Value:G29}.");
+        }
+        if (instrument.MaxDealSize is > 0m && quantity > instrument.MaxDealSize.Value)
+        {
+            throw new InvalidOperationException(
+                $"{instrument.Epic} formula quantity {quantity:G29} exceeds maximum deal size {instrument.MaxDealSize.Value:G29}.");
+        }
+        if (instrument.MinSizeIncrement is > 0m && quantity % instrument.MinSizeIncrement.Value != 0m)
+        {
+            throw new InvalidOperationException(
+                $"{instrument.Epic} formula quantity {quantity:G29} is not aligned to size step {instrument.MinSizeIncrement.Value:G29}.");
+        }
+    }
 
     private static decimal EffectiveLotSize(MarketInstrument instrument) =>
         instrument.LotSize is > 0 ? instrument.LotSize.Value : 1m;

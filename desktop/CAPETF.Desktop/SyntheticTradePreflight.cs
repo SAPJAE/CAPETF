@@ -19,7 +19,15 @@ public static class SyntheticTradePreflight
         if (string.IsNullOrWhiteSpace(input.AccountId)) globalFailures.Add(Failure("Active Capital.com account is required."));
         if (!input.HedgingMode) globalFailures.Add(Failure("Capital.com hedging mode is required."));
         if (string.IsNullOrWhiteSpace(input.BasketId)) globalFailures.Add(Failure("Basket ID is required."));
-        if (input.RequestedNotional <= 0m) globalFailures.Add(Failure("Requested notional must be positive."));
+        if (input.RequestedNotional <= 0m)
+        {
+            globalFailures.Add(Failure("Requested notional must be positive."));
+        }
+        if (input.SyntheticLots is decimal requestedLots &&
+            (requestedLots <= 0m || requestedLots != decimal.Truncate(requestedLots)))
+        {
+            globalFailures.Add(Failure("Synthetic lots must be a positive whole number."));
+        }
         if (side is null) globalFailures.Add(Failure("Side must be BUY or SELL."));
         var validComponentCount = isManual
             ? input.Basket.Components.Count is >= 2 and <= 4
@@ -102,7 +110,9 @@ public static class SyntheticTradePreflight
         {
             try
             {
-                executable = SyntheticOrderSizing.BuildExecutableOrderPreview(input.Basket, side ?? "BUY", input.RequestedNotional);
+                executable = input.SyntheticLots is decimal syntheticLots
+                    ? SyntheticOrderSizing.BuildSyntheticLotOrderPreview(input.Basket, side ?? "BUY", syntheticLots)
+                    : SyntheticOrderSizing.BuildExecutableOrderPreview(input.Basket, side ?? "BUY", input.RequestedNotional);
                 for (var index = 0; index < executable.Legs.Count; index++)
                 {
                     if (!IsValidRoundedSize(executable.Legs[index].Quantity, input.Basket.Components[index].Instrument))
@@ -120,15 +130,19 @@ public static class SyntheticTradePreflight
                 if (string.IsNullOrWhiteSpace(exception.Epic)) globalFailures.Add(Failure(exception.Message));
                 else legFailures.Add(Failure(exception.Epic, exception.Message));
             }
-            catch (InvalidOperationException)
+            catch (InvalidOperationException exception)
             {
-                globalFailures.Add(Failure("Executable order sizing is unavailable."));
+                globalFailures.Add(Failure(exception.Message));
             }
         }
 
         var margin = side is null ? null : MarginForSide(input.Margin, side);
         var manualMarginIsConsistent = !isManual ||
-            (executable is not null && IsValidManualMarginSnapshot(input.Margin, input.Basket, input.RequestedNotional));
+            (executable is not null && IsValidManualMarginSnapshot(
+                input.Margin,
+                input.Basket,
+                input.RequestedNotional,
+                input.SyntheticLots));
         if (margin is null || !margin.IsAvailable || margin.TotalMargin is null || input.Margin?.IsAccountStale == true)
         {
             globalFailures.Add(Failure("Margin preview is unavailable."));
@@ -186,14 +200,14 @@ public static class SyntheticTradePreflight
             Guid.NewGuid().ToString("N"),
             input.BasketId,
             executable.Side,
-            input.RequestedNotional,
+            input.SyntheticLots is null ? input.RequestedNotional : executable.TotalExecutableNotional,
             input.NowUtc,
             input.NowUtc.Add(TicketLifetime),
             margin.TotalMargin.Value,
             margin.AccountCurrency,
             Array.AsReadOnly(legs),
             input.AccountId,
-            executable.BasketQuantity,
+            input.SyntheticLots ?? executable.BasketQuantity,
             input.UniverseKind ?? input.Basket.UniverseKind);
 
         return new SyntheticPreflightResult(true, ticket, Array.Empty<SyntheticPreflightFailure>());
@@ -202,7 +216,8 @@ public static class SyntheticTradePreflight
     private static bool IsValidManualMarginSnapshot(
         SyntheticMarginSummary? summary,
         SyntheticBasket basket,
-        decimal basketQuantity)
+        decimal basketQuantity,
+        decimal? syntheticLots)
     {
         if (summary is null ||
             summary.Buy is null ||
@@ -216,8 +231,12 @@ public static class SyntheticTradePreflight
 
         try
         {
-            var buy = SyntheticOrderSizing.BuildExecutableOrderPreview(basket, "BUY", basketQuantity);
-            var sell = SyntheticOrderSizing.BuildExecutableOrderPreview(basket, "SELL", basketQuantity);
+            var buy = syntheticLots is decimal buyLots
+                ? SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "BUY", buyLots)
+                : SyntheticOrderSizing.BuildExecutableOrderPreview(basket, "BUY", basketQuantity);
+            var sell = syntheticLots is decimal sellLots
+                ? SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "SELL", sellLots)
+                : SyntheticOrderSizing.BuildExecutableOrderPreview(basket, "SELL", basketQuantity);
             if (!IsValidManualMarginSide(summary.Buy, buy, basket, summary.AccountCurrency) ||
                 !IsValidManualMarginSide(summary.Sell, sell, basket, summary.AccountCurrency) ||
                 !SameCurrency(summary.Buy.NativeCurrency, summary.Sell.NativeCurrency) ||

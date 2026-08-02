@@ -59,7 +59,7 @@ public partial class CapComTerminalWindow : Window
     private bool _streamReconnectScheduled;
     private string _terminalDrawingIdentity = "";
     private CancellationTokenSource? _marginPreviewRefresh;
-    private decimal _marginPreviewNotional = 300m;
+    private decimal _marginPreviewNotional = 1m;
     private readonly Task _brokerRefreshLoop;
 
     public CapComTerminalWindow()
@@ -1496,7 +1496,7 @@ public partial class CapComTerminalWindow : Window
 
     private async Task PreflightSyntheticBasketAsync(
         string side,
-        decimal basketNotional,
+        decimal syntheticLots,
         CancellationToken cancellationToken)
     {
         if (_basket is null)
@@ -1535,19 +1535,20 @@ public partial class CapComTerminalWindow : Window
         }
         var accountId = _api.Session?.CurrentAccountId ?? "";
         _marginPreview.InvalidateCaches();
-        var margin = await _marginPreview.BuildAsync(freshBasket, basketNotional, cancellationToken);
+        var margin = await _marginPreview.BuildAsync(freshBasket, syntheticLots, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         var result = SyntheticTradePreflight.Build(new SyntheticPreflightInput(
             _api.IsDemoTradingSession,
             SyntheticTerminalChartPayload.DrawingIdentity(freshBasket),
             freshBasket,
             side,
-            basketNotional,
+            syntheticLots,
             DateTimeOffset.UtcNow,
             margin,
             accountId,
             preferences.HedgingMode,
-            basket.UniverseKind ?? SelectedUniverse()));
+            basket.UniverseKind ?? SelectedUniverse(),
+            syntheticLots));
         result = _tradingCoordinator.RegisterPreflight(result);
         await PublishTerminalPreflightAsync(result);
     }
@@ -1651,18 +1652,21 @@ public partial class CapComTerminalWindow : Window
         var currentBasket = snapshotResult.Basket;
         var preferences = await _api.GetAccountPreferencesAsync(cancellationToken);
         _marginPreview.InvalidateCaches();
-        var margin = await _marginPreview.BuildAsync(currentBasket, frozenTicket.RequestedNotional, cancellationToken);
+        var syntheticLots = frozenTicket.BasketQuantity
+            ?? throw new InvalidOperationException("The confirmed ticket does not contain a synthetic lot count.");
+        var margin = await _marginPreview.BuildAsync(currentBasket, syntheticLots, cancellationToken);
         var current = SyntheticTradePreflight.Build(new SyntheticPreflightInput(
             _api.IsDemoTradingSession,
             SyntheticTerminalChartPayload.DrawingIdentity(currentBasket),
             currentBasket,
             frozenTicket.Side,
-            frozenTicket.RequestedNotional,
+            syntheticLots,
             DateTimeOffset.UtcNow,
             margin,
             _api.Session?.CurrentAccountId ?? "",
             preferences.HedgingMode,
-            frozenTicket.UniverseKind));
+            frozenTicket.UniverseKind,
+            syntheticLots));
         SyntheticExecutionTicketRevalidation.Validate(frozenTicket, current);
     }
 
@@ -2023,7 +2027,7 @@ public partial class CapComTerminalWindow : Window
             case SyntheticPreflightBasketRequest preflight:
                 await RunOperationAsync(
                     "Preflighting synthetic basket",
-                    token => PreflightSyntheticBasketAsync(preflight.Side, preflight.BasketNotional, token));
+                    token => PreflightSyntheticBasketAsync(preflight.Side, preflight.SyntheticLots, token));
                 break;
             case SyntheticExecuteBasketRequest execute:
                 await ExecuteSyntheticBasketAsync(execute.TicketId);
@@ -2049,7 +2053,7 @@ public partial class CapComTerminalWindow : Window
                 break;
             case SyntheticPreviewMarginsRequest previewMargins:
                 if (!SyntheticMarginPreviewInput.TryValidate(
-                        previewMargins.BasketNotional,
+                        previewMargins.SyntheticLots,
                         out var validatedNotional,
                         out var inputError))
                 {
@@ -2062,7 +2066,7 @@ public partial class CapComTerminalWindow : Window
                 ScheduleMarginPreview(validatedNotional);
                 break;
             case SyntheticPreviewOrderRequest previewOrder:
-                PreviewSyntheticOrder(previewOrder.Side, previewOrder.BasketNotional);
+                PreviewSyntheticOrder(previewOrder.Side, previewOrder.SyntheticLots);
                 break;
             case SyntheticSetRiskPlanRequest setRiskPlan:
                 await SetSyntheticRiskPlanAsync(setRiskPlan);
@@ -2128,7 +2132,7 @@ public partial class CapComTerminalWindow : Window
         }
     }
 
-    private void PreviewSyntheticOrder(string side, decimal? requestedBasketNotional = null)
+    private void PreviewSyntheticOrder(string side, decimal? requestedSyntheticLots = null)
     {
         if (_basket is null)
         {
@@ -2136,7 +2140,7 @@ public partial class CapComTerminalWindow : Window
             return;
         }
 
-        decimal? inputNotional = requestedBasketNotional;
+        decimal? inputNotional = requestedSyntheticLots;
         if (inputNotional is null && decimal.TryParse(QuantityBox.Text, out var enteredNotional))
         {
             inputNotional = enteredNotional;
@@ -2150,7 +2154,7 @@ public partial class CapComTerminalWindow : Window
         }
         try
         {
-            var preview = SyntheticOrderSizing.BuildExecutableOrderPreview(_basket, side, basketNotional);
+            var preview = SyntheticOrderSizing.BuildSyntheticLotOrderPreview(_basket, side, basketNotional);
             var rows = preview.Legs.Select(leg =>
                 $"{leg.Side} {leg.Quantity:0.####} x {leg.Epic} @ {leg.ReferencePrice:0.#####} = {leg.Notional:0.##} ({leg.WeightImbalancePct:+0.##;-0.##;0}pp)");
             OrderPreviewText.Text = $"Executable {preview.TotalExecutableNotional:0.##}; max imbalance {preview.MaxAbsoluteWeightImbalancePct:0.##}pp" +

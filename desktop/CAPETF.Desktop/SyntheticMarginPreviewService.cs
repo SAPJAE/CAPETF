@@ -27,18 +27,18 @@ internal static class SyntheticMarginPreviewPublication
 
 internal static class SyntheticMarginPreviewInput
 {
-    public const string InvalidReason = "Enter a basket notional greater than 0.";
+    public const string InvalidReason = "Enter a positive whole number of synthetic lots.";
 
-    public static bool TryValidate(decimal? value, out decimal basketNotional, out string error)
+    public static bool TryValidate(decimal? value, out decimal syntheticLots, out string error)
     {
-        if (value is > 0)
+        if (value is > 0 && value.Value == decimal.Truncate(value.Value))
         {
-            basketNotional = value.Value;
+            syntheticLots = value.Value;
             error = "";
             return true;
         }
 
-        basketNotional = 0m;
+        syntheticLots = 0m;
         error = InvalidReason;
         return false;
     }
@@ -101,13 +101,13 @@ internal sealed class SyntheticMarginPreviewService
             basketCurrency,
             account.Currency.Trim(),
             cancellationToken);
-        var buy = SyntheticMarginCalculator.CalculateSide(
+        var buy = SyntheticMarginCalculator.CalculateSyntheticLotsSide(
             basket,
             "BUY",
             basketNotional,
             account.Currency,
             conversionRate);
-        var sell = SyntheticMarginCalculator.CalculateSide(
+        var sell = SyntheticMarginCalculator.CalculateSyntheticLotsSide(
             basket,
             "SELL",
             basketNotional,

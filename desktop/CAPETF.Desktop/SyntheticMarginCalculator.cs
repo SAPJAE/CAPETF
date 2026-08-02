@@ -41,6 +41,26 @@ public static class SyntheticMarginCalculator
         decimal conversionRate)
     {
         var executable = SyntheticOrderSizing.BuildExecutableOrderPreview(basket, side, basketNotional);
+        return CalculateSide(basket, executable, accountCurrency, conversionRate);
+    }
+
+    public static SyntheticMarginSidePreview CalculateSyntheticLotsSide(
+        SyntheticBasket basket,
+        string side,
+        decimal syntheticLots,
+        string accountCurrency,
+        decimal conversionRate)
+    {
+        var executable = SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, side, syntheticLots);
+        return CalculateSide(basket, executable, accountCurrency, conversionRate);
+    }
+
+    private static SyntheticMarginSidePreview CalculateSide(
+        SyntheticBasket basket,
+        ExecutableOrderPreview executable,
+        string accountCurrency,
+        decimal conversionRate)
+    {
         if (conversionRate <= 0)
         {
             return Unavailable(executable.Side, accountCurrency, $"Margin conversion to {accountCurrency} is unavailable.");

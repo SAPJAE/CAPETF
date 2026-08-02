@@ -132,7 +132,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticQuoteUsesComponentPriceWhenDashboardInstrumentIsAbsent();
         SyntheticComponentDisplayPriceFallsBackToBaseline();
         SyntheticTerminalPayloadIncludesCandlesComponentsCurrencyAndMas();
-        ManualTerminalPayloadSuggestsSmallestExecutableQuantity();
+        TerminalPayloadDefinesOneFormulaAsOneSyntheticLot();
         SyntheticTerminalPayloadIncludesSelectionBasis();
         TerminalPayloadUsesComponentIdentityAndExplicitQuoteFreshness();
         LegacySyntheticDetailsExposeBidAskAndStalenessOnly();
@@ -216,6 +216,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticQuoteUsesFormulaMultipliersForBidAsk();
         SyntheticQuoteTreatsMissingOrZeroSidesAsUnavailable();
         SyntheticOrderSizingUsesCapitalDealRules();
+        SyntheticLotOrderPreviewMultipliesFormulaExactly();
         AdaptiveDisplayMultiplierPreservesSmallNonzeroValues();
         ExecutablePreviewUsesCurrentEqualNotionalAndDealRules();
         ExecutablePreviewRoundsUpToCapitalDealMinimumAndIncrement();
@@ -2855,7 +2856,7 @@ public static class SyntheticBasketBuilderTests
         AssertNear(54.2m, payload.Components[0].FourYearReturnPct, "component row should expose four-year return");
     }
 
-    private static void ManualTerminalPayloadSuggestsSmallestExecutableQuantity()
+    private static void TerminalPayloadDefinesOneFormulaAsOneSyntheticLot()
     {
         var basket = new SyntheticBasket
         {
@@ -2883,21 +2884,15 @@ public static class SyntheticBasketBuilderTests
 
         var payload = SyntheticTerminalChartPayload.Build(basket);
 
-        AssertEqual(0.001m, payload.SuggestedBasketQuantity,
-            "manual terminal payload must suggest the smallest exact ratio-preserving executable quantity");
+        AssertEqual(1m, payload.SuggestedBasketQuantity,
+            "one complete displayed formula must be one synthetic lot");
         var html = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html"));
-        AssertTrue(html.Contains("SuggestedBasketQuantity", StringComparison.Ordinal),
-            "the terminal must apply the host-owned suggested manual basket quantity");
+        AssertTrue(html.Contains("Synthetic lots", StringComparison.Ordinal),
+            "the terminal must name the user input in synthetic lots");
         AssertTrue(html.Contains("identityChanged", StringComparison.Ordinal),
             "a timeframe refresh must not overwrite a user's quantity for the same synthetic identity");
-        AssertTrue(html.Contains("quantity.min = String(suggestedBasketQuantity)", StringComparison.Ordinal),
-            "manual quantity input must accept the smallest executable basket lot");
-        AssertTrue(html.Contains("quantity.step = String(suggestedBasketQuantity)", StringComparison.Ordinal),
-            "manual quantity input must advance in exact executable basket lots");
-        AssertTrue(html.Contains("id=\"quantity-lots\"", StringComparison.Ordinal),
-            "the terminal must show the executable-lot equivalent beside basket quantity");
-        AssertTrue(html.Contains("Math.round(basketQuantity / activeBasketLotSize)", StringComparison.Ordinal),
-            "the executable-lot equivalent must derive from the host-owned minimum quantity");
+        AssertTrue(html.Contains("id=\"quantity\" type=\"number\" value=\"1\" min=\"1\" step=\"1\"", StringComparison.Ordinal),
+            "synthetic lot input must default to one positive whole lot");
     }
 
     private static void TerminalPayloadUsesComponentIdentityAndExplicitQuoteFreshness()
@@ -4558,7 +4553,7 @@ public static class SyntheticBasketBuilderTests
         foreach (var required in new[]
         {
             "CoreWebView2.WebMessageReceived += TerminalWebMessageReceived",
-            "SyntheticOrderSizing.BuildExecutableOrderPreview",
+            "SyntheticOrderSizing.BuildSyntheticLotOrderPreview",
             "window.setTerminalOrderPreview",
         })
         {
@@ -4916,28 +4911,28 @@ public static class SyntheticBasketBuilderTests
             assert.equal(element('margin-summary').dataset.state, 'unavailable');
 
             messages.length = 0;
-            for (const invalid of ['', 'not-a-number', '0', '-10']) {
+            for (const invalid of ['', 'not-a-number', '0', '-10', '1.5']) {
               messages.length = 0;
               element('quantity').value = invalid;
               scheduleMarginPreview();
               flushTimers();
-              assert.equal(messages.length, 1, `invalid notional ${invalid || 'blank'} must send one host cancellation`);
+              assert.equal(messages.length, 1, `invalid synthetic lots ${invalid || 'blank'} must send one host cancellation`);
               assert.equal(messages[0].type, 'cancelMarginPreview');
               assert.equal(element('margin-summary').dataset.state, 'unavailable');
-              assert.match(element('margin-status').textContent, /greater than 0/i);
+              assert.match(element('margin-status').textContent, /positive whole number of synthetic lots/i);
             }
 
             messages.length = 0;
-            element('quantity').value = '100';
+            element('quantity').value = '1';
             scheduleMarginPreview();
-            element('quantity').value = '250';
+            element('quantity').value = '2';
             scheduleMarginPreview();
             flushTimers();
-            assert.equal(messages.length, 1, 'a burst of valid notional changes must debounce to one request');
-            assert.equal(messages[0].basketNotional, 250);
+            assert.equal(messages.length, 1, 'a burst of valid synthetic-lot changes must debounce to one request');
+            assert.equal(messages[0].syntheticLots, 2);
 
             messages.length = 0;
-            element('quantity').value = '300';
+            element('quantity').value = '3';
             window.setTerminalData({
               Symbol: 'basket-a', DrawingIdentity: 'basket-a', Candles: [], Components: []
             });
@@ -6523,6 +6518,43 @@ public static class SyntheticBasketBuilderTests
         AssertNear(3.93081368m, SyntheticOrderSizing.DisplayMultiplier(freeSized), "formula display payload should remain separate from deal rules");
     }
 
+    private static void SyntheticLotOrderPreviewMultipliesFormulaExactly()
+    {
+        var basket = new SyntheticBasket
+        {
+            Symbol = "SYN-CRYPTO-ETHBTC-01",
+            Strategy = SyntheticStrategyKind.ManualFormula,
+        };
+        basket.Components.Add(new SyntheticComponent(new MarketInstrument
+        {
+            Epic = "ETHUSD", Bid = 2999m, Offer = 3001m,
+            MinDealSize = 0.001m, MinSizeIncrement = 0.001m,
+        }, 50m, 0m, 0m) { FormulaMultiplier = 9m });
+        basket.Components.Add(new SyntheticComponent(new MarketInstrument
+        {
+            Epic = "BTCUSD", Bid = 59990m, Offer = 60010m,
+            MinDealSize = 0.0001m, MinSizeIncrement = 0.0001m,
+        }, 50m, 0m, 0m) { FormulaMultiplier = 0.2m });
+
+        var one = SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "BUY", 1m);
+        var three = SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "SELL", 3m);
+
+        AssertEqual(1m, one.SyntheticLots, "one displayed formula is one synthetic lot");
+        AssertNear(9m, one.Legs[0].Quantity, "one synthetic lot preserves ETH formula quantity");
+        AssertNear(0.2m, one.Legs[1].Quantity, "one synthetic lot preserves BTC formula quantity");
+        AssertEqual(3m, three.SyntheticLots, "requested synthetic lots remain explicit");
+        AssertNear(27m, three.Legs[0].Quantity, "three lots multiply ETH formula quantity by three");
+        AssertNear(0.6m, three.Legs[1].Quantity, "three lots multiply BTC formula quantity by three");
+        AssertThrows<ArgumentOutOfRangeException>(
+            () => SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "BUY", 0m),
+            "positive whole number",
+            "zero synthetic lots must be rejected");
+        AssertThrows<ArgumentOutOfRangeException>(
+            () => SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "BUY", 1.5m),
+            "positive whole number",
+            "fractional synthetic lots must be rejected");
+    }
+
     private static void AdaptiveDisplayMultiplierPreservesSmallNonzeroValues()
     {
         var component = new SyntheticComponent(new MarketInstrument { Epic = "SMALL" }, 25m, 0m, 0m)
@@ -6792,8 +6824,8 @@ public static class SyntheticBasketBuilderTests
         var service = new SyntheticMarginPreviewService(source);
         var basket = CreateMarginPreviewBasket("USD");
 
-        var first = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
-        var second = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        var first = service.BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
+        var second = service.BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
 
         AssertNear(20m, first.Buy.TotalMargin ?? throw new Exception("same-currency BUY margin must be available"),
             "same-currency margin must use a conversion rate of one");
@@ -6811,7 +6843,7 @@ public static class SyntheticBasketBuilderTests
         };
 
         var summary = new SyntheticMarginPreviewService(source)
-            .BuildAsync(CreateMarginPreviewBasket("USD"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+            .BuildAsync(CreateMarginPreviewBasket("USD"), 1m, CancellationToken.None).GetAwaiter().GetResult();
 
         AssertNear(20m, summary.Buy.TotalMargin ?? throw new Exception("USD/USDd margin must be available"),
             "USD and Capital demo alias USDd must use a conversion rate of one");
@@ -6847,7 +6879,7 @@ public static class SyntheticBasketBuilderTests
         };
 
         var summary = new SyntheticMarginPreviewService(source)
-            .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+            .BuildAsync(CreateMarginPreviewBasket("EUR"), 1m, CancellationToken.None).GetAwaiter().GetResult();
 
         AssertNear(22m, summary.Buy.TotalMargin ?? throw new Exception("EUR/USDd margin must be available"),
             "EUR to USDd must use the normalized EUR/USD midpoint");
@@ -6880,7 +6912,7 @@ public static class SyntheticBasketBuilderTests
         var basket = CreateMarginPreviewBasket("");
 
         var summary = new SyntheticMarginPreviewService(source)
-            .BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+            .BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
 
         AssertEqual("USD", basket.Components[0].Instrument.Currency,
             "market details must enrich a blank API-fallback basket currency");
@@ -6899,14 +6931,14 @@ public static class SyntheticBasketBuilderTests
         };
         var service = new SyntheticMarginPreviewService(source, () => now);
         var basket = CreateMarginPreviewBasket("USD");
-        var fresh = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        var fresh = service.BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
         AssertNear(500m, fresh.Available, "initial successful account availability");
 
         now = now.AddSeconds(11);
         source.AccountHandler = _ => Task.FromException<CapitalAccountSnapshot>(
             new InvalidOperationException("account refresh failed"));
 
-        var stale = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        var stale = service.BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
         var serialized = JsonSerializer.Serialize(stale);
 
         AssertNear(500m, stale.Available,
@@ -6933,7 +6965,7 @@ public static class SyntheticBasketBuilderTests
         {
             try
             {
-                service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+                service.BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
                 throw new Exception("an unavailable conversion must remain explicit");
             }
             catch (InvalidOperationException ex) when (ex.Message ==
@@ -6948,7 +6980,7 @@ public static class SyntheticBasketBuilderTests
         now = now.AddSeconds(6);
         try
         {
-            service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+            service.BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
             throw new Exception("an unavailable conversion must remain explicit after cache expiry");
         }
         catch (InvalidOperationException ex) when (ex.Message ==
@@ -6994,7 +7026,7 @@ public static class SyntheticBasketBuilderTests
         var basket = CreateMarginPreviewBasket("EUR", includeMarginMetadata: false);
 
         var summary = new SyntheticMarginPreviewService(source)
-            .BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+            .BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
 
         AssertNear(22m, summary.Buy.TotalMargin ?? throw new Exception("direct-conversion BUY margin must be available"),
             "EUR/USD bid 1.09 and offer 1.11 must use midpoint 1.10");
@@ -7028,7 +7060,7 @@ public static class SyntheticBasketBuilderTests
         };
 
         var summary = new SyntheticMarginPreviewService(source)
-            .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+            .BuildAsync(CreateMarginPreviewBasket("EUR"), 1m, CancellationToken.None).GetAwaiter().GetResult();
 
         AssertNear(20m / 0.91m, summary.Buy.TotalMargin ?? throw new Exception("inverse-conversion BUY margin must be available"),
             "an inverse USD/EUR quote must use the reciprocal midpoint");
@@ -7044,7 +7076,7 @@ public static class SyntheticBasketBuilderTests
         try
         {
             new SyntheticMarginPreviewService(source)
-                .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+                .BuildAsync(CreateMarginPreviewBasket("EUR"), 1m, CancellationToken.None).GetAwaiter().GetResult();
         }
         catch (InvalidOperationException ex)
         {
@@ -7126,7 +7158,7 @@ public static class SyntheticBasketBuilderTests
         };
 
         var summary = new SyntheticMarginPreviewService(source)
-            .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+            .BuildAsync(CreateMarginPreviewBasket("EUR"), 1m, CancellationToken.None).GetAwaiter().GetResult();
 
         AssertNear(20m / 0.91m, summary.Buy.TotalMargin ?? throw new Exception("inverse BUY margin must be available"),
             "a reversed symbol returned by direct search must be rejected and resolved through reciprocal inverse lookup");
@@ -7159,7 +7191,7 @@ public static class SyntheticBasketBuilderTests
         };
 
         var summary = new SyntheticMarginPreviewService(source)
-            .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+            .BuildAsync(CreateMarginPreviewBasket("EUR"), 1m, CancellationToken.None).GetAwaiter().GetResult();
 
         AssertNear(22m, summary.Buy.TotalMargin ?? throw new Exception("later direct FX candidate must be usable"),
             "direct lookup must continue after an ordered candidate lacks a two-sided quote");
@@ -7204,7 +7236,7 @@ public static class SyntheticBasketBuilderTests
         };
 
         var summary = new SyntheticMarginPreviewService(source)
-            .BuildAsync(CreateMarginPreviewBasket("EUR"), 100m, CancellationToken.None).GetAwaiter().GetResult();
+            .BuildAsync(CreateMarginPreviewBasket("EUR"), 1m, CancellationToken.None).GetAwaiter().GetResult();
 
         AssertNear(22m, summary.Buy.TotalMargin ?? throw new Exception("descriptive name-only FX margin must be available"),
             "Euro / US Dollar must match EUR-to-USD when the symbol has no currency codes");
@@ -7235,7 +7267,7 @@ public static class SyntheticBasketBuilderTests
         var service = new SyntheticMarginPreviewService(source, () => now);
         var basket = CreateMarginPreviewBasket("EUR", includeMarginMetadata: false);
 
-        var first = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        var first = service.BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
         AssertNear(500m, first.Available, "first session account availability");
 
         source.Account = new CapitalAccountSnapshot("session-two", "USD", 900m, now);
@@ -7246,7 +7278,7 @@ public static class SyntheticBasketBuilderTests
             Offer = 1.21m,
         };
         service.InvalidateCaches();
-        var second = service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        var second = service.BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
 
         AssertNear(900m, second.Available, "cache invalidation must fetch the new session's active account");
         AssertEqual(2, source.AccountRequestCount, "active-account cache must not cross successful logins");
@@ -7279,8 +7311,8 @@ public static class SyntheticBasketBuilderTests
         var partialService = new SyntheticMarginPreviewService(partialSource);
         var partialBasket = CreateMarginPreviewBasket("USD", includeMarginMetadata: false);
 
-        partialService.BuildAsync(partialBasket, 100m, CancellationToken.None).GetAwaiter().GetResult();
-        partialService.BuildAsync(partialBasket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        partialService.BuildAsync(partialBasket, 1m, CancellationToken.None).GetAwaiter().GetResult();
+        partialService.BuildAsync(partialBasket, 1m, CancellationToken.None).GetAwaiter().GetResult();
         AssertEqual(1, partialSource.MarketDetailRequestCount("LEG"),
             "partial metadata attempts must suppress repeated details requests inside the attempt TTL");
 
@@ -7297,7 +7329,7 @@ public static class SyntheticBasketBuilderTests
         {
             try
             {
-                failedService.BuildAsync(failedBasket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+                failedService.BuildAsync(failedBasket, 1m, CancellationToken.None).GetAwaiter().GetResult();
                 throw new Exception("failed metadata request must remain observable to the preview caller");
             }
             catch (InvalidOperationException ex) when (ex.Message == "details failed")
@@ -7319,13 +7351,13 @@ public static class SyntheticBasketBuilderTests
         var service = new SyntheticMarginPreviewService(source, () => now);
         var basket = CreateMarginPreviewBasket("USD", includeMarginMetadata: false);
 
-        service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        service.BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
         now = now.AddSeconds(29);
-        service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        service.BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
         AssertEqual(1, source.MarketDetailRequestCount("LEG"), "metadata attempt cache must remain active before 30 seconds");
 
         now = now.AddSeconds(2);
-        service.BuildAsync(basket, 100m, CancellationToken.None).GetAwaiter().GetResult();
+        service.BuildAsync(basket, 1m, CancellationToken.None).GetAwaiter().GetResult();
         AssertEqual(2, source.MarketDetailRequestCount("LEG"), "incomplete metadata must be retried after 30 seconds");
     }
 
@@ -7341,8 +7373,8 @@ public static class SyntheticBasketBuilderTests
         };
         var service = new SyntheticMarginPreviewService(source);
         var basket = CreateMarginPreviewBasket("USD", includeMarginMetadata: false);
-        var first = service.BuildAsync(basket, 100m, CancellationToken.None);
-        var second = service.BuildAsync(basket, 100m, CancellationToken.None);
+        var first = service.BuildAsync(basket, 1m, CancellationToken.None);
+        var second = service.BuildAsync(basket, 1m, CancellationToken.None);
 
         try
         {
@@ -7379,10 +7411,10 @@ public static class SyntheticBasketBuilderTests
         };
         var service = new SyntheticMarginPreviewService(source, () => now);
         var basket = CreateMarginPreviewBasket("USD", includeMarginMetadata: false);
-        var first = service.BuildAsync(basket, 100m, CancellationToken.None);
+        var first = service.BuildAsync(basket, 1m, CancellationToken.None);
 
         now = now.AddSeconds(31);
-        var second = service.BuildAsync(basket, 100m, CancellationToken.None);
+        var second = service.BuildAsync(basket, 1m, CancellationToken.None);
         try
         {
             AssertEqual(1, source.MarketDetailRequestCount("LEG"),

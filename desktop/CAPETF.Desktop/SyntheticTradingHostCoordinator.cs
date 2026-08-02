@@ -4,7 +4,7 @@ namespace CAPETF.Desktop;
 
 internal abstract record SyntheticTradingBrowserRequest;
 
-internal sealed record SyntheticPreflightBasketRequest(string Side, decimal BasketNotional)
+internal sealed record SyntheticPreflightBasketRequest(string Side, decimal SyntheticLots)
     : SyntheticTradingBrowserRequest;
 
 internal sealed record SyntheticExecuteBasketRequest(Guid TicketId)
@@ -22,10 +22,10 @@ internal sealed record SyntheticShowExecutionBasketRequest(string ExecutionId)
 internal sealed record SyntheticCancelMarginPreviewRequest
     : SyntheticTradingBrowserRequest;
 
-internal sealed record SyntheticPreviewMarginsRequest(decimal BasketNotional)
+internal sealed record SyntheticPreviewMarginsRequest(decimal SyntheticLots)
     : SyntheticTradingBrowserRequest;
 
-internal sealed record SyntheticPreviewOrderRequest(string Side, decimal BasketNotional)
+internal sealed record SyntheticPreviewOrderRequest(string Side, decimal SyntheticLots)
     : SyntheticTradingBrowserRequest;
 
 internal sealed record SyntheticSetRiskPlanRequest(
@@ -77,21 +77,23 @@ internal static class SyntheticTradingBrowserRequestParser
         switch (type)
         {
             case "preflightBasket":
-                if (!HasOnlyProperties(root, "type", "side", "basketNotional"))
+                if (!HasOnlyProperties(root, "type", "side", "syntheticLots"))
                 {
-                    error = "Preflight accepts side and basket notional only.";
+                    error = "Preflight accepts side and synthetic lots only.";
                     return false;
                 }
                 if (!root.TryGetProperty("side", out var sideValue)
                     || sideValue.ValueKind != JsonValueKind.String
                     || string.IsNullOrWhiteSpace(sideValue.GetString())
-                    || !root.TryGetProperty("basketNotional", out var notionalValue)
-                    || !notionalValue.TryGetDecimal(out var basketNotional))
+                    || !root.TryGetProperty("syntheticLots", out var lotsValue)
+                    || !lotsValue.TryGetDecimal(out var syntheticLots)
+                    || syntheticLots <= 0m
+                    || syntheticLots != decimal.Truncate(syntheticLots))
                 {
-                    error = "Preflight requires a side and basket notional.";
+                    error = "Preflight requires a side and positive whole synthetic lots.";
                     return false;
                 }
-                request = new SyntheticPreflightBasketRequest(sideValue.GetString()!, basketNotional);
+                request = new SyntheticPreflightBasketRequest(sideValue.GetString()!, syntheticLots);
                 return true;
 
             case "executeBasket":
@@ -159,26 +161,26 @@ internal static class SyntheticTradingBrowserRequestParser
                 return true;
 
             case "previewMargins":
-                if (!HasOnlyProperties(root, "type", "basketNotional")
-                    || !TryGetDecimal(root, "basketNotional", out var marginNotional))
+                if (!HasOnlyProperties(root, "type", "syntheticLots")
+                    || !TryGetPositiveWholeDecimal(root, "syntheticLots", out var marginLots))
                 {
-                    error = "Margin preview requires a numeric basket notional.";
+                    error = "Margin preview requires positive whole synthetic lots.";
                     return false;
                 }
-                request = new SyntheticPreviewMarginsRequest(marginNotional);
+                request = new SyntheticPreviewMarginsRequest(marginLots);
                 return true;
 
             case "previewOrder":
-                if (!HasOnlyProperties(root, "type", "side", "basketNotional")
+                if (!HasOnlyProperties(root, "type", "side", "syntheticLots")
                     || !root.TryGetProperty("side", out var orderSideValue)
                     || orderSideValue.ValueKind != JsonValueKind.String
                     || string.IsNullOrWhiteSpace(orderSideValue.GetString())
-                    || !TryGetDecimal(root, "basketNotional", out var orderNotional))
+                    || !TryGetPositiveWholeDecimal(root, "syntheticLots", out var orderLots))
                 {
-                    error = "Order preview requires a side and numeric basket notional.";
+                    error = "Order preview requires a side and positive whole synthetic lots.";
                     return false;
                 }
-                request = new SyntheticPreviewOrderRequest(orderSideValue.GetString()!, orderNotional);
+                request = new SyntheticPreviewOrderRequest(orderSideValue.GetString()!, orderLots);
                 return true;
 
             case "setRiskPlan":
@@ -217,6 +219,14 @@ internal static class SyntheticTradingBrowserRequestParser
         var seen = new HashSet<string>(StringComparer.Ordinal);
         return root.EnumerateObject().All(property =>
             allowedSet.Contains(property.Name) && seen.Add(property.Name));
+    }
+
+    private static bool TryGetPositiveWholeDecimal(JsonElement root, string name, out decimal value)
+    {
+        value = 0m;
+        return TryGetDecimal(root, name, out value)
+            && value > 0m
+            && value == decimal.Truncate(value);
     }
 
     private static bool TryGetGuid(JsonElement root, string propertyName, out Guid value)
