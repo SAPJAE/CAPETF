@@ -121,4 +121,4 @@
 - [x] Build and publish the Windows executable.
 - [x] Launch the app, connect to Capital.com demo, verify cached universe appears before background completion, and capture screenshots of the ticket, margin, Activity Log, and draggable risk plan.
 - [x] Validate a 1-lot and multi-lot crypto basket through preflight without submitting live-account orders; verify exact leg multiplication and explicit insufficient-margin feedback.
-- [ ] Inspect git diff/status, commit fixes, and push `feature/cap-com-terminal-v4`.
+- [x] Inspect git diff/status, commit fixes, and push `feature/cap-com-terminal-v4`.
