@@ -4896,7 +4896,7 @@ public static class SyntheticBasketBuilderTests
             assert.equal(element('available-margin').textContent, 'USD 500.00',
               'stale account rendering must retain the last successful availability');
             assert.equal(element('margin-summary').dataset.state, 'stale');
-            assert.match(element('margin-status').textContent, /stale.*account refresh failed/i,
+            assert.match(element('margin-status-copy').textContent, /stale.*account refresh failed/i,
               'stale account rendering must show a visible stale reason');
 
             element('status').textContent = 'Quotes fresh';
@@ -4919,7 +4919,7 @@ public static class SyntheticBasketBuilderTests
               assert.equal(messages.length, 1, `invalid synthetic lots ${invalid || 'blank'} must send one host cancellation`);
               assert.equal(messages[0].type, 'cancelMarginPreview');
               assert.equal(element('margin-summary').dataset.state, 'unavailable');
-              assert.match(element('margin-status').textContent, /positive whole number of synthetic lots/i);
+              assert.match(element('margin-status-copy').textContent, /positive whole number of synthetic lots/i);
             }
 
             messages.length = 0;
@@ -4941,7 +4941,7 @@ public static class SyntheticBasketBuilderTests
             assert.equal(messages.length, 0,
               'clearing the terminal must cancel its scheduled margin request');
             assert.equal(element('margin-summary').dataset.state, 'unavailable');
-            assert.match(element('margin-status').textContent, /build.*basket/i);
+            assert.match(element('margin-status-copy').textContent, /build.*basket/i);
             """;
 
         RunNodeDrawingContract(htmlPath, script, "terminal margin final-review DOM");

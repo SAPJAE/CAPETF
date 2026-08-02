@@ -894,6 +894,28 @@
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     }
 
+    #ticket-market-summary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #ticket-market-summary span {
+      display: block;
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    #ticket-market-summary strong {
+      display: block;
+      margin-top: 2px;
+      color: #e2e8f0;
+      font-size: 11px;
+    }
+
     #place-buy-basket {
       border-color: var(--green);
       background: #14532d;
@@ -1099,9 +1121,31 @@
     }
 
     #margin-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
       min-height: 14px;
       font-size: 10px;
       line-height: 1.35;
+    }
+
+    #margin-preview-loading {
+      display: none;
+      width: 34px;
+      height: 2px;
+      overflow: hidden;
+      background: #1e3a5f;
+    }
+
+    #margin-preview-loading.active {
+      display: inline-block;
+      background: linear-gradient(90deg, #1e3a5f 0 20%, #60a5fa 45% 60%, #1e3a5f 80% 100%);
+      background-size: 200% 100%;
+      animation: margin-progress 900ms linear infinite;
+    }
+
+    @keyframes margin-progress {
+      to { background-position: -200% 0; }
     }
 
     .margin-leg-side {
@@ -1421,6 +1465,21 @@
             <button type="button" id="place-buy-basket" disabled>Place Buy Basket</button>
             <button type="button" id="place-sell-basket" disabled>Place Sell Basket</button>
           </div>
+          <div id="ticket-market-summary" aria-live="polite">
+            <div><span>1 lot price</span><strong id="ticket-basket-price">n/a</strong></div>
+            <div><span>Estimated notional</span><strong id="ticket-estimated-notional">n/a</strong></div>
+          </div>
+          <div id="margin-summary" aria-live="polite" data-state="unavailable">
+            <div><span>Buy margin</span><strong id="buy-margin">Unavailable</strong></div>
+            <div><span>Sell margin</span><strong id="sell-margin">Unavailable</strong></div>
+            <div><span>Available</span><strong id="available-margin">Unavailable</strong></div>
+            <div><span>After Buy</span><strong id="after-buy-margin">Unavailable</strong></div>
+            <div><span>After Sell</span><strong id="after-sell-margin">Unavailable</strong></div>
+          </div>
+          <div id="margin-status" class="muted">
+            <span id="margin-preview-loading" aria-hidden="true"></span>
+            <span id="margin-status-copy">Margin details unavailable.</span>
+          </div>
           <div id="workspace-actions">
             <button type="button" id="refresh-executions" class="compact-button" disabled title="Refresh positions and account state">Refresh</button>
           </div>
@@ -1438,14 +1497,6 @@
           <summary>Preflight</summary>
           <div class="section-body">
           <div id="order-ticket">
-            <div id="margin-summary" aria-live="polite" data-state="unavailable">
-              <div><span>Buy margin</span><strong id="buy-margin">Unavailable</strong></div>
-              <div><span>Sell margin</span><strong id="sell-margin">Unavailable</strong></div>
-              <div><span>Available</span><strong id="available-margin">Unavailable</strong></div>
-              <div><span>After Buy</span><strong id="after-buy-margin">Unavailable</strong></div>
-              <div><span>After Sell</span><strong id="after-sell-margin">Unavailable</strong></div>
-            </div>
-            <div id="margin-status" class="muted">Margin details unavailable.</div>
             <div id="margin-legs" class="muted">Margin details unavailable.</div>
             <div id="preflight-summary" class="empty-copy">Choose Buy or Sell to run current market checks.</div>
             <div id="preflight-failures"></div>
@@ -1741,12 +1792,32 @@
       const summary = document.getElementById('margin-summary');
       summary.classList.toggle('stale', stale);
       summary.dataset.state = stale ? 'stale' : 'ready';
+      document.getElementById('margin-preview-loading').classList.toggle('active', stale);
     }
 
     function parseSyntheticLots(value) {
       const raw = String(value ?? '').trim();
       const numeric = Number(raw);
       return raw && Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
+    }
+
+    function updateTicketTotals() {
+      const bid = Number(getField(payload, 'BidPrice', 'bidPrice', NaN));
+      const ask = Number(getField(payload, 'AskPrice', 'askPrice', NaN));
+      const candles = getField(payload, 'Candles', 'candles', []);
+      const close = candles.length ? Number(getField(candles[candles.length - 1], 'Close', 'close', NaN)) : NaN;
+      const basketPrice = Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask > 0
+        ? (bid + ask) / 2
+        : close;
+      const syntheticLots = parseSyntheticLots(quantity.value);
+      const currency = getField(payload, 'CurrencyLabel', 'currencyLabel', '');
+      document.getElementById('ticket-basket-price').textContent = Number.isFinite(basketPrice) && basketPrice > 0
+        ? marginValue(basketPrice, currency)
+        : 'n/a';
+      document.getElementById('ticket-estimated-notional').textContent =
+        Number.isFinite(basketPrice) && basketPrice > 0 && syntheticLots !== null
+          ? marginValue(basketPrice * syntheticLots, currency)
+          : 'n/a';
     }
 
     function parseRiskPlanLevel(value) {
@@ -1797,7 +1868,7 @@
     }
 
     function tradingIsBusy() {
-      return !!terminalBusyLabel || !!terminalTradingOperation;
+      return !!terminalTradingOperation;
     }
 
     function refreshTradingControls() {
@@ -1807,21 +1878,21 @@
         ? 'positive whole lots only'
         : `${syntheticLots} formula lot${syntheticLots === 1 ? '' : 's'}`;
       const connected = terminalTradingMode.isDemo && terminalTradingMode.executionEnabled;
-      const busy = tradingIsBusy();
-      const canPreflight = connected && hasTradableBasket() && notionalValid && !busy;
-      placeBuyBasketButton.disabled = !canPreflight;
-      placeSellBasketButton.disabled = !canPreflight;
-      refreshExecutionsButton.disabled = !connected || busy;
-      quantity.disabled = busy;
-      confirmExecutionButton.disabled = !connected || busy || !pendingExecutionTicket || !partialExecutionAck.checked;
-      confirmCloseButton.disabled = !connected || busy || !pendingCloseExecution || !partialCloseAck.checked;
+      const mutationBusy = tradingIsBusy();
+      placeBuyBasketButton.disabled = mutationBusy;
+      placeSellBasketButton.disabled = mutationBusy;
+      placeBuyBasketButton.setAttribute('aria-disabled', String(!connected || !hasTradableBasket() || !notionalValid || mutationBusy));
+      placeSellBasketButton.setAttribute('aria-disabled', String(!connected || !hasTradableBasket() || !notionalValid || mutationBusy));
+      refreshExecutionsButton.disabled = !connected || mutationBusy;
+      confirmExecutionButton.disabled = !connected || mutationBusy || !pendingExecutionTicket || !partialExecutionAck.checked;
+      confirmCloseButton.disabled = !connected || mutationBusy || !pendingCloseExecution || !partialCloseAck.checked;
       for (const button of Array.from(document.querySelectorAll('[data-close-execution]'))) {
-        button.disabled = !connected || busy;
+        button.disabled = !connected || mutationBusy;
       }
 
       if (!connected) {
         setTradeReadiness('Connection required', 'Connect an authenticated Capital.com demo account.', 'danger');
-      } else if (busy) {
+      } else if (mutationBusy) {
         setTradeReadiness('Working', terminalTradingOperation || terminalBusyLabel, 'busy');
       } else if (!hasTradableBasket()) {
         setTradeReadiness('Build required', 'Build a two to four leg synthetic basket.', 'warning');
@@ -2742,7 +2813,8 @@
       const summary = document.getElementById('margin-summary');
       summary.classList.toggle('stale', true);
       summary.dataset.state = 'unavailable';
-      document.getElementById('margin-status').textContent = reason || 'Margin details unavailable.';
+      document.getElementById('margin-preview-loading').classList.remove('active');
+      document.getElementById('margin-status-copy').textContent = reason || 'Margin details unavailable.';
       const legs = document.getElementById('margin-legs');
       legs.replaceChildren();
       legs.textContent = reason || 'Margin details unavailable.';
@@ -2803,6 +2875,7 @@
         return;
       }
       setMarginPreviewStale(true);
+      document.getElementById('margin-status-copy').textContent = 'Updating margin...';
       marginPreviewTimer = window.setTimeout(() => {
         marginPreviewTimer = null;
         if (window.chrome && window.chrome.webview) {
@@ -3434,6 +3507,7 @@
       if (terminalTickFrame !== null) cancelAnimationFrame(terminalTickFrame);
       terminalTickFrame = null;
       apply(nextPayload, false);
+      updateTicketTotals();
       if (selectActiveChartExecution()) renderTradeDock();
       scheduleMarginPreview();
       refreshTradingControls();
@@ -3774,7 +3848,9 @@
       const error = getField(summary, 'Error', 'error', '');
       const summaryElement = document.getElementById('margin-summary');
       if (error) {
-        resetMarginPreview(error);
+        setMarginPreviewStale(true);
+        document.getElementById('margin-preview-loading').classList.remove('active');
+        document.getElementById('margin-status-copy').textContent = error;
         return;
       }
 
@@ -3803,7 +3879,8 @@
       setMarginValue('after-sell-margin', afterSell, currency);
       summaryElement.classList.toggle('stale', unavailable || accountStale);
       summaryElement.dataset.state = unavailable ? 'unavailable' : accountStale ? 'stale' : 'ready';
-      document.getElementById('margin-status').textContent = unavailable
+      document.getElementById('margin-preview-loading').classList.remove('active');
+      document.getElementById('margin-status-copy').textContent = unavailable
         ? 'One or more margin values are unavailable.'
         : accountStale
           ? `Available funds are stale${accountError ? `: ${accountError}` : '.'}`
@@ -3868,6 +3945,7 @@
     document.getElementById('components-toggle').addEventListener('click', window.toggleTerminalComponents);
     quantity.addEventListener('input', () => {
       invalidatePendingExecutionTicket();
+      updateTicketTotals();
       scheduleMarginPreview();
       refreshTradingControls();
     });

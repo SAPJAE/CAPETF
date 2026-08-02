@@ -1840,7 +1840,6 @@ public partial class CapComTerminalWindow : Window
         try
         {
             await Task.Delay(TimeSpan.FromMilliseconds(500), requestToken);
-            await SetTerminalBusyAsync(true, "Refreshing margin preview");
             var summary = await _marginPreview.BuildAsync(basket, basketNotional, requestToken);
             requestToken.ThrowIfCancellationRequested();
             if (!SyntheticMarginPreviewPublication.IsCurrent(requestToken, request, _marginPreviewRefresh, basket, _basket)) return;
@@ -1864,7 +1863,6 @@ public partial class CapComTerminalWindow : Window
             {
                 _marginPreviewRefresh = null;
                 request.Dispose();
-                if (!_windowLifetime.IsClosing) await SetTerminalBusyAsync(false);
             }
         }
     }

@@ -19,6 +19,7 @@ public static class SyntheticTradingTests
         PartialExecutionSurvivesRestartWithoutSubmittingOrClosingRemainingLegs();
         SyntheticTradingWorkspaceHasProfessionalDemoContract();
         SyntheticTradingWorkspaceRuntimeUsesHostOwnedTicketsAndOperationLocks();
+        SyntheticOrderTicketStaysInteractiveDuringBackgroundRefresh();
         SyntheticHistorySessionCacheLoadsOnlyMissingLegsPerTimeframe();
         TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs();
         TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels();
@@ -700,8 +701,9 @@ public static class SyntheticTradingTests
             messages.length = 0;
             allMessages.length = 0;
             setTerminalBusy(true, 'Refreshing positions');
-            assert.equal(element('place-buy-basket').disabled, true);
-            assert.equal(element('place-sell-basket').disabled, true);
+            assert.equal(element('place-buy-basket').disabled, false, 'background refresh must not flicker the Buy action');
+            assert.equal(element('place-sell-basket').disabled, false, 'background refresh must not flicker the Sell action');
+            assert.equal(element('quantity').disabled, false, 'background refresh must never interrupt quantity typing');
             setTerminalBusy(false, '');
             setTerminalPreflight({ IsReady: false, Ticket: null, Failures: [{ Epic: 'AAPL', Reason: 'Market closed' }] });
             assert.equal(element('trade-readiness').textContent, 'Market closed');
@@ -1208,8 +1210,10 @@ public static class SyntheticTradingTests
               }
             }
             setTerminalTradingMode({ IsDemo: false, IsExecutionEnabled: false, Label: 'TRADING DISABLED' });
-            assert.equal(element('place-buy-basket').disabled, true);
-            assert.equal(element('place-sell-basket').disabled, true);
+            assert.equal(element('place-buy-basket').disabled, false);
+            assert.equal(element('place-sell-basket').disabled, false);
+            assert.equal(element('place-buy-basket').getAttribute('aria-disabled'), 'true');
+            assert.equal(element('place-sell-basket').getAttribute('aria-disabled'), 'true');
             """;
 
         RunNodeScript(script, htmlPath, "synthetic trading workspace runtime");
@@ -1260,6 +1264,27 @@ public static class SyntheticTradingTests
                 SyntheticTradingBrowserRequestParser.TryParse(unsafeDocument.RootElement, out _, out _),
                 $"browser mutation fields must be rejected: {unsafePayload}");
         }
+    }
+
+    private static void SyntheticOrderTicketStaysInteractiveDuringBackgroundRefresh()
+    {
+        var html = ReadRepositoryFile("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html");
+        AssertTrue(html.Contains("Synthetic lots", StringComparison.Ordinal), "ticket must use synthetic-lot terminology");
+        AssertTrue(html.Contains("id=\"ticket-basket-price\"", StringComparison.Ordinal), "ticket must show one-lot basket price");
+        AssertTrue(html.Contains("id=\"ticket-estimated-notional\"", StringComparison.Ordinal), "ticket must show quantity-adjusted notional");
+        AssertFalse(html.Contains("quantity.disabled = busy", StringComparison.Ordinal),
+            "background host activity must never disable or defocus the synthetic-lot input");
+        AssertTrue(html.Contains("placeBuyBasketButton.disabled = mutationBusy", StringComparison.Ordinal),
+            "only an active order mutation may temporarily guard duplicate Buy clicks");
+        AssertTrue(html.Contains("margin-preview-loading", StringComparison.Ordinal),
+            "margin refresh must use a local non-blocking loading state");
+
+        var host = ReadRepositoryFile("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs");
+        var refreshBody = SliceSource(host, "private async Task RefreshMarginPreviewAsync", "private void CancelMarginPreviewRequest");
+        AssertFalse(refreshBody.Contains("SetTerminalBusyAsync(true", StringComparison.Ordinal),
+            "margin refresh must not lock or flicker the complete terminal ticket");
+        AssertFalse(refreshBody.Contains("SetTerminalBusyAsync(false", StringComparison.Ordinal),
+            "margin refresh completion must not toggle the complete terminal ticket");
     }
 
     private static void TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels()

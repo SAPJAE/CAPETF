@@ -51,11 +51,11 @@
 - Consumes: integer synthetic lots and existing `SyntheticMarginPreviewSummary` publications.
 - Produces: non-flickering ticket state and side-specific affordability feedback.
 
-- [ ] Write failing source/UI behavior tests proving background busy state does not disable the quantity input, the input defaults to 1/step 1, previous margin values remain visible while refreshing, and guarded Buy/Sell clicks always publish feedback.
-- [ ] Run tests and verify failure against the current `quantity.disabled = busy` behavior.
-- [ ] Split background activity from mutation lock, debounce margin refresh, preserve last valid values, and add an inline progress/error region.
-- [ ] Render basket price, estimated notional, required margin, available margin, and remaining Buy/Sell margin directly below the action buttons.
-- [ ] Run focused tests and commit the stable-ticket change.
+- [x] Write failing source/UI behavior tests proving background busy state does not disable the quantity input, the input defaults to 1/step 1, previous margin values remain visible while refreshing, and guarded Buy/Sell clicks always publish feedback.
+- [x] Run tests and verify failure against the current `quantity.disabled = busy` behavior.
+- [x] Split background activity from mutation lock, debounce margin refresh, preserve last valid values, and add an inline progress/error region.
+- [x] Render basket price, estimated notional, required margin, available margin, and remaining Buy/Sell margin directly below the action buttons.
+- [x] Run focused tests and commit the stable-ticket change.
 
 ### Task 3: Context Rail And Activity Dock
 
