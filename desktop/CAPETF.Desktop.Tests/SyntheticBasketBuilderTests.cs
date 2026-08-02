@@ -111,6 +111,9 @@ public static class SyntheticBasketBuilderTests
         SyntheticFormulaUsesEqualNotionalWeights();
         SyntheticFormulaUsesPriceStabilizedMultipliers();
         AutomaticBasketMultipliersAreExecutableForOneSyntheticLot();
+        AutomaticBasketSizingAccountsForLotSizeAndCoarseSteps();
+        AutomaticBasketRejectsUnsatisfiableMaximumDealSize();
+        CapComTerminalRebuildsAutomaticFormulaAfterDealRuleRefresh();
         SyntheticCandlesHandleDuplicateCachedDates();
         SyntheticCandlesDoNotCreateArtificialGapsAcrossSparseSharedWeeks();
         SyntheticCandlesUseTimestampIntersectionForIntradayHistory();
@@ -1331,6 +1334,90 @@ public static class SyntheticBasketBuilderTests
             instrument.MaxDealSize = 10000m;
             return instrument;
         }
+    }
+
+    private static void AutomaticBasketSizingAccountsForLotSizeAndCoarseSteps()
+    {
+        var day = DateTimeOffset.Parse("2024-01-01T00:00:00Z");
+        var instruments = new[]
+        {
+            WithDealRules(CreateStock("FINE", "Fine step"), 100m, 1m, 0.1m, 0.1m),
+            WithDealRules(CreateStock("COARSE", "Coarse step"), 100m, 1m, 10m, 10m),
+            WithDealRules(CreateStock("LOT", "Mixed lot size"), 10m, 10m, 1m, 1m),
+        };
+        var candles = instruments.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => CreatePricedTrendCandles(day, instrument.Price!.Value));
+
+        var basket = SyntheticBasketBuilder.Build(
+            "US / USD / Tech", instruments, candles, maxBaskets: 1, periodsPerYear: 252, minimumCandles: 2)
+            .Baskets.Single();
+        var preview = SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "BUY", 1m);
+
+        AssertTrue(preview.MaxAbsoluteWeightImbalancePct <= 5m,
+            "coarse increments and mixed lot sizes must retain approximately equal executable influence");
+        AssertTrue(preview.Legs.All(leg => leg.Quantity % basket.Components.Single(component => component.Instrument.Epic == leg.Epic).Instrument.MinSizeIncrement == 0m),
+            "every mixed-rule formula quantity must remain on its Capital size grid");
+
+        return;
+
+        MarketInstrument WithDealRules(
+            MarketInstrument instrument,
+            decimal price,
+            decimal lotSize,
+            decimal minimum,
+            decimal increment)
+        {
+            instrument.Price = price;
+            instrument.Bid = price - 0.1m;
+            instrument.Offer = price + 0.1m;
+            instrument.LotSize = lotSize;
+            instrument.MinDealSize = minimum;
+            instrument.MinSizeIncrement = increment;
+            instrument.MaxDealSize = 10000m;
+            return instrument;
+        }
+    }
+
+    private static void AutomaticBasketRejectsUnsatisfiableMaximumDealSize()
+    {
+        var day = DateTimeOffset.Parse("2024-01-01T00:00:00Z");
+        var instruments = new[]
+        {
+            CreateStock("MAX-A", "Maximum A"),
+            CreateStock("MAX-B", "Maximum B"),
+            CreateStock("MAX-C", "Maximum C"),
+        };
+        foreach (var instrument in instruments)
+        {
+            instrument.Price = 100m;
+            instrument.Bid = 99.9m;
+            instrument.Offer = 100.1m;
+            instrument.LotSize = 1m;
+            instrument.MinDealSize = 10m;
+            instrument.MinSizeIncrement = 10m;
+            instrument.MaxDealSize = 10m;
+        }
+        var candles = instruments.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => CreatePricedTrendCandles(day, instrument.Price!.Value));
+
+        var result = SyntheticBasketBuilder.Build(
+            "US / USD / Tech", instruments, candles, maxBaskets: 1, periodsPerYear: 252, minimumCandles: 2);
+
+        AssertEqual(0, result.Baskets.Count,
+            "an automatic cluster that cannot be equalized within maximum deal sizes must be rejected, not returned with theoretical quantities");
+    }
+
+    private static void CapComTerminalRebuildsAutomaticFormulaAfterDealRuleRefresh()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        var buildMethod = SliceSource(source, "private async Task BuildSyntheticAsync", "private async Task BuildManualSyntheticAsync");
+        var refreshIndex = buildMethod.IndexOf("await RefreshBasketMarketDetailsAsync(_basket", StringComparison.Ordinal);
+        var rebuildIndex = buildMethod.IndexOf("SyntheticHistoryService.BuildSelected", refreshIndex + 1, StringComparison.Ordinal);
+
+        AssertTrue(refreshIndex >= 0 && rebuildIndex > refreshIndex,
+            "automatic baskets must rebuild their formula after authoritative Capital deal rules are loaded");
     }
 
     private static void SyntheticCandlesHandleDuplicateCachedDates()

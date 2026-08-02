@@ -615,10 +615,24 @@ public partial class CapComTerminalWindow : Window
             StatusText.Text = $"The selected legs have no usable shared {resolution} history.";
             return;
         }
+        await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
+        _operationState.BeginStage("Applying Capital deal rules");
+        await Task.Yield();
+        _basket = SyntheticHistoryService.BuildSelected(
+            block,
+            selectedComponents,
+            selectedHistory,
+            resolution,
+            periodsPerYear,
+            minCandles);
+        if (_basket is null)
+        {
+            await ClearTerminalChartAsync();
+            StatusText.Text = "The selected legs cannot form an approximately equal, executable one-lot formula within Capital.com deal rules.";
+            return;
+        }
         _basket.UniverseKind = SelectedUniverse();
         _activeBasket.Activate(_basket, strategy);
-
-        await RefreshBasketMarketDetailsAsync(_basket, cancellationToken);
         _operationState.BeginStage("Rendering synthetic chart");
         await Task.Yield();
         await RenderSyntheticChartAsync(_basket);

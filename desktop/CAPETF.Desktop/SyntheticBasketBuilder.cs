@@ -125,6 +125,11 @@ public static class SyntheticBasketBuilder
                 }
 
                 var multipliers = CalculateDisplayMultipliers(cluster, weights, sharedBaselinePrices);
+                if (multipliers.Count != cluster.Count)
+                {
+                    foreach (var candidate in cluster) remaining.Remove(candidate);
+                    continue;
+                }
                 var syntheticCandles = NormalizeSyntheticCandleOpens(BuildCandles(cluster, multipliers)).ToList();
                 var sharedLivePrices = FindFinalSharedPrices(cluster);
                 var basket = new SyntheticBasket
@@ -199,33 +204,44 @@ public static class SyntheticBasketBuilder
             return theoretical;
         }
 
+        const decimal targetIncrementCount = 20m;
         var commonLegTargetNotional = 100m;
         for (var index = 0; index < cluster.Count; index++)
         {
             var price = sharedBaselinePrices[index];
             if (price <= 0m || weights[index] <= 0m) return theoretical;
 
-            var minimumQuantity = cluster[index].Instrument.MinDealSize!.Value;
-            commonLegTargetNotional = Math.Max(commonLegTargetNotional, minimumQuantity * price);
+            var instrument = cluster[index].Instrument;
+            var lotSize = EffectiveLotSize(instrument);
+            var minimumQuantity = instrument.MinDealSize!.Value;
+            var increment = instrument.MinSizeIncrement!.Value;
+            commonLegTargetNotional = Math.Max(commonLegTargetNotional, minimumQuantity * price * lotSize);
+            commonLegTargetNotional = Math.Max(
+                commonLegTargetNotional,
+                targetIncrementCount * increment * price * lotSize);
         }
 
         var executable = new List<decimal>(cluster.Count);
         for (var index = 0; index < cluster.Count; index++)
         {
             var instrument = cluster[index].Instrument;
+            var lotSize = EffectiveLotSize(instrument);
             var minimumQuantity = instrument.MinDealSize!.Value;
             var increment = instrument.MinSizeIncrement!.Value;
-            var targetQuantity = commonLegTargetNotional / sharedBaselinePrices[index];
+            var targetQuantity = commonLegTargetNotional / (sharedBaselinePrices[index] * lotSize);
             var quantity = Math.Ceiling(Math.Max(targetQuantity, minimumQuantity) / increment) * increment;
             if (instrument.MaxDealSize is > 0m && quantity > instrument.MaxDealSize.Value)
             {
-                return theoretical;
+                return [];
             }
             executable.Add(quantity);
         }
 
         return executable;
     }
+
+    private static decimal EffectiveLotSize(MarketInstrument instrument) =>
+        instrument.LotSize is > 0m ? instrument.LotSize.Value : 1m;
 
     private static IReadOnlyList<decimal> FindSharedBaselinePrices(IReadOnlyList<Candidate> cluster)
     {
