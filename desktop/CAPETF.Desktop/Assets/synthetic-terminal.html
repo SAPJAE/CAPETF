@@ -396,6 +396,31 @@
       height: 25px;
     }
 
+    #activity-controls {
+      position: sticky;
+      z-index: 3;
+      top: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 34px;
+      padding: 3px 8px;
+      border-bottom: 1px solid #26364d;
+      background: #0a1424;
+    }
+
+    #activity-controls.hidden {
+      display: none;
+    }
+
+    #activity-controls select {
+      min-width: 150px;
+    }
+
+    .activity-success { color: #86efac; }
+    .activity-warning { color: #fcd34d; }
+    .activity-error { color: #fca5a5; }
+
     #risk-plan-copy {
       min-width: 0;
       overflow: hidden;
@@ -1506,55 +1531,22 @@
         </details>
 
         <details class="rail-section" open>
-          <summary>Execution</summary>
-          <div class="section-body">
-            <div id="execution-state" class="status-chip">No execution</div>
-            <div id="execution-summary" class="empty-copy">Confirmed legs will appear here in sequence.</div>
-            <div id="execution-progress" aria-live="polite"></div>
+          <summary>Selected Position</summary>
+          <div id="selected-position-context" class="section-body">
+            <div id="selected-position-state" class="status-chip">No active position</div>
+            <div id="selected-position-summary" class="empty-copy">Select an active synthetic basket below.</div>
+            <div id="selected-position-risk" class="row-meta"></div>
+            <button type="button" id="selected-position-close" class="compact-button hidden">Close selected basket</button>
           </div>
         </details>
 
-        <details class="rail-section" open>
-          <summary>Account</summary>
-          <div class="section-body">
-            <div id="account-summary">
-              <div><span>Funds</span><strong id="broker-deposit">n/a</strong></div>
-              <div><span>Equity</span><strong id="broker-balance">n/a</strong></div>
-              <div><span>Running P/L</span><strong id="broker-profit-loss">n/a</strong></div>
-              <div><span>Available</span><strong id="broker-available">n/a</strong></div>
-              <div><span>Margin used</span><strong id="broker-margin-used">n/a</strong></div>
-            </div>
-            <div id="broker-updated" class="row-meta">Broker state not loaded.</div>
-          </div>
-        </details>
-
-        <details class="rail-section" open>
-          <summary>Open Positions</summary>
-          <div id="broker-position-list" class="section-body">
-            <div class="empty-copy">No broker positions loaded.</div>
-          </div>
-        </details>
-
-        <details class="rail-section" open>
-          <summary>Pending Orders</summary>
-          <div id="working-order-list" class="section-body">
-            <div class="empty-copy">No pending orders loaded.</div>
-          </div>
-        </details>
-
-        <details class="rail-section">
-          <summary>Synthetic Baskets</summary>
-          <div id="position-list" class="section-body">
-            <div class="empty-copy">No saved synthetic baskets.</div>
-          </div>
-        </details>
-
-        <details class="rail-section">
-          <summary>Audit</summary>
-          <div id="audit-list" class="section-body">
-            <div class="empty-copy">No execution events.</div>
-          </div>
-        </details>
+        <div id="legacy-account-publication" class="hidden" aria-hidden="true">
+          <div id="execution-state"></div><div id="execution-summary"></div><div id="execution-progress"></div>
+          <span id="broker-deposit"></span><span id="broker-balance"></span><span id="broker-profit-loss"></span>
+          <span id="broker-available"></span><span id="broker-margin-used"></span><span id="broker-updated"></span>
+          <div id="broker-position-list"></div><div id="working-order-list"></div>
+          <div id="position-list"></div><div id="audit-list"></div>
+        </div>
       </aside>
 
       <div id="trade-dock-splitter" role="separator" aria-label="Resize trade dock" aria-orientation="horizontal" aria-valuemin="118" aria-valuemax="360" aria-valuenow="210" tabindex="0"></div>
@@ -1565,6 +1557,7 @@
             <button type="button" id="trade-tab-pending" role="tab" aria-selected="false">Pending Orders</button>
             <button type="button" id="trade-tab-baskets" role="tab" aria-selected="false">Active Baskets (0)</button>
             <button type="button" id="trade-tab-history" role="tab" aria-selected="false">History (0)</button>
+            <button type="button" id="trade-tab-activity" role="tab" aria-selected="false">Activity Log (0)</button>
           </nav>
           <div id="trade-dock-account-strip" aria-live="polite">
             <span>Funds<strong>n/a</strong></span>
@@ -1585,6 +1578,17 @@
             <button type="button" id="clear-risk-plan">Clear</button>
             <span id="risk-plan-copy">Visual plan only; not a Capital.com stop.</span>
             <span id="risk-plan-error" role="status" aria-live="polite"></span>
+          </div>
+          <div id="activity-controls" class="hidden" aria-label="Activity log controls">
+            <select id="activity-severity" aria-label="Activity severity">
+              <option value="all">All events</option>
+              <option value="success">Success</option>
+              <option value="info">Information</option>
+              <option value="warning">Warnings</option>
+              <option value="error">Errors</option>
+            </select>
+            <button type="button" id="clear-activity">Clear</button>
+            <button type="button" id="export-activity">Export</button>
           </div>
           <table id="trade-dock-table" aria-label="Positions"></table>
         </div>
@@ -1696,8 +1700,12 @@
       positions: document.getElementById('trade-tab-positions'),
       pending: document.getElementById('trade-tab-pending'),
       baskets: document.getElementById('trade-tab-baskets'),
-      history: document.getElementById('trade-tab-history')
+      history: document.getElementById('trade-tab-history'),
+      activity: document.getElementById('trade-tab-activity')
     };
+    const activityControls = document.getElementById('activity-controls');
+    const activitySeverity = document.getElementById('activity-severity');
+    const selectedPositionClose = document.getElementById('selected-position-close');
 
     let chart = null;
     let candleSeries = null;
@@ -1734,6 +1742,7 @@
     let terminalExecutions = [];
     let terminalBrokerSnapshot = null;
     let terminalRiskPlans = [];
+    let terminalActivity = [];
     let selectedDockExecutionId = '';
     let selectedDockRow = null;
     let riskPlanEditorState = { executionId: '', publishedKey: '', dirty: false };
@@ -2418,6 +2427,29 @@
         }));
     }
 
+    function activitySeverityName(value) {
+      if (Number.isInteger(Number(value)) && String(value).trim() !== '') {
+        return ['info', 'success', 'warning', 'error'][Number(value)] || 'info';
+      }
+      const normalized = String(value || 'info').trim().toLowerCase();
+      return ['success', 'warning', 'error'].includes(normalized) ? normalized : 'info';
+    }
+
+    function activityRows(events) {
+      const filter = activitySeverity ? activitySeverity.value : 'all';
+      return (Array.isArray(events) ? events : [])
+        .slice()
+        .reverse()
+        .map(event => ({
+          time: getField(event, 'TimestampUtc', 'timestampUtc', ''),
+          severity: activitySeverityName(getField(event, 'Severity', 'severity', 'info')),
+          operation: getField(event, 'Operation', 'operation', 'Terminal'),
+          summary: getField(event, 'Summary', 'summary', ''),
+          detail: getField(event, 'Detail', 'detail', '') || ''
+        }))
+        .filter(event => filter === 'all' || event.severity === filter);
+    }
+
     const dockViews = {
       positions: {
         label: 'Positions',
@@ -2462,6 +2494,15 @@
           ['P/L', 'profitLoss', dockProfitLoss], ['State', 'state', null, renderDockState], ['Message', 'message']
         ],
         rows: () => historyRows(terminalExecutions)
+      },
+      activity: {
+        label: 'Activity Log',
+        empty: 'No terminal activity recorded.',
+        columns: [
+          ['Time', 'time'], ['Level', 'severity'], ['Operation', 'operation'],
+          ['Summary', 'summary'], ['Detail', 'detail']
+        ],
+        rows: () => activityRows(terminalActivity)
       }
     };
 
@@ -2571,7 +2612,9 @@
       renderTradeDockAccount();
       tradeDockTabs.baskets.textContent = `Active Baskets (${syntheticBasketRows(terminalExecutions, terminalBrokerSnapshot || {}, terminalRiskPlans).length})`;
       tradeDockTabs.history.textContent = `History (${historyRows(terminalExecutions).length})`;
+      tradeDockTabs.activity.textContent = `Activity Log (${terminalActivity.length})`;
       const view = dockViews[tradeDockState.activeTab] || dockViews.positions;
+      activityControls.classList.toggle('hidden', tradeDockState.activeTab !== 'activity');
       for (const [name, button] of Object.entries(tradeDockTabs)) {
         const active = name === tradeDockState.activeTab;
         button.classList.toggle('active', active);
@@ -2602,6 +2645,7 @@
       for (const data of rows) {
         const row = document.createElement('tr');
         if (data.state) row.className = stateClass(data.state);
+        if (data.severity) row.classList.add(`activity-${data.severity}`);
         for (const [, key, formatter, renderer] of view.columns) {
           const cell = document.createElement('td');
           if (renderer) {
@@ -3147,6 +3191,30 @@
       document.getElementById('trade-overlay-formula').textContent = view.formula;
     }
 
+    function renderSelectedPositionContext(view) {
+      const state = document.getElementById('selected-position-state');
+      const summary = document.getElementById('selected-position-summary');
+      const risk = document.getElementById('selected-position-risk');
+      selectedPositionClose.classList.toggle('hidden', !view);
+      selectedPositionClose.dataset.executionId = view ? view.executionId : '';
+      if (!view) {
+        state.textContent = 'No active position';
+        state.className = 'status-chip';
+        summary.textContent = 'Select an active synthetic basket below.';
+        risk.textContent = '';
+        return;
+      }
+      const record = terminalExecutions.find(candidate =>
+        String(getField(candidate, 'ExecutionId', 'executionId', '')) === view.executionId);
+      const recordState = executionState(record || {});
+      state.textContent = recordState;
+      state.className = `status-chip ${stateClass(recordState)}`;
+      summary.textContent = `${view.direction} | Entry ${money(view.entry)} | Bid ${money(view.currentBid)} | ` +
+        `Ask ${money(view.currentAsk)} | P/L ${dockProfitLoss(view.runningProfitLoss)} | ` +
+        `Margin ${dockAmount(view.estimatedMargin, view.currency)}`;
+      risk.textContent = `PLAN SL ${money(view.planStopLoss)} | PLAN TP ${money(view.planTakeProfit)}`;
+    }
+
     function renderPriceLines() {
       clearPriceLines();
       const bid = getField(payload, 'BidPrice', 'bidPrice', null);
@@ -3155,6 +3223,7 @@
       addPriceLine(ask, 'Ask', '#ef4444');
       const view = activeSyntheticTradeView();
       renderTradeOverlay(view);
+      renderSelectedPositionContext(view);
       if (!view) return;
       addPriceLine(view.entry, 'Entry', '#60a5fa', 0);
       addPriceLine(view.brokerStopLoss, 'Broker SL', '#f59e0b', 2);
@@ -3707,6 +3776,11 @@
       renderBrokerSnapshot(snapshot || {});
     };
 
+    window.setTerminalActivity = function(events) {
+      terminalActivity = Array.isArray(events) ? events.slice() : [];
+      renderTradeDock();
+    };
+
     window.setTerminalRiskPlans = function(result) {
       const correlated = !Array.isArray(result);
       const plans = correlated ? getField(result, 'Plans', 'plans', []) : result;
@@ -4018,6 +4092,19 @@
     for (const [tab, button] of Object.entries(tradeDockTabs)) {
       button.addEventListener('click', () => setTradeDockTab(tab));
     }
+    activitySeverity.addEventListener('change', renderTradeDock);
+    document.getElementById('clear-activity').addEventListener('click', () => {
+      postHostAction({ type: 'clearActivity' });
+    });
+    document.getElementById('export-activity').addEventListener('click', () => {
+      postHostAction({ type: 'exportActivity' });
+    });
+    selectedPositionClose.addEventListener('click', () => {
+      const executionId = selectedPositionClose.dataset.executionId || '';
+      const record = terminalExecutions.find(candidate =>
+        String(getField(candidate, 'ExecutionId', 'executionId', '')) === executionId);
+      if (record) requestCloseBasket(record);
+    });
     tradeOverlayCollapseButton.addEventListener('click', () => {
       tradeOverlayCollapsed = !tradeOverlayCollapsed;
       renderTradeOverlay(activeSyntheticTradeView());

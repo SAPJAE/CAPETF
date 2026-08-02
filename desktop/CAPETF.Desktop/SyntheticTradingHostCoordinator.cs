@@ -37,6 +37,10 @@ internal sealed record SyntheticSetRiskPlanRequest(
 internal sealed record SyntheticClearRiskPlanRequest(string ExecutionId, long Revision)
     : SyntheticTradingBrowserRequest;
 
+internal sealed record SyntheticClearActivityRequest : SyntheticTradingBrowserRequest;
+
+internal sealed record SyntheticExportActivityRequest : SyntheticTradingBrowserRequest;
+
 internal static class SyntheticTradingBrowserRequestParser
 {
     public static bool TryParse(
@@ -205,6 +209,24 @@ internal static class SyntheticTradingBrowserRequestParser
                     return false;
                 }
                 request = new SyntheticClearRiskPlanRequest(clearRiskPlanExecutionId, clearRiskPlanRevision);
+                return true;
+
+            case "clearActivity":
+                if (!HasOnlyProperties(root, "type"))
+                {
+                    error = "Activity clear does not accept input data.";
+                    return false;
+                }
+                request = new SyntheticClearActivityRequest();
+                return true;
+
+            case "exportActivity":
+                if (!HasOnlyProperties(root, "type"))
+                {
+                    error = "Activity export does not accept input data.";
+                    return false;
+                }
+                request = new SyntheticExportActivityRequest();
                 return true;
 
             default:

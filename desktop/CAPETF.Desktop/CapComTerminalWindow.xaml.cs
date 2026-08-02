@@ -23,6 +23,10 @@ public partial class CapComTerminalWindow : Window
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "CAPETF",
         "synthetic-risk-plans.json"));
+    private readonly TerminalActivityLog _activityLog = new(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "CAPETF",
+        "terminal-activity.json"));
     private readonly SyntheticTradingWindowLifecycleCoordinator _tradingLifecycle = new();
     private readonly TerminalOperationState _operationState = new();
     private readonly ActiveSyntheticBasketState _activeBasket = new();
@@ -962,9 +966,10 @@ public partial class CapComTerminalWindow : Window
         CancellationToken cancellationToken)
     {
         var controlsDisabled = false;
+        AppendActivity(TerminalActivitySeverity.Info, operationName, "Started");
         try
         {
-            return await TerminalOperationExecution.RunAsync(
+            var completed = await TerminalOperationExecution.RunAsync(
                 async token =>
                 {
                     token.ThrowIfCancellationRequested();
@@ -986,12 +991,15 @@ public partial class CapComTerminalWindow : Window
                 () => _windowLifetime.TryApply(() => _operationState.Complete()),
                 ex => _windowLifetime.TryApply(() =>
                 {
+                    AppendActivity(TerminalActivitySeverity.Error, operationName, ex.Message, ex.ToString());
                     _operationState.Fail(ex.Message);
                     ConnectionText.Text = operationName.StartsWith("Connecting", StringComparison.Ordinal)
                         ? $"Connection failed: {ex.Message}"
                         : ConnectionText.Text;
                     StatusText.Text = ex.Message;
                 }));
+            if (completed) AppendActivity(TerminalActivitySeverity.Success, operationName, "Completed");
+            return completed;
         }
         finally
         {
@@ -1006,6 +1014,7 @@ public partial class CapComTerminalWindow : Window
                 {
                 }
             }
+            if (!_windowLifetime.IsClosing) await PublishTerminalActivityAsync();
         }
     }
 
@@ -1803,6 +1812,7 @@ public partial class CapComTerminalWindow : Window
             await PublishTerminalTradingModeAsync();
             await _tradingCoordinator.PublishStoredAsync(PublishTerminalExecutionsAsync, _windowLifetime.Token);
             await PublishTerminalRiskPlansAsync();
+            await PublishTerminalActivityAsync();
         }
         catch (OperationCanceledException) when (_windowLifetime.IsClosing)
         {
@@ -1817,6 +1827,43 @@ public partial class CapComTerminalWindow : Window
     {
         var json = JsonSerializer.Serialize(payload);
         return InvokeTerminalScriptAsync($"window.{callback} && window.{callback}({json});");
+    }
+
+    private void AppendActivity(
+        TerminalActivitySeverity severity,
+        string operation,
+        string summary,
+        string detail = "")
+    {
+        try
+        {
+            _activityLog.Append(severity, operation, summary, detail);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private Task PublishTerminalActivityAsync() =>
+        PublishTerminalCallbackAsync("setTerminalActivity", _activityLog.Load());
+
+    private async Task ClearTerminalActivityAsync()
+    {
+        _activityLog.Clear();
+        await PublishTerminalActivityAsync();
+    }
+
+    private async Task ExportTerminalActivityAsync()
+    {
+        var exportPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            $"cap.com-terminal-activity-{DateTime.Now:yyyyMMdd-HHmmss}.json");
+        _activityLog.Export(exportPath);
+        AppendActivity(TerminalActivitySeverity.Success, "Activity Log", "Exported", exportPath);
+        await PublishTerminalActivityAsync();
     }
 
     private void ScheduleMarginPreview(decimal basketNotional)
@@ -1846,6 +1893,8 @@ public partial class CapComTerminalWindow : Window
             var json = JsonSerializer.Serialize(summary);
             await InvokeTerminalScriptAsync(
                 $"window.setTerminalMarginPreview && window.setTerminalMarginPreview({json});");
+            AppendActivity(TerminalActivitySeverity.Success, "Margin Preview", $"Updated for {basketNotional:0} synthetic lot(s)");
+            await PublishTerminalActivityAsync();
         }
         catch (OperationCanceledException) when (requestToken.IsCancellationRequested)
         {
@@ -1856,6 +1905,8 @@ public partial class CapComTerminalWindow : Window
             var json = JsonSerializer.Serialize(new { Error = ex.Message });
             await InvokeTerminalScriptAsync(
                 $"window.setTerminalMarginPreview && window.setTerminalMarginPreview({json});");
+            AppendActivity(TerminalActivitySeverity.Error, "Margin Preview", ex.Message, ex.ToString());
+            await PublishTerminalActivityAsync();
         }
         finally
         {
@@ -2065,6 +2116,12 @@ public partial class CapComTerminalWindow : Window
                 break;
             case SyntheticPreviewOrderRequest previewOrder:
                 PreviewSyntheticOrder(previewOrder.Side, previewOrder.SyntheticLots);
+                break;
+            case SyntheticClearActivityRequest:
+                await ClearTerminalActivityAsync();
+                break;
+            case SyntheticExportActivityRequest:
+                await ExportTerminalActivityAsync();
                 break;
             case SyntheticSetRiskPlanRequest setRiskPlan:
                 await SetSyntheticRiskPlanAsync(setRiskPlan);

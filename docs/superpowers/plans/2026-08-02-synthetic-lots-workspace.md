@@ -69,11 +69,11 @@
 - Produces: `TerminalActivityEvent` publications with timestamp, severity, operation, summary, and detail.
 - Persists: `%LocalAppData%/CAPETF/terminal-activity.json`.
 
-- [ ] Write failing tests for bounded persistent log append/load/clear and for the Activity Log bottom tab.
-- [ ] Implement the activity store and host publication hooks for connection, API, universe, margin, preflight, execution, close, and failure paths.
-- [ ] Remove account-wide positions, orders, baskets, execution stream, and audit sections from the right rail.
-- [ ] Add bottom Activity Log tab with severity filters, Clear, and Export controls; keep other bottom tabs synchronized with execution state.
-- [ ] Run focused tests and commit the workspace cleanup.
+- [x] Write failing tests for bounded persistent log append/load/clear and for the Activity Log bottom tab.
+- [x] Implement the activity store and host publication hooks for connection, API, universe, margin, preflight, execution, close, and failure paths.
+- [x] Remove account-wide positions, orders, baskets, execution stream, and audit sections from the right rail.
+- [x] Add bottom Activity Log tab with severity filters, Clear, and Export controls; keep other bottom tabs synchronized with execution state.
+- [x] Run focused tests and commit the workspace cleanup.
 
 ### Task 4: Draggable Synthetic Risk Lines
 

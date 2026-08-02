@@ -20,6 +20,7 @@ public static class SyntheticTradingTests
         SyntheticTradingWorkspaceHasProfessionalDemoContract();
         SyntheticTradingWorkspaceRuntimeUsesHostOwnedTicketsAndOperationLocks();
         SyntheticOrderTicketStaysInteractiveDuringBackgroundRefresh();
+        TerminalActivityLogPersistsAndWorkspaceSeparatesContext();
         SyntheticHistorySessionCacheLoadsOnlyMissingLegsPerTimeframe();
         TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs();
         TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels();
@@ -488,8 +489,8 @@ public static class SyntheticTradingTests
             "showExecutionBasket",
             "<summary>Formula</summary>",
             "<summary>Preflight</summary>",
-            "<summary>Execution</summary>",
-            "Open Positions",
+            "<summary>Selected Position</summary>",
+            "id=\"trade-tab-positions\"",
             "Pending Orders",
             "id=\"trade-dock\"",
             "id=\"trade-dock-splitter\"",
@@ -498,6 +499,7 @@ public static class SyntheticTradingTests
             "id=\"trade-tab-pending\"",
             "id=\"trade-tab-baskets\"",
             "id=\"trade-tab-history\"",
+            "id=\"trade-tab-activity\"",
             "id=\"trade-dock-table\"",
             "id=\"trade-dock-account-strip\"",
             "id=\"synthetic-trade-overlay\"",
@@ -518,7 +520,7 @@ public static class SyntheticTradingTests
             "Stop loss",
             "Take profit",
             "crosshairMarkerVisible: false",
-            "<summary>Audit</summary>",
+            "window.setTerminalActivity",
             "overflow-y: auto",
             "position: sticky",
         })
@@ -1285,6 +1287,44 @@ public static class SyntheticTradingTests
             "margin refresh must not lock or flicker the complete terminal ticket");
         AssertFalse(refreshBody.Contains("SetTerminalBusyAsync(false", StringComparison.Ordinal),
             "margin refresh completion must not toggle the complete terminal ticket");
+    }
+
+    private static void TerminalActivityLogPersistsAndWorkspaceSeparatesContext()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"capetf-activity-{Guid.NewGuid():N}");
+        var path = Path.Combine(root, "activity.json");
+        try
+        {
+            var store = new TerminalActivityLog(path, maximumEvents: 2);
+            store.Append(TerminalActivitySeverity.Info, "Connect", "Connecting");
+            store.Append(TerminalActivitySeverity.Success, "Connect", "Connected");
+            store.Append(TerminalActivitySeverity.Error, "Margin", "Insufficient margin", "Capital error 102");
+
+            var reloaded = new TerminalActivityLog(path, maximumEvents: 2).Load();
+            AssertEqual(2, reloaded.Count, "activity log must keep its configured bounded history");
+            AssertEqual("Connected", reloaded[0].Summary, "activity log must retain chronological order after trimming");
+            AssertEqual(TerminalActivitySeverity.Error, reloaded[1].Severity, "activity severity must persist");
+            AssertEqual("Capital error 102", reloaded[1].Detail, "technical detail must persist");
+            store.Clear();
+            AssertEqual(0, store.Load().Count, "activity log clear must persist");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+
+        var html = ReadRepositoryFile("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html");
+        AssertTrue(html.Contains("id=\"trade-tab-activity\"", StringComparison.Ordinal),
+            "bottom dock must expose an Activity Log tab");
+        AssertTrue(html.Contains("id=\"selected-position-context\"", StringComparison.Ordinal),
+            "right rail must expose selected synthetic position context");
+        foreach (var removed in new[] { ">Open Positions</summary>", ">Pending Orders</summary>", ">Synthetic Baskets</summary>", ">Audit</summary>" })
+        {
+            AssertFalse(html.Contains(removed, StringComparison.Ordinal),
+                $"right rail must not duplicate account-wide section {removed}");
+        }
+        AssertTrue(html.Contains("window.setTerminalActivity", StringComparison.Ordinal),
+            "host activity publications must render in the bottom dock");
     }
 
     private static void TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels()
