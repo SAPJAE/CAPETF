@@ -179,6 +179,30 @@
       overflow: hidden;
     }
 
+    .risk-chart-control {
+      position: absolute;
+      z-index: 9;
+      right: 72px;
+      display: grid;
+      place-items: center;
+      width: 28px;
+      min-width: 28px;
+      height: 22px;
+      min-height: 22px;
+      padding: 0;
+      border-radius: 3px;
+      transform: translateY(-50%);
+      touch-action: none;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .risk-chart-control.hidden { display: none; }
+    #risk-entry-add { border-color: #60a5fa; background: #17345b; color: #dbeafe; }
+    #risk-stop-handle { border-color: #ef4444; background: #7f1d1d; color: #fee2e2; cursor: ns-resize; }
+    #risk-take-handle { border-color: #84cc16; background: #365314; color: #ecfccb; cursor: ns-resize; }
+    .risk-chart-control.dragging { box-shadow: 0 0 0 2px rgba(255, 255, 255, .36); }
+
     #synthetic-trade-overlay {
       position: absolute;
       z-index: 5;
@@ -1424,6 +1448,9 @@
             </div>
           </nav>
           <div id="chart-root">
+            <button type="button" id="risk-entry-add" class="risk-chart-control hidden" title="Add planned stop loss and take profit" aria-label="Add planned stop loss and take profit"><i data-lucide="plus"></i></button>
+            <button type="button" id="risk-stop-handle" class="risk-chart-control hidden" title="Drag planned stop loss" aria-label="Drag planned stop loss">SL</button>
+            <button type="button" id="risk-take-handle" class="risk-chart-control hidden" title="Drag planned take profit" aria-label="Drag planned take profit">TP</button>
             <section id="synthetic-trade-overlay" aria-label="Active synthetic trade">
               <button type="button" id="trade-overlay-collapse" class="icon-button" title="Collapse trade overlay" aria-label="Collapse trade overlay" aria-expanded="true"><i data-lucide="chevron-up"></i></button>
               <div id="trade-overlay-title">No active synthetic trade</div>
@@ -1706,6 +1733,9 @@
     const activityControls = document.getElementById('activity-controls');
     const activitySeverity = document.getElementById('activity-severity');
     const selectedPositionClose = document.getElementById('selected-position-close');
+    const riskEntryAdd = document.getElementById('risk-entry-add');
+    const riskStopHandle = document.getElementById('risk-stop-handle');
+    const riskTakeHandle = document.getElementById('risk-take-handle');
 
     let chart = null;
     let candleSeries = null;
@@ -1746,6 +1776,8 @@
     let selectedDockExecutionId = '';
     let selectedDockRow = null;
     let riskPlanEditorState = { executionId: '', publishedKey: '', dirty: false };
+    let riskDragDraft = null;
+    let riskDragState = null;
     let nextRiskPlanRevision = 1;
     const pendingRiskPlanRequests = new Map();
     let tradeOverlayCollapsed = false;
@@ -2571,6 +2603,64 @@
         pendingRiskPlanRequests.get(executionId) === revision;
     }
 
+    function riskExecutionForView(view) {
+      if (!view || !view.executionId) return null;
+      return terminalExecutions.find(record =>
+        String(getField(record, 'ExecutionId', 'executionId', '')) === view.executionId &&
+        !['Closed', 'Rejected'].includes(executionState(record))) || null;
+    }
+
+    function riskLevelsSurroundEntry(direction, entry, stopLoss, takeProfit) {
+      const side = String(direction || '').toUpperCase();
+      const numericEntry = Number(entry);
+      const stop = optionalNumber(stopLoss);
+      const take = optionalNumber(takeProfit);
+      if (!Number.isFinite(numericEntry) || numericEntry <= 0 || stop === null || take === null) return false;
+      return side === 'BUY'
+        ? stop < numericEntry && take > numericEntry
+        : side === 'SELL' && take < numericEntry && stop > numericEntry;
+    }
+
+    function defaultRiskLevels(direction, entry) {
+      const numericEntry = Number(entry);
+      return String(direction || '').toUpperCase() === 'SELL'
+        ? { stopLoss: numericEntry * 1.02, takeProfit: numericEntry * 0.96 }
+        : { stopLoss: numericEntry * 0.98, takeProfit: numericEntry * 1.04 };
+    }
+
+    function executionSyntheticEntry(execution) {
+      const legs = getField(execution, 'Legs', 'legs', []);
+      if (!Array.isArray(legs) || !legs.length) return null;
+      let entry = 0;
+      for (const leg of legs) {
+        const multiplier = optionalNumber(getField(leg, 'Multiplier', 'multiplier', null));
+        const fill = optionalNumber(getField(leg, 'FillLevel', 'fillLevel', null));
+        if (multiplier === null || fill === null) return null;
+        entry += multiplier * fill;
+      }
+      return Number.isFinite(entry) && entry > 0 ? entry : null;
+    }
+
+    function submitRiskPlan(execution, stopLoss, takeProfit) {
+      if (!execution) return false;
+      const executionId = String(getField(execution, 'ExecutionId', 'executionId', ''));
+      const view = activeSyntheticTradeView();
+      const entry = view && view.executionId === executionId ? view.entry : executionSyntheticEntry(execution);
+      const direction = String(getField(execution, 'Side', 'side', view ? view.direction : '')).toUpperCase();
+      if (entry !== null && !riskLevelsSurroundEntry(direction, entry, stopLoss, takeProfit)) {
+        setRiskPlanError('Risk levels must surround entry for the execution side.');
+        return false;
+      }
+      setRiskPlanError('');
+      const revision = beginRiskPlanRequest(executionId);
+      const posted = postHostAction({
+        type: 'setRiskPlan', executionId, revision,
+        stopLoss: Number(stopLoss), takeProfit: Number(takeProfit)
+      });
+      if (!posted) pendingRiskPlanRequests.delete(executionId);
+      return posted;
+    }
+
     function hydrateRiskPlanInputs(plan) {
       const stopLoss = plan ? optionalNumber(getField(plan, 'StopLoss', 'stopLoss', null)) : null;
       const takeProfit = plan ? optionalNumber(getField(plan, 'TakeProfit', 'takeProfit', null)) : null;
@@ -2606,6 +2696,103 @@
       if (selectionChanged || publicationChanged) hydrateRiskPlanInputs(plan);
       riskPlanEditorState.executionId = executionId;
       riskPlanEditorState.publishedKey = publishedKey;
+    }
+
+    function effectiveRiskView(view) {
+      if (!view || !riskDragDraft || riskDragDraft.executionId !== view.executionId) return view;
+      return { ...view, planStopLoss: riskDragDraft.stopLoss, planTakeProfit: riskDragDraft.takeProfit };
+    }
+
+    function setRiskControlPosition(element, price) {
+      const coordinate = candleSeries && typeof candleSeries.priceToCoordinate === 'function'
+        ? candleSeries.priceToCoordinate(Number(price))
+        : null;
+      const visible = Number.isFinite(coordinate) && coordinate >= 0 && coordinate <= chartRoot.clientHeight;
+      element.classList.toggle('hidden', !visible);
+      if (visible) element.style.top = `${coordinate}px`;
+    }
+
+    function hideRiskChartControls() {
+      for (const element of [riskEntryAdd, riskStopHandle, riskTakeHandle]) element.classList.add('hidden');
+    }
+
+    function positionRiskChartControls(view) {
+      if (!view || !candleSeries) {
+        riskDragDraft = null;
+        riskDragState = null;
+        hideRiskChartControls();
+        return;
+      }
+      if (riskDragDraft && riskDragDraft.executionId !== view.executionId) {
+        riskDragDraft = null;
+        riskDragState = null;
+      }
+      const displayed = effectiveRiskView(view);
+      const hasStop = optionalNumber(displayed.planStopLoss) !== null;
+      const hasTake = optionalNumber(displayed.planTakeProfit) !== null;
+      riskEntryAdd.classList.toggle('hidden', hasStop && hasTake);
+      if (!(hasStop && hasTake)) setRiskControlPosition(riskEntryAdd, view.entry);
+      if (hasStop) setRiskControlPosition(riskStopHandle, displayed.planStopLoss);
+      else riskStopHandle.classList.add('hidden');
+      if (hasTake) setRiskControlPosition(riskTakeHandle, displayed.planTakeProfit);
+      else riskTakeHandle.classList.add('hidden');
+    }
+
+    function beginRiskHandleDrag(event, level) {
+      const view = activeSyntheticTradeView();
+      if (!view || !riskExecutionForView(view)) return;
+      const stopLoss = optionalNumber(view.planStopLoss);
+      const takeProfit = optionalNumber(view.planTakeProfit);
+      if (stopLoss === null || takeProfit === null) return;
+      riskDragDraft = { executionId: view.executionId, stopLoss, takeProfit };
+      riskDragState = { executionId: view.executionId, pointerId: event.pointerId, level };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      event.currentTarget.classList.add('dragging');
+      event.preventDefault();
+    }
+
+    function moveRiskHandle(event) {
+      if (!riskDragState || event.pointerId !== riskDragState.pointerId || !riskDragDraft || !candleSeries) return;
+      const view = activeSyntheticTradeView();
+      if (!view || view.executionId !== riskDragDraft.executionId) return cancelRiskHandleDrag(event);
+      const bounds = chartRoot.getBoundingClientRect();
+      const price = candleSeries.coordinateToPrice(event.clientY - bounds.top);
+      if (!Number.isFinite(price) || price <= 0) return;
+      if (riskDragState.level === 'stop') riskDragDraft.stopLoss = price;
+      else riskDragDraft.takeProfit = price;
+      planStopLossInput.value = String(Number(riskDragDraft.stopLoss.toFixed(5)));
+      planTakeProfitInput.value = String(Number(riskDragDraft.takeProfit.toFixed(5)));
+      riskPlanEditorState.dirty = true;
+      renderPriceLines();
+    }
+
+    function finishRiskHandleDrag(event) {
+      if (!riskDragState || event.pointerId !== riskDragState.pointerId || !riskDragDraft) return;
+      const draft = { ...riskDragDraft };
+      const view = activeSyntheticTradeView();
+      const execution = view && view.executionId === draft.executionId ? riskExecutionForView(view) : null;
+      event.currentTarget.classList.remove('dragging');
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      riskDragState = null;
+      if (!execution || !riskLevelsSurroundEntry(view.direction, view.entry, draft.stopLoss, draft.takeProfit)) {
+        riskDragDraft = null;
+        setRiskPlanError('Risk levels must surround entry for the execution side.');
+        renderPriceLines();
+        return;
+      }
+      submitRiskPlan(execution, draft.stopLoss, draft.takeProfit);
+    }
+
+    function cancelRiskHandleDrag(event) {
+      if (!riskDragState) return;
+      const target = event && event.currentTarget;
+      if (target) {
+        target.classList.remove('dragging');
+        if (target.hasPointerCapture && target.hasPointerCapture(riskDragState.pointerId)) target.releasePointerCapture(riskDragState.pointerId);
+      }
+      riskDragState = null;
+      riskDragDraft = null;
+      renderPriceLines();
     }
 
     function renderTradeDock() {
@@ -3224,12 +3411,17 @@
       const view = activeSyntheticTradeView();
       renderTradeOverlay(view);
       renderSelectedPositionContext(view);
-      if (!view) return;
+      if (!view) {
+        positionRiskChartControls(null);
+        return;
+      }
+      const displayed = effectiveRiskView(view);
       addPriceLine(view.entry, 'Entry', '#60a5fa', 0);
       addPriceLine(view.brokerStopLoss, 'Broker SL', '#f59e0b', 2);
       addPriceLine(view.brokerTakeProfit, 'Broker TP', '#22c55e', 2);
-      addPriceLine(view.planStopLoss, 'PLAN SL', '#ef4444', 1);
-      addPriceLine(view.planTakeProfit, 'PLAN TP', '#a3e635', 1);
+      addPriceLine(displayed.planStopLoss, 'PLAN SL', '#ef4444', 1);
+      addPriceLine(displayed.planTakeProfit, 'PLAN TP', '#a3e635', 1);
+      positionRiskChartControls(displayed);
     }
 
     function buildFormula(components) {
@@ -3543,6 +3735,7 @@
       refreshButtons();
       setStatus(displayCandles.length < 2 ? 'No chart data loaded' : '');
       if (fitContent) instance.timeScale().fitContent();
+      requestAnimationFrame(() => positionRiskChartControls(activeSyntheticTradeView()));
     }
 
     function apply(nextPayload, liveUpdate) {
@@ -3789,6 +3982,7 @@
       if (executionId) {
         if (!isCurrentRiskPlanResponse(executionId, revision)) return;
         pendingRiskPlanRequests.delete(executionId);
+        if (riskDragDraft && riskDragDraft.executionId === executionId) riskDragDraft = null;
         setRiskPlanError('');
         terminalRiskPlans = Array.isArray(plans) ? plans.slice() : [];
         riskPlanEditorState.publishedKey = `accepted:${revision}`;
@@ -3805,7 +3999,9 @@
       const revision = Number(getField(result, 'Revision', 'revision', 0));
       if (!isCurrentRiskPlanResponse(executionId, revision)) return;
       pendingRiskPlanRequests.delete(executionId);
+      if (riskDragDraft && riskDragDraft.executionId === executionId) riskDragDraft = null;
       setRiskPlanError(getField(result, 'Error', 'error', ''));
+      renderPriceLines();
     };
 
     window.clearTerminal = function() {
@@ -3821,10 +4017,14 @@
       if (!chart) return;
       const rect = chartRoot.getBoundingClientRect();
       chart.resize(Math.max(1, Math.floor(rect.width)), Math.max(1, Math.floor(rect.height)));
+      requestAnimationFrame(() => positionRiskChartControls(activeSyntheticTradeView()));
     };
 
     window.fitTerminalChart = function() {
-      if (chart) chart.timeScale().fitContent();
+      if (chart) {
+        chart.timeScale().fitContent();
+        requestAnimationFrame(() => positionRiskChartControls(activeSyntheticTradeView()));
+      }
     };
 
     window.goToRealtime = function() {
@@ -3851,6 +4051,7 @@
       chart.timeScale().applyOptions({ barSpacing: terminalBarSpacing, rightOffset: 8 });
       chart.priceScale('right').applyOptions({ autoScale: true });
       chart.timeScale().fitContent();
+      requestAnimationFrame(() => positionRiskChartControls(activeSyntheticTradeView()));
     };
 
     window.setTerminalChartMode = function(mode) {
@@ -4124,15 +4325,7 @@
         setRiskPlanError('PLAN levels must be positive numbers.');
         return;
       }
-      const executionId = getField(execution, 'ExecutionId', 'executionId', '');
-      const revision = beginRiskPlanRequest(executionId);
-      if (!postHostAction({
-        type: 'setRiskPlan',
-        executionId,
-        revision,
-        stopLoss,
-        takeProfit
-      })) pendingRiskPlanRequests.delete(executionId);
+      submitRiskPlan(execution, stopLoss, takeProfit);
     });
     document.getElementById('clear-risk-plan').addEventListener('click', () => {
       const execution = selectedRiskPlanExecution();
@@ -4146,6 +4339,23 @@
         revision
       })) pendingRiskPlanRequests.delete(executionId);
     });
+    riskEntryAdd.addEventListener('click', () => {
+      const view = activeSyntheticTradeView();
+      const execution = riskExecutionForView(view);
+      if (!view || !execution) return;
+      const defaults = defaultRiskLevels(view.direction, view.entry);
+      planStopLossInput.value = String(Number(defaults.stopLoss.toFixed(5)));
+      planTakeProfitInput.value = String(Number(defaults.takeProfit.toFixed(5)));
+      riskDragDraft = { executionId: view.executionId, ...defaults };
+      if (!submitRiskPlan(execution, defaults.stopLoss, defaults.takeProfit)) riskDragDraft = null;
+      renderPriceLines();
+    });
+    for (const [handle, level] of [[riskStopHandle, 'stop'], [riskTakeHandle, 'take']]) {
+      handle.addEventListener('pointerdown', event => beginRiskHandleDrag(event, level));
+      handle.addEventListener('pointermove', moveRiskHandle);
+      handle.addEventListener('pointerup', finishRiskHandleDrag);
+      handle.addEventListener('pointercancel', cancelRiskHandleDrag);
+    }
     tradeDockMinimizeButton.addEventListener('click', toggleTradeDock);
     tradeDockSplitter.addEventListener('pointerdown', beginTradeDockResize);
     tradeDockSplitter.addEventListener('pointermove', resizeTradeDock);

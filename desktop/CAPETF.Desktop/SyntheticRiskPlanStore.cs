@@ -17,6 +17,22 @@ public sealed record SyntheticRiskPlanValidationResult(
     SyntheticRiskPlan? Plan,
     string Error);
 
+public sealed record SyntheticRiskPlanLevels(decimal StopLoss, decimal TakeProfit);
+
+public static class SyntheticRiskPlanDefaults
+{
+    public static SyntheticRiskPlanLevels Create(string side, decimal entry)
+    {
+        if (!SyntheticRiskPlanValidation.TryNormalizeSide(side, out var normalizedSide))
+            throw new ArgumentException("Side must be BUY or SELL.", nameof(side));
+        if (entry <= 0m) throw new ArgumentOutOfRangeException(nameof(entry), "Entry must be positive.");
+
+        return normalizedSide == "BUY"
+            ? new SyntheticRiskPlanLevels(entry * 0.98m, entry * 1.04m)
+            : new SyntheticRiskPlanLevels(entry * 1.02m, entry * 0.96m);
+    }
+}
+
 public static class SyntheticRiskPlanValidation
 {
     public static SyntheticRiskPlanValidationResult Validate(

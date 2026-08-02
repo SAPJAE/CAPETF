@@ -13,6 +13,7 @@ public static class SyntheticTradingTests
     public static void RunAll()
     {
         ValidatedSyntheticRiskPlansPersistAcrossStoreInstances();
+        SyntheticRiskDefaultsAndChartDragContractAreDirectionAware();
         DefaultTestSuiteSelectionRunsBothSuitesExactlyOnce();
         TestSuiteSelectionPropagatesEitherSuiteFailure();
         AcceptedBasketSurvivesRestartReconcilesAndClosesWithoutDuplicateMutations();
@@ -186,6 +187,38 @@ public static class SyntheticTradingTests
         store.Upsert(buy.Plan);
         AssertEqual(JsonSerializer.Serialize(buy.Plan), JsonSerializer.Serialize(new SyntheticRiskPlanStore(path).LoadAll().Single()),
             "risk plan persists exactly");
+    }
+
+    private static void SyntheticRiskDefaultsAndChartDragContractAreDirectionAware()
+    {
+        var buy = SyntheticRiskPlanDefaults.Create("BUY", 100m);
+        AssertEqual(98m, buy.StopLoss, "BUY default stop is below entry");
+        AssertEqual(104m, buy.TakeProfit, "BUY default target is above entry");
+        var sell = SyntheticRiskPlanDefaults.Create("SELL", 100m);
+        AssertEqual(102m, sell.StopLoss, "SELL default stop is above entry");
+        AssertEqual(96m, sell.TakeProfit, "SELL default target is below entry");
+
+        var html = ReadRepositoryFile("desktop", "CAPETF.Desktop", "Assets", "synthetic-terminal.html");
+        foreach (var required in new[]
+        {
+            "id=\"risk-entry-add\"",
+            "id=\"risk-stop-handle\"",
+            "id=\"risk-take-handle\"",
+            "priceToCoordinate",
+            "coordinateToPrice",
+            "pointerdown",
+            "pointermove",
+            "pointerup",
+            "riskDragDraft.executionId",
+            "submitRiskPlan"
+        })
+        {
+            AssertContains(html, required, $"chart risk drag contract {required}");
+        }
+
+        var releaseBody = SliceSource(html, "function finishRiskHandleDrag", "function cancelRiskHandleDrag");
+        AssertEqual(1, releaseBody.Split("submitRiskPlan(", StringSplitOptions.None).Length - 1,
+            "pointer release publishes one revisioned risk-plan request");
     }
 
     private static void DefaultTestSuiteSelectionRunsBothSuitesExactlyOnce()
@@ -1821,8 +1854,8 @@ public static class SyntheticTradingTests
             "addPriceLine(view.entry, 'Entry'",
             "addPriceLine(view.brokerStopLoss, 'Broker SL'",
             "addPriceLine(view.brokerTakeProfit, 'Broker TP'",
-            "addPriceLine(view.planStopLoss, 'PLAN SL'",
-            "addPriceLine(view.planTakeProfit, 'PLAN TP'",
+            "addPriceLine(displayed.planStopLoss, 'PLAN SL'",
+            "addPriceLine(displayed.planTakeProfit, 'PLAN TP'",
         })
         {
             AssertContains(html, required, $"manual crypto uses the existing trade workspace contract: {required}");
