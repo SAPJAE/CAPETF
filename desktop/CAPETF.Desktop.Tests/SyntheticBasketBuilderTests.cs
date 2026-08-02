@@ -110,6 +110,7 @@ public static class SyntheticBasketBuilderTests
         SyntheticIndexStartsAtOneHundredOnFirstSharedCandle();
         SyntheticFormulaUsesEqualNotionalWeights();
         SyntheticFormulaUsesPriceStabilizedMultipliers();
+        AutomaticBasketMultipliersAreExecutableForOneSyntheticLot();
         SyntheticCandlesHandleDuplicateCachedDates();
         SyntheticCandlesDoNotCreateArtificialGapsAcrossSparseSharedWeeks();
         SyntheticCandlesUseTimestampIntersectionForIntradayHistory();
@@ -1259,6 +1260,76 @@ public static class SyntheticBasketBuilderTests
             AssertNear(component.Weight, component.FormulaMultiplier * referenceClose, "each leg should contribute its allocation at the reference close", 0.0001m);
             AssertNear(referenceClose, component.FormulaReferencePrice ?? 0m, "formula reference price should use the shared baseline price");
             AssertNear(referenceClose, component.SyntheticBaselinePrice ?? 0m, "synthetic baseline price should use the shared baseline price");
+        }
+    }
+
+    private static void AutomaticBasketMultipliersAreExecutableForOneSyntheticLot()
+    {
+        var day = DateTimeOffset.Parse("2024-01-01T00:00:00Z");
+        var instruments = new[]
+        {
+            WithDealRules(CreateStock("CVNA-LIKE", "CVNA-like step"), 67.45m, 0.1m, 0.1m),
+            WithDealRules(CreateStock("HIGH", "High price"), 410m, 1m, 0.5m),
+            WithDealRules(CreateStock("LOW", "Low price"), 12.30m, 5m, 1m),
+        };
+        var candles = instruments.ToDictionary(
+            instrument => instrument.Epic,
+            instrument => CreatePricedTrendCandles(day, instrument.Price!.Value));
+
+        var result = SyntheticBasketBuilder.Build(
+            "US / USD / Tech",
+            instruments,
+            candles,
+            maxBaskets: 1,
+            periodsPerYear: 252,
+            minimumCandles: 2);
+        var basket = result.Baskets.Single();
+        var baselineNotionals = new List<decimal>();
+
+        foreach (var component in basket.Components)
+        {
+            var minimum = component.Instrument.MinDealSize!.Value;
+            var increment = component.Instrument.MinSizeIncrement!.Value;
+            AssertTrue(component.FormulaMultiplier >= minimum,
+                $"{component.Instrument.Epic} formula quantity must meet its minimum deal size");
+            AssertEqual(0m, component.FormulaMultiplier % increment,
+                $"{component.Instrument.Epic} formula quantity must align exactly to its size increment");
+            baselineNotionals.Add(component.FormulaMultiplier * component.FormulaReferencePrice!.Value);
+            AssertTrue(baselineNotionals[^1] >= 100m,
+                $"{component.Instrument.Epic} executable baseline notional must be at least 100");
+        }
+
+        var totalBaselineNotional = baselineNotionals.Sum();
+        for (var index = 0; index < baselineNotionals.Count; index++)
+        {
+            var actualWeight = baselineNotionals[index] / totalBaselineNotional * 100m;
+            AssertNear(
+                basket.Components[index].Weight,
+                actualWeight,
+                $"{basket.Components[index].Instrument.Epic} executable baseline weight",
+                1m);
+        }
+
+        AssertTrue(basket.Candles[0].Close > 100m,
+            "executable scaling may move the automatic basket baseline above 100");
+        var preview = SyntheticOrderSizing.BuildSyntheticLotOrderPreview(basket, "BUY", 1m);
+        AssertEqual(basket.Components.Count, preview.Legs.Count,
+            "one-lot preview must include every automatically constructed leg");
+        for (var index = 0; index < preview.Legs.Count; index++)
+        {
+            AssertEqual(basket.Components[index].FormulaMultiplier, preview.Legs[index].Quantity,
+                "one synthetic lot must execute the displayed on-grid formula quantity");
+        }
+
+        MarketInstrument WithDealRules(MarketInstrument instrument, decimal price, decimal minimum, decimal increment)
+        {
+            instrument.Price = price;
+            instrument.Bid = price - 0.1m;
+            instrument.Offer = price + 0.1m;
+            instrument.MinDealSize = minimum;
+            instrument.MinSizeIncrement = increment;
+            instrument.MaxDealSize = 10000m;
+            return instrument;
         }
     }
 

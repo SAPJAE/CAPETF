@@ -187,9 +187,45 @@ public static class SyntheticBasketBuilder
     private static IReadOnlyList<decimal> CalculateDisplayMultipliers(
         IReadOnlyList<Candidate> cluster,
         IReadOnlyList<decimal> weights,
-        IReadOnlyList<decimal> sharedBaselinePrices) =>
-        sharedBaselinePrices.Select((price, index) =>
+        IReadOnlyList<decimal> sharedBaselinePrices)
+    {
+        var theoretical = sharedBaselinePrices.Select((price, index) =>
             price <= 0 ? 0m : decimal.Round(weights[index] / price, 8)).ToList();
+        if (cluster.Count != weights.Count || cluster.Count != sharedBaselinePrices.Count ||
+            cluster.Any(candidate =>
+                candidate.Instrument.MinDealSize is not > 0m ||
+                candidate.Instrument.MinSizeIncrement is not > 0m))
+        {
+            return theoretical;
+        }
+
+        var commonLegTargetNotional = 100m;
+        for (var index = 0; index < cluster.Count; index++)
+        {
+            var price = sharedBaselinePrices[index];
+            if (price <= 0m || weights[index] <= 0m) return theoretical;
+
+            var minimumQuantity = cluster[index].Instrument.MinDealSize!.Value;
+            commonLegTargetNotional = Math.Max(commonLegTargetNotional, minimumQuantity * price);
+        }
+
+        var executable = new List<decimal>(cluster.Count);
+        for (var index = 0; index < cluster.Count; index++)
+        {
+            var instrument = cluster[index].Instrument;
+            var minimumQuantity = instrument.MinDealSize!.Value;
+            var increment = instrument.MinSizeIncrement!.Value;
+            var targetQuantity = commonLegTargetNotional / sharedBaselinePrices[index];
+            var quantity = Math.Ceiling(Math.Max(targetQuantity, minimumQuantity) / increment) * increment;
+            if (instrument.MaxDealSize is > 0m && quantity > instrument.MaxDealSize.Value)
+            {
+                return theoretical;
+            }
+            executable.Add(quantity);
+        }
+
+        return executable;
+    }
 
     private static IReadOnlyList<decimal> FindSharedBaselinePrices(IReadOnlyList<Candidate> cluster)
     {
