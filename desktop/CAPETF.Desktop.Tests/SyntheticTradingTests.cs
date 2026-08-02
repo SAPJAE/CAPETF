@@ -603,6 +603,7 @@ public static class SyntheticTradingTests
                 this.attributes = new Map();
                 this.children = [];
                 this.listeners = new Map();
+                this.capturedPointers = new Set();
               }
               get id() { return this._id; }
               set id(value) {
@@ -625,9 +626,9 @@ public static class SyntheticTradingTests
               showModal() { this.open = true; }
               close() { this.open = false; }
               getBoundingClientRect() { return { left: 0, top: 0, right: 800, width: 800, height: 600 }; }
-              hasPointerCapture() { return false; }
-              setPointerCapture() {}
-              releasePointerCapture() {}
+              hasPointerCapture(pointerId) { return this.capturedPointers.has(pointerId); }
+              setPointerCapture(pointerId) { this.capturedPointers.add(pointerId); }
+              releasePointerCapture(pointerId) { this.capturedPointers.delete(pointerId); }
               focus() { document.activeElement = this; }
               appendChild(child) { this.children.push(child); return child; }
               replaceChildren(...children) { this.children = [...children]; this.textContent = ''; }
@@ -947,6 +948,10 @@ public static class SyntheticTradingTests
             assert.equal(tradeView.planTakeProfit, 760);
             assert.equal(tradeView.direction, 'BUY');
             assert.equal(tradeView.legCount, 3);
+            assert.equal(riskLevelsSurroundEntry('BUY', 100, 90, 110), true, 'BUY drag levels surround entry');
+            assert.equal(riskLevelsSurroundEntry('BUY', 100, 110, 120), false, 'BUY drag rejects a stop above entry');
+            assert.equal(riskLevelsSurroundEntry('SELL', 100, 110, 90), true, 'SELL drag levels surround entry');
+            assert.equal(riskLevelsSurroundEntry('SELL', 100, 90, 80), false, 'SELL drag rejects a stop below entry');
             assert.deepEqual(
               activePriceLines.filter(line => ['Entry', 'Broker SL', 'Broker TP', 'PLAN SL', 'PLAN TP'].includes(line.title)).map(line => line.title),
               ['Entry', 'PLAN SL', 'PLAN TP'],
@@ -1009,6 +1014,33 @@ public static class SyntheticTradingTests
             assert.equal(element('plan-stop-loss').value, '680');
             assert.equal(element('plan-take-profit').value, '760');
             assert.match(element('risk-plan-copy').textContent, /Visual plan only; not a Capital\.com stop\./);
+            const riskStopHandle = element('risk-stop-handle');
+            const riskMessagesBeforeDrag = allMessages.filter(message => message.type === 'setRiskPlan').length;
+            riskStopHandle.dispatch('pointerdown', { pointerId: 41, clientY: 680 });
+            assert.equal(riskStopHandle.hasPointerCapture(41), true, 'risk drag captures its pointer');
+            riskStopHandle.dispatch('pointermove', { pointerId: 41, clientY: 670 });
+            riskStopHandle.dispatch('pointerup', { pointerId: 41, clientY: 670 });
+            assert.equal(
+              allMessages.filter(message => message.type === 'setRiskPlan').length,
+              riskMessagesBeforeDrag + 1,
+              'a valid pointer release publishes exactly one risk-plan request');
+            assert.equal(riskStopHandle.hasPointerCapture(41), false, 'pointer release clears capture');
+            assert.equal(riskStopHandle.classList.contains('dragging'), false, 'pointer release clears drag styling');
+
+            riskStopHandle.dispatch('pointerdown', { pointerId: 42, clientY: 680 });
+            assert.equal(riskStopHandle.classList.contains('dragging'), true, 'refresh cancellation starts from active drag styling');
+            positionRiskChartControls(null);
+            assert.equal(riskStopHandle.hasPointerCapture(42), false, 'view refresh releases captured risk pointer');
+            assert.equal(riskStopHandle.classList.contains('dragging'), false, 'view refresh removes risk drag styling');
+            assert.equal(riskDragState, null, 'view refresh clears risk drag state');
+            assert.equal(riskDragDraft, null, 'view refresh clears risk draft');
+
+            renderPriceLines();
+            riskStopHandle.dispatch('pointerdown', { pointerId: 43, clientY: 680 });
+            riskStopHandle.dispatch('lostpointercapture', { pointerId: 43 });
+            assert.equal(riskStopHandle.classList.contains('dragging'), false, 'lost pointer capture removes drag styling');
+            assert.equal(riskDragState, null, 'lost pointer capture cancels drag state');
+            assert.equal(riskDragDraft, null, 'lost pointer capture cancels risk draft');
             planStopLossInput.focus();
             element('plan-stop-loss').value = '675.5';
             element('plan-take-profit').value = '770';
@@ -1055,6 +1087,11 @@ public static class SyntheticTradingTests
               ExecutionId: 'trade-1', Revision: applyA.revision,
               Plans: [{ ExecutionId: 'trade-1', StopLoss: 675.5, TakeProfit: 770, UpdatedUtc: '2026-08-01T12:01:00Z' }]
             });
+            assert.equal(pendingRiskPlanRequests.has('trade-1'), false, 'delayed A success completes A request after dock selects B');
+            assert.equal(
+              terminalRiskPlans.some(plan => plan.ExecutionId === 'trade-1' && plan.StopLoss === 675.5 && plan.TakeProfit === 770),
+              true,
+              'delayed A success updates published plans independently of dock selection');
             assert.equal(element('risk-plan-error').textContent, 'Current B validation error.', 'delayed A success cannot clear B error');
             assert.equal(element('plan-stop-loss').value, '150', 'delayed A success cannot hydrate B draft');
             setTerminalRiskPlanError({ ExecutionId: 'trade-1', Revision: applyA.revision, Error: 'Delayed A validation error.' });

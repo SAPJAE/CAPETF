@@ -2598,8 +2598,7 @@
     }
 
     function isCurrentRiskPlanResponse(executionId, revision) {
-      return executionId === selectedDockExecutionId &&
-        Number.isSafeInteger(revision) && revision > 0 &&
+      return Number.isSafeInteger(revision) && revision > 0 &&
         pendingRiskPlanRequests.get(executionId) === revision;
     }
 
@@ -2676,7 +2675,6 @@
       riskPlanControls.style.display = execution ? 'grid' : 'none';
       if (!execution) {
         if (previousExecutionId) {
-          pendingRiskPlanRequests.delete(previousExecutionId);
           setRiskPlanError('');
         }
         riskPlanEditorState = { executionId: '', publishedKey: '', dirty: false };
@@ -2690,10 +2688,9 @@
       const selectionChanged = executionId !== riskPlanEditorState.executionId;
       const publicationChanged = publishedKey !== riskPlanEditorState.publishedKey;
       if (selectionChanged) {
-        if (previousExecutionId) pendingRiskPlanRequests.delete(previousExecutionId);
         setRiskPlanError('');
       }
-      if (selectionChanged || publicationChanged) hydrateRiskPlanInputs(plan);
+      if (selectionChanged || (publicationChanged && !riskPlanEditorState.dirty)) hydrateRiskPlanInputs(plan);
       riskPlanEditorState.executionId = executionId;
       riskPlanEditorState.publishedKey = publishedKey;
     }
@@ -2718,14 +2715,12 @@
 
     function positionRiskChartControls(view) {
       if (!view || !candleSeries) {
-        riskDragDraft = null;
-        riskDragState = null;
+        cancelRiskHandleDrag(null, false);
         hideRiskChartControls();
         return;
       }
       if (riskDragDraft && riskDragDraft.executionId !== view.executionId) {
-        riskDragDraft = null;
-        riskDragState = null;
+        cancelRiskHandleDrag(null, false);
       }
       const displayed = effectiveRiskView(view);
       const hasStop = optionalNumber(displayed.planStopLoss) !== null;
@@ -2745,7 +2740,12 @@
       const takeProfit = optionalNumber(view.planTakeProfit);
       if (stopLoss === null || takeProfit === null) return;
       riskDragDraft = { executionId: view.executionId, stopLoss, takeProfit };
-      riskDragState = { executionId: view.executionId, pointerId: event.pointerId, level };
+      riskDragState = {
+        executionId: view.executionId,
+        pointerId: event.pointerId,
+        level,
+        capturedElement: event.currentTarget
+      };
       event.currentTarget.setPointerCapture(event.pointerId);
       event.currentTarget.classList.add('dragging');
       event.preventDefault();
@@ -2771,9 +2771,10 @@
       const draft = { ...riskDragDraft };
       const view = activeSyntheticTradeView();
       const execution = view && view.executionId === draft.executionId ? riskExecutionForView(view) : null;
-      event.currentTarget.classList.remove('dragging');
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      const capturedElement = riskDragState.capturedElement || event.currentTarget;
       riskDragState = null;
+      capturedElement.classList.remove('dragging');
+      if (capturedElement.hasPointerCapture(event.pointerId)) capturedElement.releasePointerCapture(event.pointerId);
       if (!execution || !riskLevelsSurroundEntry(view.direction, view.entry, draft.stopLoss, draft.takeProfit)) {
         riskDragDraft = null;
         setRiskPlanError('Risk levels must surround entry for the execution side.');
@@ -2783,16 +2784,17 @@
       submitRiskPlan(execution, draft.stopLoss, draft.takeProfit);
     }
 
-    function cancelRiskHandleDrag(event) {
-      if (!riskDragState) return;
-      const target = event && event.currentTarget;
-      if (target) {
-        target.classList.remove('dragging');
-        if (target.hasPointerCapture && target.hasPointerCapture(riskDragState.pointerId)) target.releasePointerCapture(riskDragState.pointerId);
-      }
+    function cancelRiskHandleDrag(event, rerender = true) {
+      const state = riskDragState;
+      if (!state) return;
+      const target = state.capturedElement || (event && event.currentTarget);
       riskDragState = null;
       riskDragDraft = null;
-      renderPriceLines();
+      if (target) {
+        target.classList.remove('dragging');
+        if (target.hasPointerCapture && target.hasPointerCapture(state.pointerId)) target.releasePointerCapture(state.pointerId);
+      }
+      if (rerender) renderPriceLines();
     }
 
     function renderTradeDock() {
@@ -3983,9 +3985,12 @@
         if (!isCurrentRiskPlanResponse(executionId, revision)) return;
         pendingRiskPlanRequests.delete(executionId);
         if (riskDragDraft && riskDragDraft.executionId === executionId) riskDragDraft = null;
-        setRiskPlanError('');
         terminalRiskPlans = Array.isArray(plans) ? plans.slice() : [];
-        riskPlanEditorState.publishedKey = `accepted:${revision}`;
+        if (executionId === selectedDockExecutionId) {
+          setRiskPlanError('');
+          riskPlanEditorState.dirty = false;
+          riskPlanEditorState.publishedKey = `accepted:${revision}`;
+        }
       } else {
         if (correlated && revision !== 0) return;
         terminalRiskPlans = Array.isArray(plans) ? plans.slice() : [];
@@ -4000,7 +4005,9 @@
       if (!isCurrentRiskPlanResponse(executionId, revision)) return;
       pendingRiskPlanRequests.delete(executionId);
       if (riskDragDraft && riskDragDraft.executionId === executionId) riskDragDraft = null;
-      setRiskPlanError(getField(result, 'Error', 'error', ''));
+      if (executionId === selectedDockExecutionId) {
+        setRiskPlanError(getField(result, 'Error', 'error', ''));
+      }
       renderPriceLines();
     };
 
@@ -4355,6 +4362,7 @@
       handle.addEventListener('pointermove', moveRiskHandle);
       handle.addEventListener('pointerup', finishRiskHandleDrag);
       handle.addEventListener('pointercancel', cancelRiskHandleDrag);
+      handle.addEventListener('lostpointercapture', cancelRiskHandleDrag);
     }
     tradeDockMinimizeButton.addEventListener('click', toggleTradeDock);
     tradeDockSplitter.addEventListener('pointerdown', beginTradeDockResize);
