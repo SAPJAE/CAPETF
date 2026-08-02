@@ -28,6 +28,8 @@ public sealed class TerminalActivityLog
     };
 
     private readonly string _path;
+    private readonly string _backupPath;
+    private readonly string _temporaryPathPrefix;
     private readonly int _maximumEvents;
     private readonly object _gate = new();
 
@@ -35,7 +37,9 @@ public sealed class TerminalActivityLog
     {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Activity log path is required.", nameof(path));
         if (maximumEvents <= 0) throw new ArgumentOutOfRangeException(nameof(maximumEvents));
-        _path = path;
+        _path = Path.GetFullPath(path);
+        _backupPath = _path + ".bak";
+        _temporaryPathPrefix = _path + ".tmp-";
         _maximumEvents = maximumEvents;
     }
 
@@ -88,15 +92,15 @@ public sealed class TerminalActivityLog
 
     private IReadOnlyList<TerminalActivityEvent> LoadUnsafe()
     {
-        if (!File.Exists(_path)) return [];
+        if (!File.Exists(_path)) return RecoverBackupUnsafe();
         try
         {
-            return JsonSerializer.Deserialize<List<TerminalActivityEvent>>(File.ReadAllText(_path), JsonOptions)
-                ?? [];
+            return ReadEvents(_path);
         }
         catch (JsonException)
         {
-            return [];
+            QuarantineMalformedPrimary();
+            return RecoverBackupUnsafe();
         }
     }
 
@@ -104,6 +108,62 @@ public sealed class TerminalActivityLog
     {
         var directory = Path.GetDirectoryName(_path);
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-        File.WriteAllText(_path, JsonSerializer.Serialize(events, JsonOptions));
+
+        var content = JsonSerializer.SerializeToUtf8Bytes(events, JsonOptions);
+        var temporaryPath = _temporaryPathPrefix + Guid.NewGuid().ToString("N");
+        try
+        {
+            using (var stream = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 4096,
+                FileOptions.WriteThrough))
+            {
+                stream.Write(content);
+                stream.Flush(flushToDisk: true);
+            }
+
+            if (File.Exists(_path)) File.Replace(temporaryPath, _path, _backupPath, ignoreMetadataErrors: true);
+            else File.Move(temporaryPath, _path);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+    }
+
+    private static IReadOnlyList<TerminalActivityEvent> ReadEvents(string path) =>
+        JsonSerializer.Deserialize<List<TerminalActivityEvent>>(File.ReadAllText(path), JsonOptions)
+        ?? throw new JsonException("Terminal activity persistence did not contain an event list.");
+
+    private IReadOnlyList<TerminalActivityEvent> RecoverBackupUnsafe()
+    {
+        if (!File.Exists(_backupPath)) return [];
+        try
+        {
+            var events = ReadEvents(_backupPath);
+            SaveUnsafe(events);
+            return events;
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private void QuarantineMalformedPrimary()
+    {
+        var suffix = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmssfffffff");
+        var quarantinePath = _path + ".corrupt-" + suffix;
+        var collision = 0;
+        while (File.Exists(quarantinePath))
+        {
+            collision++;
+            quarantinePath = _path + ".corrupt-" + suffix + "-" + collision;
+        }
+
+        File.Move(_path, quarantinePath);
     }
 }

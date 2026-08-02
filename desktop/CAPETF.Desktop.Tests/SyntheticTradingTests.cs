@@ -22,6 +22,9 @@ public static class SyntheticTradingTests
         SyntheticTradingWorkspaceRuntimeUsesHostOwnedTicketsAndOperationLocks();
         SyntheticOrderTicketStaysInteractiveDuringBackgroundRefresh();
         TerminalActivityLogPersistsAndWorkspaceSeparatesContext();
+        TerminalActivityLogQuarantinesMalformedPrimaryBeforeStartingNewHistory();
+        TerminalActivityLogRecoversBackupAndQuarantinesInterruptedPrimary();
+        TerminalActivityLogPersistsAtomicallyWithRecoverableBackup();
         SyntheticHistorySessionCacheLoadsOnlyMissingLegsPerTimeframe();
         TradingBrowserParserAllowsOnlyActionIdentifiersAndPreflightInputs();
         TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels();
@@ -1395,6 +1398,64 @@ public static class SyntheticTradingTests
         }
         AssertTrue(html.Contains("window.setTerminalActivity", StringComparison.Ordinal),
             "host activity publications must render in the bottom dock");
+    }
+
+    private static void TerminalActivityLogPersistsAtomicallyWithRecoverableBackup()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "activity.json");
+        var store = new TerminalActivityLog(path);
+        store.Append(TerminalActivitySeverity.Info, "Connect", "Connecting");
+        var firstGeneration = File.ReadAllText(path);
+
+        store.Append(TerminalActivitySeverity.Success, "Connect", "Connected");
+
+        AssertEqual(firstGeneration, File.ReadAllText(path + ".bak"),
+            "atomic activity persistence must retain the previous valid generation as backup");
+        AssertEqual(2, store.Load().Count, "atomic activity persistence must publish the complete latest generation");
+        AssertEqual(0, Directory.GetFiles(directory.Path, "activity.json.tmp-*").Length,
+            "successful activity persistence must clean its temporary file");
+    }
+
+    private static void TerminalActivityLogQuarantinesMalformedPrimaryBeforeStartingNewHistory()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "activity.json");
+        const string malformed = "not-json";
+        File.WriteAllText(path, malformed);
+
+        new TerminalActivityLog(path).Append(TerminalActivitySeverity.Warning, "Recovery", "New history");
+
+        var quarantinedPath = AssertSingle(
+            Directory.GetFiles(directory.Path, "activity.json.corrupt-*"),
+            "append must quarantine a malformed primary when no backup can be recovered");
+        AssertEqual(malformed, File.ReadAllText(quarantinedPath),
+            "append must not overwrite the only malformed persistence evidence");
+        AssertEqual(1, new TerminalActivityLog(path).Load().Count,
+            "append may start a new history after preserving the malformed primary");
+    }
+
+    private static void TerminalActivityLogRecoversBackupAndQuarantinesInterruptedPrimary()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "activity.json");
+        var store = new TerminalActivityLog(path);
+        store.Append(TerminalActivitySeverity.Info, "Connect", "Connecting");
+        store.Append(TerminalActivitySeverity.Success, "Connect", "Connected");
+        const string interruptedWrite = "[{\"TimestampUtc\":";
+        File.WriteAllText(path, interruptedWrite);
+
+        var restored = new TerminalActivityLog(path).Load();
+
+        var recovered = AssertSingle(restored, "interrupted activity persistence must recover the valid backup generation");
+        AssertEqual("Connecting", recovered.Summary, "backup recovery must retain historical activity");
+        AssertEqual(1, new TerminalActivityLog(path).Load().Count,
+            "backup recovery must restore a valid active primary");
+        var quarantinedPath = AssertSingle(
+            Directory.GetFiles(directory.Path, "activity.json.corrupt-*"),
+            "interrupted primary must be quarantined beside the activity log");
+        AssertEqual(interruptedWrite, File.ReadAllText(quarantinedPath),
+            "quarantine must preserve the malformed primary as evidence");
     }
 
     private static void TradingBrowserParserAllowsOnlyRiskPlanIdentifiersAndLevels()
