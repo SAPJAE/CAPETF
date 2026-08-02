@@ -86,11 +86,11 @@
 - Consumes: selected active execution entry/direction and existing `setRiskPlan` host request.
 - Produces: add-risk control plus draggable planned SL/TP overlays persisted on pointer release.
 
-- [ ] Write failing tests for Buy/Sell surrounding rules, risk-line creation defaults, drag publication, and selection isolation.
-- [ ] Implement a chart overlay with an entry-adjacent plus button and HTML drag handles synchronized to chart price coordinates.
-- [ ] Update planned lines live during drag and send one revisioned `setRiskPlan` request on pointer release.
-- [ ] Keep numeric bottom-dock editors synchronized as an accessible fallback and show validation without moving the chart.
-- [ ] Run focused tests and commit the chart-risk interaction.
+- [x] Write failing tests for Buy/Sell surrounding rules, risk-line creation defaults, drag publication, and selection isolation.
+- [x] Implement a chart overlay with an entry-adjacent plus button and HTML drag handles synchronized to chart price coordinates.
+- [x] Update planned lines live during drag and send one revisioned `setRiskPlan` request on pointer release.
+- [x] Keep numeric bottom-dock editors synchronized as an accessible fallback and show validation without moving the chart.
+- [x] Run focused tests and commit the chart-risk interaction.
 
 ### Task 5: Progressive Universe Accumulator
 
@@ -103,11 +103,11 @@
 - Consumes: local dashboard/cache instruments and Capital.com market discovery results.
 - Produces: deduplicated incremental universe snapshots keyed by epic without resetting current selection.
 
-- [ ] Write failing tests for immediate cached publication, deterministic merge/deduplication, selection preservation, and staged progress.
-- [ ] Implement the accumulator and local merged-universe cache.
-- [ ] Change Connect to publish cache first, then discover and merge API batches in the background with cancellation and rate control.
-- [ ] Publish progress/activity without blocking chart, search, or order controls.
-- [ ] Run focused tests and commit the progressive-universe change.
+- [x] Write failing tests for immediate cached publication, deterministic merge/deduplication, selection preservation, and staged progress.
+- [x] Implement the accumulator and local merged-universe cache.
+- [x] Change Connect to publish cache first, then discover and merge API batches in the background with cancellation and rate control.
+- [x] Publish progress/activity without blocking chart, search, or order controls.
+- [x] Run focused tests and commit the progressive-universe change.
 
 ### Task 6: End-To-End Verification And Publish
 
@@ -117,8 +117,8 @@
 **Interfaces:**
 - Produces: unzipped runnable `desktop/publish/cap.com-terminal-v4-five-lots/CAPETF.exe`.
 
-- [ ] Run all desktop tests and verify zero failures.
-- [ ] Build and publish the Windows executable.
-- [ ] Launch the app, connect to Capital.com demo, verify cached universe appears before background completion, and capture screenshots of the ticket, margin, Activity Log, and draggable risk plan.
-- [ ] Validate a 1-lot and multi-lot crypto basket through preflight without submitting live-account orders; verify exact leg multiplication and explicit insufficient-margin feedback.
+- [x] Run all desktop tests and verify zero failures.
+- [x] Build and publish the Windows executable.
+- [x] Launch the app, connect to Capital.com demo, verify cached universe appears before background completion, and capture screenshots of the ticket, margin, Activity Log, and draggable risk plan.
+- [x] Validate a 1-lot and multi-lot crypto basket through preflight without submitting live-account orders; verify exact leg multiplication and explicit insufficient-margin feedback.
 - [ ] Inspect git diff/status, commit fixes, and push `feature/cap-com-terminal-v4`.
