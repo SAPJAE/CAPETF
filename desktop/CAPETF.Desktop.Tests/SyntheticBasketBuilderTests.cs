@@ -58,6 +58,7 @@ public static class SyntheticBasketBuilderTests
         CapComTerminalPublishesRawEtfsBeforeBackgroundEnrichment();
         CapComTerminalFencesAndPacesBackgroundUniverseDiscovery();
         CapComTerminalSerializesDiscoveryRequestsAcrossRapidSwitches();
+        CapComTerminalDetachedEtfEnrichmentDoesNotMutateForegroundProgress();
     }
 
     public static void RunAll()
@@ -2608,6 +2609,24 @@ public static class SyntheticBasketBuilderTests
         AssertTrue(
             search >= 0 && requestGate > search && request > requestGate && release > request,
             "the discovery request gate must remain held until the Capital.com search request settles");
+    }
+
+    private static void CapComTerminalDetachedEtfEnrichmentDoesNotMutateForegroundProgress()
+    {
+        var source = File.ReadAllText(SourcePath("desktop", "CAPETF.Desktop", "CapComTerminalWindow.xaml.cs"));
+        var detachedStart = source.IndexOf("private async Task EnrichCachedEtfUniverseInBackgroundAsync", StringComparison.Ordinal);
+        var detachedEnd = source.IndexOf("private async Task<IReadOnlyList<MarketInstrument>> SearchMarketsWithRetryAsync", detachedStart, StringComparison.Ordinal);
+        var metadataStart = source.IndexOf("private async Task<IReadOnlyList<MarketInstrument>> EnrichEtfMetadataAsync", StringComparison.Ordinal);
+        var metadataEnd = source.IndexOf("private void ApplyUniverse", metadataStart, StringComparison.Ordinal);
+        var detached = source[detachedStart..detachedEnd];
+        var metadata = source[metadataStart..metadataEnd];
+
+        AssertTrue(
+            detached.Contains("reportProgress: null", StringComparison.Ordinal),
+            "detached ETF enrichment must explicitly opt out of foreground progress reporting");
+        AssertTrue(
+            !metadata.Contains("_operationState.", StringComparison.Ordinal),
+            "ETF metadata enrichment must not mutate global foreground operation progress");
     }
 
     private static void EncryptedEtfCacheKeepsOnlyEtfInstruments()

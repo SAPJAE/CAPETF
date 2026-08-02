@@ -415,7 +415,7 @@ public partial class CapComTerminalWindow : Window
         TerminalUniverseRefresh refresh,
         CancellationToken cancellationToken)
     {
-        var enriched = await EnrichEtfMetadataAsync(rawCachedEtfs, cancellationToken);
+        var enriched = await EnrichEtfMetadataAsync(rawCachedEtfs, cancellationToken, reportProgress: null);
         if (!_universeRefreshGate.IsCurrent(refresh)) return;
         var snapshot = GetUniverseAccumulator(TerminalUniverseKind.ETFs).ReplaceCachedMetadata(enriched);
         if (!_universeRefreshGate.IsCurrent(refresh)) return;
@@ -1573,12 +1573,13 @@ public partial class CapComTerminalWindow : Window
 
     private async Task<IReadOnlyList<MarketInstrument>> EnrichEtfMetadataAsync(
         IReadOnlyList<MarketInstrument> instruments,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<int, int>? reportProgress = null)
     {
         await EnsureConnectedAsync(cancellationToken);
 
         var enriched = new List<MarketInstrument>(instruments.Count);
-        _operationState.BeginStage("Loading ETF market details", instruments.Count);
+        reportProgress?.Invoke(0, instruments.Count);
         var completed = 0;
         foreach (var instrument in instruments)
         {
@@ -1587,7 +1588,7 @@ public partial class CapComTerminalWindow : Window
             {
                 enriched.Add(instrument);
                 completed++;
-                _operationState.Report("Loading ETF market details", completed, instruments.Count);
+                reportProgress?.Invoke(completed, instruments.Count);
                 continue;
             }
 
@@ -1608,7 +1609,7 @@ public partial class CapComTerminalWindow : Window
             finally
             {
                 completed++;
-                _operationState.Report("Loading ETF market details", completed, instruments.Count);
+                reportProgress?.Invoke(completed, instruments.Count);
             }
         }
 
